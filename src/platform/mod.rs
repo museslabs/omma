@@ -8,6 +8,7 @@
 
 mod break_screen;
 mod idle;
+mod notifications;
 mod sound;
 
 use std::cell::RefCell;
@@ -28,6 +29,7 @@ use crate::model::BreakType;
 use crate::scheduler::{Core, CoreEvent, State};
 
 use break_screen::BreakScreen;
+use notifications::Notifier;
 
 /// The menu-bar glyph, embedded so it travels with the binary whether omma is
 /// launched from its `.app` bundle or run bare. Rendered as a template image,
@@ -77,6 +79,11 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    let notifier = if config.notification.enabled {
+        Notifier::new()
+    } else {
+        None
+    };
     let smart_pause_enabled = config.smart_pause.enabled;
     let idle_threshold = config.smart_pause.idle_seconds.max(1) as f64;
     let config_mtime = file_mtime(&crate::config::config_path());
@@ -90,6 +97,7 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
         enable_item: None,
         status_item_label: None,
         break_screen: BreakScreen::new(mtm),
+        notifier,
         smart_pause_enabled,
         idle_threshold,
         config_mtime,
@@ -127,6 +135,7 @@ struct App {
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     break_screen: BreakScreen,
+    notifier: Option<Notifier>,
     smart_pause_enabled: bool,
     idle_threshold: f64,
     config_mtime: Option<SystemTime>,
@@ -288,6 +297,13 @@ impl App {
         }
         self.core = core;
 
+        if new.notification.enabled {
+            if self.notifier.is_none() {
+                self.notifier = Notifier::new();
+            }
+        } else {
+            self.notifier = None;
+        }
         self.smart_pause_enabled = new.smart_pause.enabled;
         self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
         self.config = new;
@@ -312,7 +328,12 @@ impl App {
     fn handle_event(&mut self, now: SystemTime, ev: CoreEvent, delegate: &Delegate) {
         match ev {
             CoreEvent::NextBreakScheduled { .. } => {}
-            CoreEvent::PreBreak { .. } => {
+            CoreEvent::PreBreak { name, .. } => {
+                if self.config.notification.enabled {
+                    if let Some(n) = &self.notifier {
+                        n.notify("Break coming up", &name);
+                    }
+                }
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.pre_break {
                     sound::play(&alert.pre_break_sound);

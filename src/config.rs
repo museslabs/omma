@@ -35,6 +35,7 @@ pub struct Config {
 
     pub smart_pause: SmartPause,
     pub audible_alert: AudibleAlert,
+    pub notification: NotificationCfg,
     pub keybindings: Keybindings,
 }
 
@@ -75,6 +76,13 @@ pub struct AudibleAlert {
     pub post_break_sound: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationCfg {
+    /// Show a Notification Center banner before each break.
+    pub enabled: bool,
+}
+
 /// Keys that skip or postpone the break while the break screen is showing.
 ///
 /// Each value is a key spec like `"escape"`, `"space"`, a single letter
@@ -107,6 +115,7 @@ impl Default for Config {
             long_breaks: default_long_breaks(),
             smart_pause: SmartPause::default(),
             audible_alert: AudibleAlert::default(),
+            notification: NotificationCfg::default(),
             keybindings: Keybindings::default(),
         }
     }
@@ -139,6 +148,12 @@ impl Default for AudibleAlert {
             pre_break_sound: "Tink".into(),
             post_break_sound: "Glass".into(),
         }
+    }
+}
+
+impl Default for NotificationCfg {
+    fn default() -> Self {
+        NotificationCfg { enabled: true }
     }
 }
 
