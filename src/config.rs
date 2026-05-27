@@ -33,6 +33,7 @@ pub struct Config {
     pub short_breaks: Vec<BreakCfg>,
     pub long_breaks: Vec<BreakCfg>,
 
+    pub smart_pause: SmartPause,
     pub audible_alert: AudibleAlert,
     pub keybindings: Keybindings,
 }
@@ -49,6 +50,15 @@ pub struct BreakCfg {
     /// Optional image path shown on the break screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SmartPause {
+    /// Pause the schedule when the keyboard/mouse are idle.
+    pub enabled: bool,
+    /// Idle seconds before pausing.
+    pub idle_seconds: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +105,7 @@ impl Default for Config {
             random_order: true,
             short_breaks: default_short_breaks(),
             long_breaks: default_long_breaks(),
+            smart_pause: SmartPause::default(),
             audible_alert: AudibleAlert::default(),
             keybindings: Keybindings::default(),
         }
@@ -106,6 +117,15 @@ impl Default for Keybindings {
         Keybindings {
             skip: "escape".into(),
             postpone: "space".into(),
+        }
+    }
+}
+
+impl Default for SmartPause {
+    fn default() -> Self {
+        SmartPause {
+            enabled: true,
+            idle_seconds: 60,
         }
     }
 }
@@ -266,5 +286,6 @@ mod tests {
         let cfg: Config = toml::from_str("short_break_interval = 20\n").unwrap();
         assert_eq!(cfg.short_break_interval, 20);
         assert_eq!(cfg.long_break_interval, 4500); // default preserved
+        assert!(cfg.smart_pause.enabled);
     }
 }

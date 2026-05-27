@@ -7,6 +7,7 @@
 //! [`App`] state in a `RefCell` ivar.
 
 mod break_screen;
+mod idle;
 mod sound;
 
 use std::cell::RefCell;
@@ -76,6 +77,8 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    let smart_pause_enabled = config.smart_pause.enabled;
+    let idle_threshold = config.smart_pause.idle_seconds.max(1) as f64;
     let config_mtime = file_mtime(&crate::config::config_path());
 
     let state = App {
@@ -87,6 +90,8 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
         enable_item: None,
         status_item_label: None,
         break_screen: BreakScreen::new(mtm),
+        smart_pause_enabled,
+        idle_threshold,
         config_mtime,
     };
 
@@ -122,6 +127,8 @@ struct App {
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     break_screen: BreakScreen,
+    smart_pause_enabled: bool,
+    idle_threshold: f64,
     config_mtime: Option<SystemTime>,
 }
 
@@ -214,6 +221,7 @@ impl App {
         }
 
         self.maybe_reload_config(now);
+        self.apply_smart_pause(now, delegate);
 
         let events = self.core.tick(now);
         for ev in events {
@@ -280,8 +288,25 @@ impl App {
         }
         self.core = core;
 
+        self.smart_pause_enabled = new.smart_pause.enabled;
+        self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
         self.config = new;
         self.refresh_menu_state();
+    }
+
+    /// Pause the schedule while the user is idle; resume when they return.
+    fn apply_smart_pause(&mut self, now: SystemTime, delegate: &Delegate) {
+        if !self.smart_pause_enabled || !self.core.is_enabled() {
+            return;
+        }
+        let idle = idle::idle_seconds();
+        if idle >= self.idle_threshold {
+            self.core.pause_for_idle(now);
+        } else if matches!(self.core.state(), State::Resting) {
+            for ev in self.core.resume_from_idle(now) {
+                self.handle_event(now, ev, delegate);
+            }
+        }
     }
 
     fn handle_event(&mut self, now: SystemTime, ev: CoreEvent, delegate: &Delegate) {
