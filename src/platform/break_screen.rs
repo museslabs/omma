@@ -67,8 +67,8 @@ pub struct BreakScreen {
     foregrounds: Vec<Retained<NSView>>,
     /// The backdrop container (blur + scrim) per window, faded on exit.
     backdrops: Vec<Retained<NSView>>,
-    /// Whether to play the entrance/exit transitions; off when the user has
-    /// asked macOS to minimise motion.
+    /// Whether to play the entrance/exit transitions and per-tick cross-fades;
+    /// off when the user has asked macOS to minimise motion.
     animate: bool,
     visible: bool,
 }
@@ -102,7 +102,7 @@ impl BreakScreen {
         let weight_thin = unsafe { NSFontWeightThin };
 
         // Respect the system "Reduce Motion" setting: when it's on we lay the
-        // overlay out statically and skip every blur and slide.
+        // overlay out statically and skip every blur, slide and cross-fade.
         self.animate = !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
         let animate = self.animate;
         let now = CACurrentMediaTime();
@@ -277,7 +277,11 @@ impl BreakScreen {
     pub fn update_countdown(&self, remaining: i64, _total: i64) {
         let text = NSString::from_str(&remaining.max(0).to_string());
         for label in &self.countdown_labels {
-            label.setStringValue(&text);
+            if self.animate {
+                animate_countdown_swap(self.mtm, label, &text);
+            } else {
+                label.setStringValue(&text);
+            }
         }
     }
 
@@ -481,6 +485,26 @@ fn blur_radius(
     anim
 }
 
+/// A scale animation used for countdown number changes.
+fn scale(from: f64, to: f64, begin: f64, duration: f64) -> Retained<CABasicAnimation> {
+    let anim = basic("transform.scale", from, to, begin, duration);
+    apply_fill(&anim, false);
+    anim
+}
+
+/// A scale animation that can optionally hold its final presentation value.
+fn scale_hold(
+    from: f64,
+    to: f64,
+    begin: f64,
+    duration: f64,
+    hold: bool,
+) -> Retained<CABasicAnimation> {
+    let anim = basic("transform.scale", from, to, begin, duration);
+    apply_fill(&anim, hold);
+    anim
+}
+
 /// A vertical slide that eases from `from_y` points off its resting spot up to
 /// rest. Positive `from_y` starts above (slides down); negative starts below
 /// (slides up).
@@ -512,6 +536,45 @@ fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, n
     detach_blur_after(layer, begin - now + 0.5);
 }
 
+/// Swap countdown digits with two static layers: the old digit shrinks/blurs
+/// out while the new digit starts larger/blurred and resolves in-place.
+fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSString) {
+    let old_text = label.stringValue();
+    let outgoing = NSTextField::labelWithString(&old_text, mtm);
+    outgoing.setWantsLayer(true);
+    outgoing.setFrame(label.frame());
+    outgoing.setAlignment(NSTextAlignment::Center);
+    outgoing.setMaximumNumberOfLines(1);
+    if let Some(font) = label.font() {
+        outgoing.setFont(Some(&font));
+    }
+    if let Some(color) = label.textColor() {
+        outgoing.setTextColor(Some(&color));
+    }
+
+    if let Some(parent) = unsafe { label.superview() } {
+        parent.addSubview(&outgoing);
+    }
+
+    label.setStringValue(text);
+
+    let now = CACurrentMediaTime();
+    if let Some(layer) = outgoing.layer() {
+        attach_blur(&layer);
+        layer.addAnimation_forKey(&fade(1.0, 0.0, now, 0.3, true), None);
+        layer.addAnimation_forKey(&scale_hold(1.0, 0.88, now, 0.3, true), None);
+        layer.addAnimation_forKey(&blur_radius(0.0, 10.0, now, 0.3, true), None);
+    }
+    if let Some(layer) = label.layer() {
+        attach_blur(&layer);
+        layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.3, false), None);
+        layer.addAnimation_forKey(&scale(1.12, 1.0, now, 0.3), None);
+        layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now, 0.3, false), None);
+        detach_blur_after(layer, 0.34);
+    }
+    remove_view_after(outgoing, 0.34);
+}
+
 /// Attach a named gaussian blur (resting radius 0) to `layer`, so the
 /// `filters.blur.inputRadius` key path is animatable for the blur in/out.
 fn attach_blur(layer: &CALayer) {
@@ -540,6 +603,18 @@ fn detach_blur_after(layer: Retained<CALayer>, delay: f64) {
     });
     // SAFETY: scheduled on and fired from the main run loop, where this
     // main-thread layer is safe to mutate.
+    unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
+    }
+}
+
+/// Remove a temporary view once its presentation animation has finished.
+fn remove_view_after(view: Retained<NSTextField>, delay: f64) {
+    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        view.removeFromSuperview();
+    });
+    // SAFETY: scheduled on and fired from the main run loop, where this
+    // main-thread view is safe to mutate.
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
     }
