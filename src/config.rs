@@ -32,6 +32,8 @@ pub struct Config {
 
     pub short_breaks: Vec<BreakCfg>,
     pub long_breaks: Vec<BreakCfg>,
+
+    pub keybindings: Keybindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +50,22 @@ pub struct BreakCfg {
     pub image: Option<String>,
 }
 
+/// Keys that skip or postpone the break while the break screen is showing.
+///
+/// Each value is a key spec like `"escape"`, `"space"`, a single letter
+/// (`"s"`), or a combination with modifiers (`"cmd+s"`, `"shift+p"`).
+/// Recognised modifiers: `cmd`, `shift`, `alt`/`option`, `ctrl`. Recognised
+/// named keys: `escape`/`esc`, `space`, `enter`/`return`, `tab`,
+/// `delete`/`backspace`. An empty string disables that keybind. A keybind only
+/// works when its action is allowed (postpone needs `allow_postpone`, and
+/// neither works under `strict_break`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keybindings {
+    pub skip: String,
+    pub postpone: String,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -62,6 +80,16 @@ impl Default for Config {
             random_order: true,
             short_breaks: default_short_breaks(),
             long_breaks: default_long_breaks(),
+            keybindings: Keybindings::default(),
+        }
+    }
+}
+
+impl Default for Keybindings {
+    fn default() -> Self {
+        Keybindings {
+            skip: "escape".into(),
+            postpone: "space".into(),
         }
     }
 }
@@ -200,6 +228,8 @@ mod tests {
         let toml = Config::default_toml().unwrap();
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.short_break_interval, 900);
+        assert_eq!(parsed.keybindings.skip, "escape");
+        assert_eq!(parsed.keybindings.postpone, "space");
         assert!(parsed.build_queue().is_some());
     }
 
