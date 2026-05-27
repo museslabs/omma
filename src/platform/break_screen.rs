@@ -15,8 +15,8 @@ use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightMedium, NSFontWeightRegular,
-    NSFontWeightThin, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightHeavy, NSFontWeightMedium,
+    NSFontWeightRegular, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
     NSPanel, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
@@ -99,13 +99,16 @@ impl BreakScreen {
         self.teardown_now();
         let mtm = self.mtm;
         let weight_regular = unsafe { NSFontWeightRegular };
-        let weight_thin = unsafe { NSFontWeightThin };
+        let weight_heavy = unsafe { NSFontWeightHeavy };
 
         // Respect the system "Reduce Motion" setting: when it's on we lay the
         // overlay out statically and skip every blur, slide and cross-fade.
         self.animate = !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
         let animate = self.animate;
         let now = CACurrentMediaTime();
+
+        // A chunky countdown; monospaced so the digits don't shift as they tick.
+        let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_heavy);
 
         let screens = NSScreen::screens(mtm);
         for i in 0..screens.count() {
@@ -168,14 +171,12 @@ impl BreakScreen {
             );
             foreground.addSubview(&name_label);
 
-            // Big countdown number, monospaced digits so it doesn't jitter.
-            let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_thin);
-            let white = NSColor::whiteColor();
+            // Big countdown number; each tick cross-fades in `update_countdown`.
             let count_label = make_label(
                 mtm,
                 &duration.to_string(),
                 &count_font,
-                &white,
+                &NSColor::whiteColor(),
                 NSRect::new(
                     NSPoint::new(cx - 250.0, cy - 90.0),
                     NSSize::new(500.0, 130.0),
