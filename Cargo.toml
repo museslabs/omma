@@ -1,0 +1,19 @@
+[package]
+name = "omma"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "ὄμμα — a configurable eye-strain break reminder for macOS"
+repository = "https://github.com/museslabs/omma"
+keywords = ["macos", "health", "eye-strain", "break", "menu-bar"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "omma"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+lto = true
+strip = true
