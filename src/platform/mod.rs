@@ -21,6 +21,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
 use crate::config::Config;
+use crate::ipc::{self, Command, Server};
 use crate::model::BreakType;
 use crate::scheduler::{Core, CoreEvent, State};
 
@@ -53,7 +54,7 @@ fn tray_icon_image() -> Option<Retained<NSImage>> {
 
 /// Entry point for the agent. Builds the status item, schedules the timer and
 /// runs the app. Blocks until the user quits.
-pub fn run(config: Config) -> anyhow::Result<()> {
+pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
@@ -79,6 +80,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
     let state = App {
         core,
         config,
+        server,
         mtm,
         status_item: None,
         enable_item: None,
@@ -113,6 +115,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
 struct App {
     core: Core,
     config: Config,
+    server: Server,
     mtm: MainThreadMarker,
     status_item: Option<Retained<NSStatusItem>>,
     enable_item: Option<Retained<NSMenuItem>>,
@@ -204,6 +207,11 @@ impl Delegate {
 impl App {
     /// Called once a second from the timer.
     fn on_tick(&mut self, now: SystemTime, delegate: &Delegate) {
+        // Handle any CLI commands that came in over the socket.
+        for cmd in self.server.drain() {
+            self.handle_command(cmd);
+        }
+
         self.maybe_reload_config(now);
 
         let events = self.core.tick(now);
@@ -212,6 +220,7 @@ impl App {
         }
 
         self.refresh_status_label(now);
+        self.publish_status(now);
     }
 
     /// Re-read the config file when it changes on disk and apply it live.
@@ -304,7 +313,28 @@ impl App {
         }
     }
 
+    fn handle_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::TakeBreak => self.core.take_break(None),
+            Command::TakeShortBreak => self.core.take_break(Some(BreakType::Short)),
+            Command::TakeLongBreak => self.core.take_break(Some(BreakType::Long)),
+            Command::Enable => {
+                let _ = self.core.enable(SystemTime::now());
+                self.refresh_menu_state();
+            }
+            Command::Disable => {
+                self.core.disable();
+                self.refresh_menu_state();
+            }
+            Command::Quit => self.quit(),
+            Command::Status => {} // handled by the IPC thread from the snapshot
+            // Invalidate the cached mtime so the reload runs this same tick.
+            Command::Reload => self.config_mtime = None,
+        }
+    }
+
     fn quit(&mut self) {
+        let _ = std::fs::remove_file(ipc::socket_path());
         let app = NSApplication::sharedApplication(self.mtm);
         app.terminate(None);
     }
@@ -392,6 +422,10 @@ impl App {
         if let Some(item) = &self.status_item_label {
             item.setTitle(&NSString::from_str(&text));
         }
+    }
+
+    fn publish_status(&self, now: SystemTime) {
+        self.server.set_status(self.status_text(now));
     }
 
     fn status_text(&self, now: SystemTime) -> String {
