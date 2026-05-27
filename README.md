@@ -16,7 +16,8 @@ confined to the few framework FFI calls that have no safe wrapper.
   keyboard shortcut (default: Esc to skip, Space to postpone).
 - **Menu-bar item**: enable/disable, take a break now (short/long), open config,
   quit; shows the time until the next break.
-- **Native notifications** — a Notification Center banner before each break.
+- **Pre-break warning** — a small Liquid Glass dialog before each break, with
+  Skip/Dismiss and optional Postpone actions.
 - **Audible alerts** using system sounds.
 - **Smart pause**: pauses the schedule when you're idle and resumes when you're
   back; a long idle stretch counts as a long break.
@@ -26,7 +27,7 @@ confined to the few framework FFI calls that have no safe wrapper.
 ## Build & run
 
 ```sh
-# Bundle (needed for native notifications) and ad-hoc sign:
+# Bundle and ad-hoc sign:
 ./bundle.sh
 open ./Omma.app
 
@@ -34,9 +35,8 @@ open ./Omma.app
 ln -sf "$PWD/Omma.app/Contents/MacOS/omma" /usr/local/bin/omma
 ```
 
-> Native notifications require the app to have a bundle identifier, so they only
-> work when launched from `Omma.app` (or by running the binary inside it). The
-> bare `cargo run` binary works fine but has notifications disabled.
+> The bare `cargo run` binary also works for development; bundling is the
+> easiest way to launch omma like a normal menu-bar app.
 
 ## CLI
 
@@ -85,17 +85,17 @@ pre_break_sound = "Tink"    # names from /System/Library/Sounds
 post_break_sound = "Glass"
 
 [notification]
-enabled = true
+enabled = true             # show the pre-break Liquid Glass warning
 
 [keybindings]
-skip     = "escape"   # key that skips the break while it's showing
+skip     = "escape"   # key that skips the warning/break while it's showing
 postpone = "space"    # key that postpones it (needs allow_postpone)
 ```
 
 ### Keybindings
 
-While the break screen is up, the Skip and Postpone buttons each have a keyboard
-shortcut. A key spec is a single letter (`"s"`), a named key (`escape`/`esc`,
+While the warning dialog or break screen is up, the Skip and Postpone buttons
+each have a keyboard shortcut. A key spec is a single letter (`"s"`), a named key (`escape`/`esc`,
 `space`, `enter`/`return`, `tab`, `delete`/`backspace`), or a combination with
 modifiers (`cmd`, `shift`, `alt`/`option`, `ctrl`) joined by `+` — e.g.
 `"cmd+s"`. The shortcut is shown as a dim hint on its button. An empty string

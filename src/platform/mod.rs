@@ -1,5 +1,5 @@
 //! The macOS agent: a status-bar item, a once-a-second timer that drives the
-//! scheduler, and (in later modules) the break screen, sounds, notifications,
+//! scheduler, and (in later modules) the break screen, sounds, warning dialog,
 //! idle detection and do-not-disturb checks.
 //!
 //! Everything here runs on the main thread. The `Delegate` object is the
@@ -9,7 +9,7 @@
 mod activity;
 mod break_screen;
 mod idle;
-mod notifications;
+mod pre_break_dialog;
 mod sound;
 
 use std::cell::RefCell;
@@ -31,7 +31,7 @@ use crate::scheduler::{Core, CoreEvent, State};
 
 use activity::DndChecker;
 use break_screen::BreakScreen;
-use notifications::Notifier;
+use pre_break_dialog::PreBreakDialog;
 
 /// The menu-bar glyph, embedded so it travels with the binary whether omma is
 /// launched from its `.app` bundle or run bare. Rendered as a template image,
@@ -82,11 +82,6 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let dnd = DndChecker::from_config(&config.do_not_disturb);
-    let notifier = if config.notification.enabled {
-        Notifier::new()
-    } else {
-        None
-    };
     let smart_pause_enabled = config.smart_pause.enabled;
     let idle_threshold = config.smart_pause.idle_seconds.max(1) as f64;
     let config_mtime = file_mtime(&crate::config::config_path());
@@ -100,8 +95,8 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
         enable_item: None,
         status_item_label: None,
         break_screen: BreakScreen::new(mtm),
+        pre_break_dialog: PreBreakDialog::new(mtm),
         dnd,
-        notifier,
         smart_pause_enabled,
         idle_threshold,
         config_mtime,
@@ -139,8 +134,8 @@ struct App {
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     break_screen: BreakScreen,
+    pre_break_dialog: PreBreakDialog,
     dnd: DndChecker,
-    notifier: Option<Notifier>,
     smart_pause_enabled: bool,
     idle_threshold: f64,
     config_mtime: Option<SystemTime>,
@@ -179,6 +174,7 @@ define_class!(
         fn toggle_enabled(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
                 if app.core.is_enabled() {
+                    app.pre_break_dialog.hide();
                     app.break_screen.hide();
                     app.core.disable();
                 } else {
@@ -196,6 +192,7 @@ define_class!(
         #[unsafe(method(skipBreak:))]
         fn skip_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
+                app.pre_break_dialog.hide();
                 app.break_screen.hide();
                 app.core.skip();
             });
@@ -204,8 +201,42 @@ define_class!(
         #[unsafe(method(postponeBreak:))]
         fn postpone_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
+                app.pre_break_dialog.hide();
                 app.break_screen.hide();
                 app.core.postpone();
+            });
+        }
+
+        #[unsafe(method(skipWarning:))]
+        fn skip_warning(&self, _sender: *mut AnyObject) {
+            let now = SystemTime::now();
+            self.with_app(|app| {
+                app.pre_break_dialog.hide();
+                let events = app.core.suppress_break(now, true);
+                for ev in events {
+                    app.handle_event(now, ev, self);
+                }
+                app.refresh_status_label(now);
+                app.publish_status(now);
+            });
+        }
+
+        #[unsafe(method(dismissWarning:))]
+        fn dismiss_warning(&self, _sender: *mut AnyObject) {
+            self.with_app(|app| app.pre_break_dialog.hide());
+        }
+
+        #[unsafe(method(postponeWarning:))]
+        fn postpone_warning(&self, _sender: *mut AnyObject) {
+            let now = SystemTime::now();
+            self.with_app(|app| {
+                app.pre_break_dialog.hide();
+                let events = app.core.suppress_break(now, false);
+                for ev in events {
+                    app.handle_event(now, ev, self);
+                }
+                app.refresh_status_label(now);
+                app.publish_status(now);
             });
         }
 
@@ -304,12 +335,8 @@ impl App {
         self.core = core;
 
         self.dnd = DndChecker::from_config(&new.do_not_disturb);
-        if new.notification.enabled {
-            if self.notifier.is_none() {
-                self.notifier = Notifier::new();
-            }
-        } else {
-            self.notifier = None;
+        if !new.notification.enabled {
+            self.pre_break_dialog.hide();
         }
         self.smart_pause_enabled = new.smart_pause.enabled;
         self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
@@ -324,6 +351,9 @@ impl App {
         }
         let idle = idle::idle_seconds();
         if idle >= self.idle_threshold {
+            if matches!(self.core.state(), State::PreBreak) {
+                self.pre_break_dialog.hide();
+            }
             self.core.pause_for_idle(now);
         } else if matches!(self.core.state(), State::Resting) {
             for ev in self.core.resume_from_idle(now) {
@@ -340,12 +370,22 @@ impl App {
                 if self.dnd.should_suppress() {
                     let skip = self.config.do_not_disturb.action == DndAction::Skip;
                     let _ = self.core.suppress_break(now, skip);
+                    self.pre_break_dialog.hide();
                     return;
                 }
                 if self.config.notification.enabled {
-                    if let Some(n) = &self.notifier {
-                        n.notify("Break coming up", &name);
-                    }
+                    let target: &AnyObject = delegate;
+                    let kb = &self.config.keybindings;
+                    let allow_skip = !self.config.strict_break;
+                    let allow_postpone = self.config.allow_postpone && !self.config.strict_break;
+                    self.pre_break_dialog.show(
+                        &name,
+                        allow_skip,
+                        allow_postpone,
+                        &kb.skip,
+                        &kb.postpone,
+                        target,
+                    );
                 }
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.pre_break {
@@ -359,6 +399,7 @@ impl App {
                 allow_postpone,
                 ..
             } => {
+                self.pre_break_dialog.hide_for_break();
                 let target: &AnyObject = delegate;
                 let kb = &self.config.keybindings;
                 self.break_screen.show(
@@ -375,6 +416,7 @@ impl App {
                 self.break_screen.update_countdown(remaining, total);
             }
             CoreEvent::StopBreak => {
+                self.pre_break_dialog.hide();
                 self.break_screen.hide();
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.post_break {
@@ -394,6 +436,7 @@ impl App {
                 self.refresh_menu_state();
             }
             Command::Disable => {
+                self.pre_break_dialog.hide();
                 self.break_screen.hide();
                 self.core.disable();
                 self.refresh_menu_state();
@@ -406,6 +449,7 @@ impl App {
     }
 
     fn quit(&mut self) {
+        self.pre_break_dialog.hide();
         self.break_screen.hide();
         let _ = std::fs::remove_file(ipc::socket_path());
         let app = NSApplication::sharedApplication(self.mtm);

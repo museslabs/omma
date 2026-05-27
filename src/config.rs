@@ -80,11 +80,11 @@ pub struct AudibleAlert {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotificationCfg {
-    /// Show a Notification Center banner before each break.
+    /// Show the top-center Liquid Glass warning before each break.
     pub enabled: bool,
 }
 
-/// Keys that skip or postpone the break while the break screen is showing.
+/// Keys that skip or postpone the break from the warning dialog or break screen.
 ///
 /// Each value is a key spec like `"escape"`, `"space"`, a single letter
 /// (`"s"`), or a combination with modifiers (`"cmd+s"`, `"shift+p"`).

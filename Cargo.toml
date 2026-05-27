@@ -73,14 +73,6 @@ objc2-app-kit = { version = "0.3", features = [
     "objc2-core-foundation",
     "objc2-quartz-core",
 ] }
-objc2-user-notifications = { version = "0.3", features = [
-    "UNUserNotificationCenter",
-    "UNNotificationRequest",
-    "UNNotificationContent",
-    "UNNotificationTrigger",
-    "UNNotificationSound",
-    "UNError",
-] }
 objc2-quartz-core = { version = "0.3", features = [
     "CABase",
     "CALayer",
