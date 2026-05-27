@@ -7,6 +7,7 @@
 //! [`App`] state in a `RefCell` ivar.
 
 mod break_screen;
+mod sound;
 
 use std::cell::RefCell;
 use std::time::SystemTime;
@@ -286,7 +287,12 @@ impl App {
     fn handle_event(&mut self, now: SystemTime, ev: CoreEvent, delegate: &Delegate) {
         match ev {
             CoreEvent::NextBreakScheduled { .. } => {}
-            CoreEvent::PreBreak { .. } => {}
+            CoreEvent::PreBreak { .. } => {
+                let alert = &self.config.audible_alert;
+                if alert.enabled && alert.pre_break {
+                    sound::play(&alert.pre_break_sound);
+                }
+            }
             CoreEvent::StartBreak {
                 name,
                 duration,
@@ -309,7 +315,13 @@ impl App {
             CoreEvent::Countdown { remaining, total } => {
                 self.break_screen.update_countdown(remaining, total);
             }
-            CoreEvent::StopBreak => self.break_screen.hide(),
+            CoreEvent::StopBreak => {
+                self.break_screen.hide();
+                let alert = &self.config.audible_alert;
+                if alert.enabled && alert.post_break {
+                    sound::play(&alert.post_break_sound);
+                }
+            }
         }
     }
 

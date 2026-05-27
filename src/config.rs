@@ -33,6 +33,7 @@ pub struct Config {
     pub short_breaks: Vec<BreakCfg>,
     pub long_breaks: Vec<BreakCfg>,
 
+    pub audible_alert: AudibleAlert,
     pub keybindings: Keybindings,
 }
 
@@ -48,6 +49,20 @@ pub struct BreakCfg {
     /// Optional image path shown on the break screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudibleAlert {
+    pub enabled: bool,
+    /// Play a sound when a break starts.
+    pub pre_break: bool,
+    /// Play a sound when a break ends.
+    pub post_break: bool,
+    /// Named system sound for break start (see /System/Library/Sounds).
+    pub pre_break_sound: String,
+    /// Named system sound for break end.
+    pub post_break_sound: String,
 }
 
 /// Keys that skip or postpone the break while the break screen is showing.
@@ -80,6 +95,7 @@ impl Default for Config {
             random_order: true,
             short_breaks: default_short_breaks(),
             long_breaks: default_long_breaks(),
+            audible_alert: AudibleAlert::default(),
             keybindings: Keybindings::default(),
         }
     }
@@ -90,6 +106,18 @@ impl Default for Keybindings {
         Keybindings {
             skip: "escape".into(),
             postpone: "space".into(),
+        }
+    }
+}
+
+impl Default for AudibleAlert {
+    fn default() -> Self {
+        AudibleAlert {
+            enabled: true,
+            pre_break: true,
+            post_break: true,
+            pre_break_sound: "Tink".into(),
+            post_break_sound: "Glass".into(),
         }
     }
 }
