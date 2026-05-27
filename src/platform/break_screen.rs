@@ -35,7 +35,7 @@ use objc2_quartz_core::{
 const SCREEN_SAVER_LEVEL: isize = 1000;
 /// Darkness of the dim scrim laid over the blur. High enough to even out a
 /// busy desktop into a calm, uniformly dark backdrop with consistent contrast.
-const SCRIM_ALPHA: f64 = 0.6;
+const SCRIM_ALPHA: f64 = 0.25;
 /// Height of the glass capsule buttons.
 const BUTTON_HEIGHT: f64 = 46.0;
 /// Gaussian-blur radius the foreground resolves from on entry and dissolves
