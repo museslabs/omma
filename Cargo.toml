@@ -38,6 +38,8 @@ objc2-foundation = { version = "0.3", features = [
     "NSError",
     "NSAttributedString",
     "NSRange",
+    "NSKeyValueCoding",
+    "block2",
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
@@ -69,6 +71,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSFontDescriptor",
     "NSAppearance",
     "objc2-core-foundation",
+    "objc2-quartz-core",
 ] }
 objc2-user-notifications = { version = "0.3", features = [
     "UNUserNotificationCenter",
@@ -78,6 +81,15 @@ objc2-user-notifications = { version = "0.3", features = [
     "UNNotificationSound",
     "UNError",
 ] }
+objc2-quartz-core = { version = "0.3", features = [
+    "CABase",
+    "CALayer",
+    "CAAnimation",
+    "CAMediaTiming",
+    "CAMediaTimingFunction",
+    "objc2-core-foundation",
+] }
+objc2-core-image = { version = "0.3", features = ["CIFilter"] }
 
 [profile.release]
 lto = true

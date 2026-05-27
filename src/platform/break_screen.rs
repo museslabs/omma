@@ -6,21 +6,29 @@
 //! wrapping a borderless `NSButton` that fires `skipBreak:` / `postponeBreak:`
 //! on the delegate.
 
+use core::ptr::NonNull;
+
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont,
-    NSFontAttributeName, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightThin,
-    NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle, NSPanel, NSScreen,
-    NSTextAlignment, NSTextField, NSTitlePosition, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightMedium, NSFontWeightRegular,
+    NSFontWeightThin, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSPanel, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
+use objc2_core_image::CIFilter;
 use objc2_foundation::{
-    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSMutableAttributedString, NSNumber, NSObjectNSKeyValueCoding,
+    NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer,
+};
+use objc2_quartz_core::{
+    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation,
+    CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
 };
 
 /// Window level above normal windows and fullscreen apps.
@@ -30,6 +38,11 @@ const SCREEN_SAVER_LEVEL: isize = 1000;
 const SCRIM_ALPHA: f64 = 0.6;
 /// Height of the glass capsule buttons.
 const BUTTON_HEIGHT: f64 = 46.0;
+/// Gaussian-blur radius the foreground resolves from on entry and dissolves
+/// back into on exit — the "materialise from blur" look.
+const BLUR_RADIUS: f64 = 16.0;
+/// How long the exit blur-out plays before the windows are torn down.
+const EXIT_DURATION: f64 = 0.32;
 
 define_class!(
     #[unsafe(super(NSPanel))]
@@ -49,6 +62,14 @@ pub struct BreakScreen {
     mtm: MainThreadMarker,
     windows: Vec<Retained<BreakWindow>>,
     countdown_labels: Vec<Retained<NSTextField>>,
+    /// The foreground container (message, countdown, buttons) per window. Kept
+    /// so the exit transition can blur and fade it back out.
+    foregrounds: Vec<Retained<NSView>>,
+    /// The backdrop container (blur + scrim) per window, faded on exit.
+    backdrops: Vec<Retained<NSView>>,
+    /// Whether to play the entrance/exit transitions; off when the user has
+    /// asked macOS to minimise motion.
+    animate: bool,
     visible: bool,
 }
 
@@ -58,6 +79,9 @@ impl BreakScreen {
             mtm,
             windows: Vec::new(),
             countdown_labels: Vec::new(),
+            foregrounds: Vec::new(),
+            backdrops: Vec::new(),
+            animate: true,
             visible: false,
         }
     }
@@ -72,10 +96,16 @@ impl BreakScreen {
         postpone_key: &str,
         target: &AnyObject,
     ) {
-        self.hide();
+        self.teardown_now();
         let mtm = self.mtm;
         let weight_regular = unsafe { NSFontWeightRegular };
         let weight_thin = unsafe { NSFontWeightThin };
+
+        // Respect the system "Reduce Motion" setting: when it's on we lay the
+        // overlay out statically and skip every blur and slide.
+        self.animate = !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+        let animate = self.animate;
+        let now = CACurrentMediaTime();
 
         let screens = NSScreen::screens(mtm);
         for i in 0..screens.count() {
@@ -91,22 +121,35 @@ impl BreakScreen {
             let Some(content) = window.contentView() else {
                 continue;
             };
+            content.setWantsLayer(true);
 
-            // Frosted-glass backdrop: blur the desktop behind the overlay.
+            // Backdrop: the frosted desktop blur and the dim scrim, grouped in
+            // their own layer-backed container so they fade in and out as one.
+            let backdrop = NSView::initWithFrame(NSView::alloc(mtm), full);
+            backdrop.setWantsLayer(true);
+            content.addSubview(&backdrop);
+
             let blur = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), full);
             blur.setMaterial(NSVisualEffectMaterial::FullScreenUI);
             blur.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             blur.setState(NSVisualEffectState::Active);
-            content.addSubview(&blur);
+            backdrop.addSubview(&blur);
 
-            // Dim scrim over the blur so the break stays restful for the eyes.
             let scrim = NSBox::initWithFrame(NSBox::alloc(mtm), full);
             scrim.setBoxType(NSBoxType::Custom);
             scrim.setTitlePosition(NSTitlePosition::NoTitle);
             scrim.setBorderWidth(0.0);
             scrim.setCornerRadius(0.0);
             scrim.setFillColor(&NSColor::colorWithWhite_alpha(0.0, SCRIM_ALPHA));
-            content.addSubview(&scrim);
+            backdrop.addSubview(&scrim);
+
+            // Foreground: message, countdown and buttons, in their own
+            // layer-backed container. A single gaussian blur on this layer lets
+            // the whole group materialise from blur into focus on the way in,
+            // and dissolve back into blur on the way out.
+            let foreground = NSView::initWithFrame(NSView::alloc(mtm), full);
+            foreground.setWantsLayer(true);
+            content.addSubview(&foreground);
 
             // Break message, laid directly on the glass (wraps to two lines).
             let msg_w = (w - 160.0).min(1000.0);
@@ -117,10 +160,13 @@ impl BreakScreen {
                 name,
                 &title_font,
                 &msg_color,
-                NSRect::new(NSPoint::new(cx - msg_w / 2.0, cy + 44.0), NSSize::new(msg_w, 80.0)),
+                NSRect::new(
+                    NSPoint::new(cx - msg_w / 2.0, cy + 44.0),
+                    NSSize::new(msg_w, 80.0),
+                ),
                 2,
             );
-            content.addSubview(&name_label);
+            foreground.addSubview(&name_label);
 
             // Big countdown number, monospaced digits so it doesn't jitter.
             let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_thin);
@@ -130,11 +176,13 @@ impl BreakScreen {
                 &duration.to_string(),
                 &count_font,
                 &white,
-                NSRect::new(NSPoint::new(cx - 250.0, cy - 90.0), NSSize::new(500.0, 130.0)),
+                NSRect::new(
+                    NSPoint::new(cx - 250.0, cy - 90.0),
+                    NSSize::new(500.0, 130.0),
+                ),
                 1,
             );
-            content.addSubview(&count_label);
-            self.countdown_labels.push(count_label);
+            foreground.addSubview(&count_label);
 
             // Glass capsule buttons, centered side by side below the countdown.
             let gap = 16.0;
@@ -161,13 +209,48 @@ impl BreakScreen {
                         NSPoint::new(x, by),
                         NSSize::new(*bw, BUTTON_HEIGHT),
                     ));
-                    content.addSubview(button);
+                    foreground.addSubview(button);
                     x += bw + gap;
+                }
+            }
+
+            // Choreograph the entrance: the backdrop fades up; the foreground
+            // resolves out of the blur while the message slides down from above
+            // and the buttons slide up from below. The countdown stays put —
+            // it simply sharpens out of the blur as the foreground does.
+            if animate {
+                if let Some(layer) = backdrop.layer() {
+                    layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, false), None);
+                }
+                if let Some(layer) = foreground.layer() {
+                    let begin = now + 0.06;
+                    attach_blur(&layer);
+                    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.55, false), None);
+                    layer.addAnimation_forKey(
+                        &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, false),
+                        None,
+                    );
+                    // The blur is only for the transition; drop it once the
+                    // entrance settles so the static break renders crisp.
+                    detach_blur_after(layer, 0.75);
+                }
+                let label_begin = now + 0.68;
+                let buttons_begin = label_begin + 0.1;
+                if let Some(layer) = name_label.layer() {
+                    animate_delayed_entrance(layer, 28.0, label_begin, now);
+                }
+                for button in &buttons {
+                    if let Some(layer) = button.layer() {
+                        animate_delayed_entrance(layer, -28.0, buttons_begin, now);
+                    }
                 }
             }
 
             window.orderFrontRegardless();
             self.windows.push(window);
+            self.backdrops.push(backdrop);
+            self.foregrounds.push(foreground);
+            self.countdown_labels.push(count_label);
         }
 
         // A break can open from the once-a-second timer, with another app in
@@ -199,17 +282,77 @@ impl BreakScreen {
     }
 
     pub fn hide(&mut self) {
+        if self.windows.is_empty() {
+            return;
+        }
+        // No animation (Reduce Motion): tear the overlay down immediately.
+        if !self.animate {
+            self.teardown_now();
+            return;
+        }
+
+        // Reverse of the entrance: the backdrop fades out while the foreground
+        // dissolves back into blur. The animations hold their final state
+        // (`hold`), so the overlay stays faded/blurred right up to teardown.
+        let now = CACurrentMediaTime();
+        for backdrop in &self.backdrops {
+            if let Some(layer) = backdrop.layer() {
+                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, true), None);
+            }
+        }
+        for foreground in &self.foregrounds {
+            if let Some(layer) = foreground.layer() {
+                attach_blur(&layer);
+                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, true), None);
+                layer.addAnimation_forKey(
+                    &blur_radius(0.0, BLUR_RADIUS, now, EXIT_DURATION, true),
+                    None,
+                );
+            }
+        }
+
+        // Defer the actual teardown until the blur-out finishes. The windows
+        // move into the timer block so they stay alive (and on screen) for the
+        // animation; the block orders them out and restores Accessory mode.
+        let windows: Vec<Retained<BreakWindow>> = self.windows.drain(..).collect();
+        let mtm = self.mtm;
+        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+            for window in &windows {
+                window.orderOut(None);
+            }
+            NSApplication::sharedApplication(mtm)
+                .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        });
+        // SAFETY: the timer is scheduled on, and fires on, the main run loop,
+        // where these main-thread-only windows are safe to touch.
+        unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                EXIT_DURATION + 0.05,
+                false,
+                &block,
+            );
+        }
+
+        self.backdrops.clear();
+        self.foregrounds.clear();
+        self.countdown_labels.clear();
+        self.visible = false;
+    }
+
+    /// Tear the overlay down at once, with no exit animation: order every
+    /// window out, forget the views, and drop back to a menu-bar-only Accessory
+    /// app (we promote to Regular in `show()` so the overlay can take keyboard
+    /// focus). Used when reopening and when Reduce Motion is on.
+    fn teardown_now(&mut self) {
         let had_windows = !self.windows.is_empty();
         for window in self.windows.drain(..) {
             window.orderOut(None);
         }
+        self.backdrops.clear();
+        self.foregrounds.clear();
         self.countdown_labels.clear();
         self.visible = false;
 
-        // Drop back to a menu-bar-only Accessory app (we promoted to Regular in
-        // show() so the overlay could take keyboard focus); the Dock icon goes
-        // away and focus returns to the user's previous app. Only when we
-        // actually had an overlay up, so an empty hide() stays a no-op.
         if had_windows {
             let app = NSApplication::sharedApplication(self.mtm);
             app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -272,12 +415,134 @@ fn make_label(
 ) -> Retained<NSTextField> {
     let s = NSString::from_str(text);
     let label = NSTextField::labelWithString(&s, mtm);
+    label.setWantsLayer(true);
     label.setFrame(frame);
     label.setAlignment(NSTextAlignment::Center);
     label.setFont(Some(font));
     label.setTextColor(Some(color));
     label.setMaximumNumberOfLines(max_lines);
     label
+}
+
+/// Apply the fill behaviour shared by the basic animations. When `hold` is set
+/// (exit), the animation keeps its final value on screen instead of snapping
+/// back to the model value, since the windows are about to be torn down. When
+/// not (entrance), `Backwards` fill holds the *start* value until `begin`, so
+/// callers can stagger entrances by pushing `begin` later.
+fn apply_fill(anim: &CABasicAnimation, hold: bool) {
+    if hold {
+        anim.setFillMode(unsafe { kCAFillModeBoth });
+        anim.setRemovedOnCompletion(false);
+    } else {
+        anim.setFillMode(unsafe { kCAFillModeBackwards });
+    }
+}
+
+/// A basic animation from `from` to `to` on `key_path`, eased smoothly in and
+/// out over `duration` starting at `begin` (in `CACurrentMediaTime` units).
+fn basic(
+    key_path: &str,
+    from: f64,
+    to: f64,
+    begin: f64,
+    duration: f64,
+) -> Retained<CABasicAnimation> {
+    let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key_path)));
+    unsafe {
+        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from)));
+        anim.setToValue(Some(&*NSNumber::numberWithDouble(to)));
+    }
+    anim.setDuration(duration);
+    anim.setBeginTime(begin);
+    anim.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(unsafe {
+        kCAMediaTimingFunctionEaseInEaseOut
+    })));
+    anim
+}
+
+/// An opacity fade between `from` and `to`. See [`apply_fill`] for `hold`.
+fn fade(from: f64, to: f64, begin: f64, duration: f64, hold: bool) -> Retained<CABasicAnimation> {
+    let anim = basic("opacity", from, to, begin, duration);
+    apply_fill(&anim, hold);
+    anim
+}
+
+/// Animates the foreground's gaussian-blur radius (see [`attach_blur`]) so the
+/// content resolves from blur into focus, or dissolves back. See [`apply_fill`].
+fn blur_radius(
+    from: f64,
+    to: f64,
+    begin: f64,
+    duration: f64,
+    hold: bool,
+) -> Retained<CABasicAnimation> {
+    let anim = basic("filters.blur.inputRadius", from, to, begin, duration);
+    apply_fill(&anim, hold);
+    anim
+}
+
+/// A vertical slide that eases from `from_y` points off its resting spot up to
+/// rest. Positive `from_y` starts above (slides down); negative starts below
+/// (slides up).
+fn slide_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
+    let anim = CASpringAnimation::animationWithKeyPath(Some(&NSString::from_str(
+        "transform.translation.y",
+    )));
+    unsafe {
+        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from_y)));
+        anim.setToValue(Some(&*NSNumber::numberWithDouble(0.0)));
+    }
+    anim.setMass(1.0);
+    anim.setStiffness(180.0);
+    anim.setDamping(22.0);
+    anim.setInitialVelocity(0.0);
+    anim.setDuration(anim.settlingDuration().min(0.7));
+    anim.setBeginTime(begin);
+    anim.setFillMode(unsafe { kCAFillModeBackwards });
+    anim
+}
+
+/// Keep an entrance layer invisible until `begin`, then reveal it while it
+/// springs in and resolves from blur to sharp.
+fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, now: f64) {
+    attach_blur(&layer);
+    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, false), None);
+    layer.addAnimation_forKey(&blur_radius(12.0, 0.0, begin, 0.42, false), None);
+    layer.addAnimation_forKey(&slide_y(from_y, begin), None);
+    detach_blur_after(layer, begin - now + 0.5);
+}
+
+/// Attach a named gaussian blur (resting radius 0) to `layer`, so the
+/// `filters.blur.inputRadius` key path is animatable for the blur in/out.
+fn attach_blur(layer: &CALayer) {
+    let name = NSString::from_str("CIGaussianBlur");
+    let Some(filter) = (unsafe { CIFilter::filterWithName(&name) }) else {
+        return;
+    };
+    unsafe {
+        filter.setDefaults();
+        let radius = NSString::from_str("inputRadius");
+        filter.setValue_forKey(Some(&*NSNumber::numberWithDouble(0.0)), &radius);
+        filter.setName(&NSString::from_str("blur"));
+        let item: &AnyObject = &filter;
+        let filters = NSArray::from_slice(&[item]);
+        layer.setFilters(Some(&filters));
+    }
+    // Let the blur bleed past the layer's edge instead of clipping at it.
+    layer.setMasksToBounds(false);
+}
+
+/// Remove `layer`'s blur filter after `delay` seconds, so the static break
+/// renders crisp once the entrance blur-in has finished.
+fn detach_blur_after(layer: Retained<CALayer>, delay: f64) {
+    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| unsafe {
+        layer.setFilters(None);
+    });
+    // SAFETY: scheduled on and fired from the main run loop, where this
+    // main-thread layer is safe to mutate.
+    unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
+    }
 }
 
 /// A Liquid Glass capsule button: a borderless `NSButton` (white title, click
@@ -303,8 +568,9 @@ fn make_button(
         None => title.to_string(),
     };
     let full_ns = NSString::from_str(&full);
-    let button =
-        unsafe { NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm) };
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
+    };
     button.setBordered(false);
 
     // Borderless buttons draw their title in the control colour; force white so
@@ -341,6 +607,7 @@ fn make_button(
     let cw = (button.frame().size.width + 48.0).max(120.0);
     let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(cw, BUTTON_HEIGHT));
     let capsule = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
+    capsule.setWantsLayer(true);
     capsule.setCornerRadius(BUTTON_HEIGHT / 2.0);
     capsule.setStyle(NSGlassEffectViewStyle::Regular);
     button.setFrame(rect);
