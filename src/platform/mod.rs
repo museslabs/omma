@@ -179,6 +179,7 @@ define_class!(
         fn toggle_enabled(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
                 if app.core.is_enabled() {
+                    app.break_screen.hide();
                     app.core.disable();
                 } else {
                     let _ = app.core.enable(SystemTime::now());
@@ -393,6 +394,7 @@ impl App {
                 self.refresh_menu_state();
             }
             Command::Disable => {
+                self.break_screen.hide();
                 self.core.disable();
                 self.refresh_menu_state();
             }
@@ -404,6 +406,7 @@ impl App {
     }
 
     fn quit(&mut self) {
+        self.break_screen.hide();
         let _ = std::fs::remove_file(ipc::socket_path());
         let app = NSApplication::sharedApplication(self.mtm);
         app.terminate(None);
