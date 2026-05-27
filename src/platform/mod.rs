@@ -6,6 +6,7 @@
 //! Objective-C target for menu items, buttons and the timer; it owns the whole
 //! [`App`] state in a `RefCell` ivar.
 
+mod activity;
 mod break_screen;
 mod idle;
 mod notifications;
@@ -23,11 +24,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
-use crate::config::Config;
+use crate::config::{Config, DndAction};
 use crate::ipc::{self, Command, Server};
 use crate::model::BreakType;
 use crate::scheduler::{Core, CoreEvent, State};
 
+use activity::DndChecker;
 use break_screen::BreakScreen;
 use notifications::Notifier;
 
@@ -79,6 +81,7 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    let dnd = DndChecker::from_config(&config.do_not_disturb);
     let notifier = if config.notification.enabled {
         Notifier::new()
     } else {
@@ -97,6 +100,7 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
         enable_item: None,
         status_item_label: None,
         break_screen: BreakScreen::new(mtm),
+        dnd,
         notifier,
         smart_pause_enabled,
         idle_threshold,
@@ -135,6 +139,7 @@ struct App {
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     break_screen: BreakScreen,
+    dnd: DndChecker,
     notifier: Option<Notifier>,
     smart_pause_enabled: bool,
     idle_threshold: f64,
@@ -297,6 +302,7 @@ impl App {
         }
         self.core = core;
 
+        self.dnd = DndChecker::from_config(&new.do_not_disturb);
         if new.notification.enabled {
             if self.notifier.is_none() {
                 self.notifier = Notifier::new();
@@ -329,6 +335,12 @@ impl App {
         match ev {
             CoreEvent::NextBreakScheduled { .. } => {}
             CoreEvent::PreBreak { name, .. } => {
+                // Do-not-disturb: skip/postpone instead of interrupting.
+                if self.dnd.should_suppress() {
+                    let skip = self.config.do_not_disturb.action == DndAction::Skip;
+                    let _ = self.core.suppress_break(now, skip);
+                    return;
+                }
                 if self.config.notification.enabled {
                     if let Some(n) = &self.notifier {
                         n.notify("Break coming up", &name);

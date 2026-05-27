@@ -37,6 +37,7 @@ pub struct Config {
     pub audible_alert: AudibleAlert,
     pub notification: NotificationCfg,
     pub keybindings: Keybindings,
+    pub do_not_disturb: DoNotDisturb,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +100,38 @@ pub struct Keybindings {
     pub postpone: String,
 }
 
+/// Conditions under which a break is suppressed (skipped or postponed) because
+/// the user is busy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DoNotDisturb {
+    pub enabled: bool,
+    /// Suppress when any of these apps is running. Matched (case-insensitive,
+    /// as a substring) against the app's name and bundle identifier — e.g.
+    /// `"zoom"` or `"us.zoom.xos"`. Needs no extra permission.
+    pub skip_when_app_running: Vec<String>,
+    /// Suppress only when one of these apps is frontmost. Needs no extra
+    /// permission.
+    pub skip_when_app_active: Vec<String>,
+    /// Suppress when the frontmost app is in fullscreen. Needs Accessibility
+    /// permission.
+    pub skip_when_fullscreen: bool,
+    /// Suppress when any on-screen window title matches one of these regular
+    /// expressions — e.g. `"Zoom Meeting"` for an active call, or a phrase
+    /// from a browser tab title. Needs Accessibility permission.
+    pub window_title_matches: Vec<String>,
+    /// What to do when suppressed: `"skip"` (move to the next break) or
+    /// `"postpone"` (try again after the postpone delay).
+    pub action: DndAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DndAction {
+    Skip,
+    Postpone,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -117,6 +150,7 @@ impl Default for Config {
             audible_alert: AudibleAlert::default(),
             notification: NotificationCfg::default(),
             keybindings: Keybindings::default(),
+            do_not_disturb: DoNotDisturb::default(),
         }
     }
 }
@@ -154,6 +188,19 @@ impl Default for AudibleAlert {
 impl Default for NotificationCfg {
     fn default() -> Self {
         NotificationCfg { enabled: true }
+    }
+}
+
+impl Default for DoNotDisturb {
+    fn default() -> Self {
+        DoNotDisturb {
+            enabled: true,
+            skip_when_app_running: vec![],
+            skip_when_app_active: vec![],
+            skip_when_fullscreen: true,
+            window_title_matches: vec![],
+            action: DndAction::Skip,
+        }
     }
 }
 
@@ -291,6 +338,7 @@ mod tests {
         let toml = Config::default_toml().unwrap();
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.short_break_interval, 900);
+        assert_eq!(parsed.do_not_disturb.action, DndAction::Skip);
         assert_eq!(parsed.keybindings.skip, "escape");
         assert_eq!(parsed.keybindings.postpone, "space");
         assert!(parsed.build_queue().is_some());
