@@ -236,7 +236,7 @@ impl BreakScreen {
                     detach_blur_after(layer, 0.75);
                 }
                 let label_begin = now + 0.68;
-                let buttons_begin = label_begin + 0.1;
+                let buttons_begin = label_begin + 0.28;
                 if let Some(layer) = name_label.layer() {
                     animate_delayed_entrance(layer, 28.0, label_begin, now);
                 }
