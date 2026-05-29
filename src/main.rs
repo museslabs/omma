@@ -32,6 +32,8 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn run_app() -> anyhow::Result<()> {
+    use crate::ipc::CommandTransport;
+
     let cfg = config::Config::load();
     if cfg.build_queue().is_none() {
         anyhow::bail!(
@@ -40,7 +42,7 @@ fn run_app() -> anyhow::Result<()> {
         );
     }
 
-    let server = match ipc::Server::bind() {
+    let server = match ipc::LocalSocketTransport.bind() {
         Ok(s) => s,
         Err(ipc::BindError::AlreadyRunning) => {
             eprintln!("omma is already running.");
