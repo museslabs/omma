@@ -20,11 +20,23 @@ fn main() {
         MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
     };
 
-    let scrim: f64 = std::env::var("SCRIM").ok().and_then(|s| s.parse().ok()).unwrap_or(0.6);
-    let tint: f64 = std::env::var("TINT").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    let style: isize = std::env::var("STYLE").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let scrim: f64 = std::env::var("SCRIM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.6);
+    let tint: f64 = std::env::var("TINT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let style: isize = std::env::var("STYLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let fs: bool = std::env::var("FS").map(|v| v == "1").unwrap_or(false);
-    let level: isize = std::env::var("LEVEL").ok().and_then(|s| s.parse().ok()).unwrap_or(1000);
+    let level: isize = std::env::var("LEVEL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
 
     let mtm = MainThreadMarker::new().unwrap();
     let app = NSApplication::sharedApplication(mtm);
@@ -84,9 +96,14 @@ fn main() {
     let msg = {
         let s = NSString::from_str("Focus on a point in the far distance");
         let l = NSTextField::labelWithString(&s, mtm);
-        l.setFrame(NSRect::new(NSPoint::new(cx - 450.0, cy + 70.0), NSSize::new(900.0, 44.0)));
+        l.setFrame(NSRect::new(
+            NSPoint::new(cx - 450.0, cy + 70.0),
+            NSSize::new(900.0, 44.0),
+        ));
         l.setAlignment(NSTextAlignment::Center);
-        l.setFont(Some(&NSFont::systemFontOfSize_weight(28.0, unsafe { NSFontWeightRegular })));
+        l.setFont(Some(&NSFont::systemFontOfSize_weight(28.0, unsafe {
+            NSFontWeightRegular
+        })));
         l.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.95)));
         l
     };
@@ -95,7 +112,10 @@ fn main() {
     let count = {
         let s = NSString::from_str("15");
         let l = NSTextField::labelWithString(&s, mtm);
-        l.setFrame(NSRect::new(NSPoint::new(cx - 250.0, cy - 90.0), NSSize::new(500.0, 130.0)));
+        l.setFrame(NSRect::new(
+            NSPoint::new(cx - 250.0, cy - 90.0),
+            NSSize::new(500.0, 130.0),
+        ));
         l.setAlignment(NSTextAlignment::Center);
         l.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
             100.0,
@@ -109,8 +129,7 @@ fn main() {
     // Glass capsule buttons (Control Center chip look).
     let make_btn = |title: &str| -> Retained<NSGlassEffectView> {
         let s = NSString::from_str(title);
-        let button =
-            unsafe { NSButton::buttonWithTitle_target_action(&s, None, None, mtm) };
+        let button = unsafe { NSButton::buttonWithTitle_target_action(&s, None, None, mtm) };
         button.setBordered(false);
         let font = NSFont::systemFontOfSize_weight(16.0, unsafe { NSFontWeightMedium });
         let astr =
@@ -149,8 +168,14 @@ fn main() {
     let gap = 16.0;
     let total = sw + pw + gap;
     let by = cy - 170.0;
-    skip.setFrame(NSRect::new(NSPoint::new(cx - total / 2.0, by), NSSize::new(sw, bh)));
-    postpone.setFrame(NSRect::new(NSPoint::new(cx - total / 2.0 + sw + gap, by), NSSize::new(pw, bh)));
+    skip.setFrame(NSRect::new(
+        NSPoint::new(cx - total / 2.0, by),
+        NSSize::new(sw, bh),
+    ));
+    postpone.setFrame(NSRect::new(
+        NSPoint::new(cx - total / 2.0 + sw + gap, by),
+        NSSize::new(pw, bh),
+    ));
     content.addSubview(&skip);
     content.addSubview(&postpone);
 

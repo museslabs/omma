@@ -34,7 +34,10 @@ fn main() -> anyhow::Result<()> {
 fn run_agent() -> anyhow::Result<()> {
     let cfg = config::Config::load();
     if cfg.build_queue().is_none() {
-        anyhow::bail!("no breaks configured in {}", config::config_path().display());
+        anyhow::bail!(
+            "no breaks configured in {}",
+            config::config_path().display()
+        );
     }
 
     let server = match ipc::Server::bind() {

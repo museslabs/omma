@@ -545,7 +545,11 @@ impl App {
     fn refresh_menu_state(&self) {
         if let Some(item) = &self.enable_item {
             let enabled = self.core.is_enabled();
-            item.setTitle(&NSString::from_str(if enabled { "Enabled" } else { "Disabled" }));
+            item.setTitle(&NSString::from_str(if enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }));
             // 1 = NSControlStateValueOn, 0 = off.
             item.setState(if enabled { 1 } else { 0 });
         }

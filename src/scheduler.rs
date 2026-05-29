@@ -431,7 +431,13 @@ mod tests {
         let mut core = core_with(false, true);
 
         let ev = core.start(base);
-        assert!(matches!(ev[0], CoreEvent::NextBreakScheduled { seconds_until: 60, .. }));
+        assert!(matches!(
+            ev[0],
+            CoreEvent::NextBreakScheduled {
+                seconds_until: 60,
+                ..
+            }
+        ));
         assert_eq!(core.state(), State::Waiting);
 
         // Nothing happens before the 60-second warning.
@@ -448,7 +454,14 @@ mod tests {
 
         // Break starts 2s later (pre_break_warning = 2).
         let ev = core.tick(at(base, 62));
-        assert!(matches!(ev[0], CoreEvent::StartBreak { duration: 3, allow_skip: true, .. }));
+        assert!(matches!(
+            ev[0],
+            CoreEvent::StartBreak {
+                duration: 3,
+                allow_skip: true,
+                ..
+            }
+        ));
         assert_eq!(core.state(), State::Break);
 
         // Countdown ticks each second; ends after `duration` seconds.
@@ -474,14 +487,20 @@ mod tests {
         // A fire that lands late (the run loop was busy drawing the overlay)
         // still shows "2"…
         let ev = core.tick(at_ms(base, 63_400));
-        assert!(matches!(ev.as_slice(), [CoreEvent::Countdown { remaining: 2, .. }]));
+        assert!(matches!(
+            ev.as_slice(),
+            [CoreEvent::Countdown { remaining: 2, .. }]
+        ));
 
         // …and the next on-schedule fire at 64s must show "1", not linger on
         // "2". The old code re-anchored the deadline to 64.4s, so this tick saw
         // now < deadline and emitted nothing — the digit hung for a full extra
         // second and the countdown fell behind the wall clock.
         let ev = core.tick(at(base, 64));
-        assert!(matches!(ev.as_slice(), [CoreEvent::Countdown { remaining: 1, .. }]));
+        assert!(matches!(
+            ev.as_slice(),
+            [CoreEvent::Countdown { remaining: 1, .. }]
+        ));
 
         // The break still ends exactly at 65s — three seconds after it began.
         let ev = core.tick(at(base, 65));
@@ -585,9 +604,13 @@ mod tests {
         core.postpone();
         let ev = core.tick(at(base, 62));
         // 5-minute postpone.
-        assert!(ev
-            .iter()
-            .any(|e| matches!(e, CoreEvent::NextBreakScheduled { seconds_until: 300, .. })));
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            CoreEvent::NextBreakScheduled {
+                seconds_until: 300,
+                ..
+            }
+        )));
         assert_eq!(core.current_break_name(), before);
         assert_eq!(core.state(), State::Waiting);
     }

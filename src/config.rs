@@ -297,7 +297,10 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let cfg = Config::default();
                 if let Err(e) = write_default(&path, &cfg) {
-                    eprintln!("omma: could not write default config to {}: {e}", path.display());
+                    eprintln!(
+                        "omma: could not write default config to {}: {e}",
+                        path.display()
+                    );
                 }
                 cfg
             }

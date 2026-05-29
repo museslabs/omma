@@ -33,17 +33,23 @@ impl DndChecker {
         let title_regexes = dnd
             .window_title_matches
             .iter()
-            .filter_map(|p| match RegexBuilder::new(p).case_insensitive(true).build() {
-                Ok(re) => Some(re),
-                Err(e) => {
-                    eprintln!("omma: ignoring invalid window_title_matches pattern {p:?}: {e}");
-                    None
-                }
-            })
+            .filter_map(
+                |p| match RegexBuilder::new(p).case_insensitive(true).build() {
+                    Ok(re) => Some(re),
+                    Err(e) => {
+                        eprintln!("omma: ignoring invalid window_title_matches pattern {p:?}: {e}");
+                        None
+                    }
+                },
+            )
             .collect::<Vec<_>>();
 
         let needs_ax = dnd.enabled && (dnd.skip_when_fullscreen || !title_regexes.is_empty());
-        let ax_trusted = if needs_ax { prompt_accessibility() } else { false };
+        let ax_trusted = if needs_ax {
+            prompt_accessibility()
+        } else {
+            false
+        };
 
         if needs_ax && !ax_trusted {
             eprintln!(
@@ -97,7 +103,8 @@ impl DndChecker {
             if self.check_fullscreen && frontmost_is_fullscreen(&workspace) {
                 return true;
             }
-            if !self.title_regexes.is_empty() && any_window_title_matches(&workspace, &self.title_regexes)
+            if !self.title_regexes.is_empty()
+                && any_window_title_matches(&workspace, &self.title_regexes)
             {
                 return true;
             }
@@ -120,9 +127,9 @@ fn app_matches(app: &objc2_app_kit::NSRunningApplication, patterns: &[String]) -
         .bundleIdentifier()
         .map(|s| s.to_string().to_lowercase())
         .unwrap_or_default();
-    patterns
-        .iter()
-        .any(|p| (!name.is_empty() && name.contains(p)) || (!bundle.is_empty() && bundle.contains(p)))
+    patterns.iter().any(|p| {
+        (!name.is_empty() && name.contains(p)) || (!bundle.is_empty() && bundle.contains(p))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +224,14 @@ unsafe fn cfstring_to_string(s: CFStringRef) -> Option<String> {
     let len = unsafe { CFStringGetLength(s) };
     let cap = (len.max(0) * 4 + 1) as usize;
     let mut buf = vec![0 as c_char; cap];
-    let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), buf.len() as CFIndex, CFSTRING_ENCODING_UTF8) };
+    let ok = unsafe {
+        CFStringGetCString(
+            s,
+            buf.as_mut_ptr(),
+            buf.len() as CFIndex,
+            CFSTRING_ENCODING_UTF8,
+        )
+    };
     if !ok {
         return None;
     }
