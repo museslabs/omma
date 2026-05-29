@@ -23,7 +23,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
-use super::{Backend, BreakOverlay, PreBreakNotice};
+use super::{Backend, BreakOverlay, Countdown, PreBreakDismissal, PreBreakNotice};
 
 use crate::config::{Config, DndAction};
 use crate::ipc::{self, Command, Server};
@@ -189,7 +189,7 @@ define_class!(
         fn toggle_enabled(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
                 if app.core.is_enabled() {
-                    app.hide_pre_break();
+                    app.dismiss_pre_break(PreBreakDismissal::Cancelled);
                     app.hide_break();
                     app.core.disable();
                 } else {
@@ -207,7 +207,7 @@ define_class!(
         #[unsafe(method(skipBreak:))]
         fn skip_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
-                app.hide_pre_break();
+                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 app.hide_break();
                 app.core.skip();
             });
@@ -216,7 +216,7 @@ define_class!(
         #[unsafe(method(postponeBreak:))]
         fn postpone_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
-                app.hide_pre_break();
+                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 app.hide_break();
                 app.core.postpone();
             });
@@ -226,7 +226,7 @@ define_class!(
         fn skip_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
             self.with_app(|app| {
-                app.hide_pre_break();
+                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 let events = app.core.suppress_break(now, true);
                 for ev in events {
                     app.handle_event(now, ev, self);
@@ -238,14 +238,14 @@ define_class!(
 
         #[unsafe(method(dismissWarning:))]
         fn dismiss_warning(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.hide_pre_break());
+            self.with_app(|app| app.dismiss_pre_break(PreBreakDismissal::Cancelled));
         }
 
         #[unsafe(method(postponeWarning:))]
         fn postpone_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
             self.with_app(|app| {
-                app.hide_pre_break();
+                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 let events = app.core.suppress_break(now, false);
                 for ev in events {
                     app.handle_event(now, ev, self);
@@ -290,7 +290,9 @@ impl App {
         }
         if matches!(self.core.state(), State::PreBreak) {
             if let Some(remaining) = self.core.seconds_until_break_start(now) {
-                self.update_pre_break_countdown(remaining);
+                self.update_countdown(Countdown::PreBreak {
+                    seconds_until_break: remaining,
+                });
             }
         }
 
@@ -356,7 +358,7 @@ impl App {
 
         self.dnd = DndChecker::from_config(&new.do_not_disturb);
         if !new.notification.enabled {
-            self.hide_pre_break();
+            self.dismiss_pre_break(PreBreakDismissal::Cancelled);
         }
         self.smart_pause_enabled = new.smart_pause.enabled;
         self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
@@ -372,7 +374,7 @@ impl App {
         let idle = self.idle_seconds();
         if idle >= self.idle_threshold {
             if matches!(self.core.state(), State::PreBreak) {
-                self.hide_pre_break();
+                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
             }
             self.core.pause_for_idle(now);
         } else if matches!(self.core.state(), State::Resting) {
@@ -390,7 +392,7 @@ impl App {
                 if self.should_suppress_break() {
                     let skip = self.config.do_not_disturb.action == DndAction::Skip;
                     let _ = self.core.suppress_break(now, skip);
-                    self.hide_pre_break();
+                    self.dismiss_pre_break(PreBreakDismissal::Cancelled);
                     return;
                 }
                 if self.config.notification.enabled {
@@ -427,7 +429,7 @@ impl App {
                 allow_postpone,
                 ..
             } => {
-                self.hide_pre_break_for_break();
+                self.dismiss_pre_break(PreBreakDismissal::BreakStarting);
                 let target: &AnyObject = delegate;
                 let skip_key = self.config.keybindings.skip.clone();
                 let postpone_key = self.config.keybindings.postpone.clone();
@@ -444,10 +446,10 @@ impl App {
                 );
             }
             CoreEvent::Countdown { remaining, total } => {
-                self.update_break_countdown(remaining, total);
+                self.update_countdown(Countdown::Break { remaining, total });
             }
             CoreEvent::StopBreak => {
-                self.hide_pre_break();
+                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 self.hide_break();
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.post_break {
@@ -467,7 +469,7 @@ impl App {
                 self.refresh_menu_state();
             }
             Command::Disable => {
-                self.hide_pre_break();
+                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
                 self.hide_break();
                 self.core.disable();
                 self.refresh_menu_state();
@@ -480,7 +482,7 @@ impl App {
     }
 
     fn quit(&mut self) {
-        self.hide_pre_break();
+        self.dismiss_pre_break(PreBreakDismissal::Cancelled);
         self.hide_break();
         let _ = std::fs::remove_file(ipc::socket_path());
         let app = NSApplication::sharedApplication(self.mtm);
@@ -614,16 +616,11 @@ impl Backend for App {
         );
     }
 
-    fn update_pre_break_countdown(&mut self, seconds_until_break: i64) {
-        self.pre_break_dialog.update_countdown(seconds_until_break);
-    }
-
-    fn hide_pre_break(&mut self) {
-        self.pre_break_dialog.hide();
-    }
-
-    fn hide_pre_break_for_break(&mut self) {
-        self.pre_break_dialog.hide_for_break();
+    fn dismiss_pre_break(&mut self, dismissal: PreBreakDismissal) {
+        match dismissal {
+            PreBreakDismissal::Cancelled => self.pre_break_dialog.hide(),
+            PreBreakDismissal::BreakStarting => self.pre_break_dialog.hide_for_break(),
+        }
     }
 
     fn show_break(&mut self, overlay: BreakOverlay<'_>, target: &Self::ActionTarget) {
@@ -638,8 +635,15 @@ impl Backend for App {
         );
     }
 
-    fn update_break_countdown(&mut self, remaining: i64, total: i64) {
-        self.break_screen.update_countdown(remaining, total);
+    fn update_countdown(&mut self, countdown: Countdown) {
+        match countdown {
+            Countdown::PreBreak {
+                seconds_until_break,
+            } => self.pre_break_dialog.update_countdown(seconds_until_break),
+            Countdown::Break { remaining, total } => {
+                self.break_screen.update_countdown(remaining, total);
+            }
+        }
     }
 
     fn hide_break(&mut self) {

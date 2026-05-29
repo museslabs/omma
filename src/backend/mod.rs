@@ -16,16 +16,24 @@ pub struct BreakOverlay<'a> {
     pub postpone_key: &'a str,
 }
 
+pub enum PreBreakDismissal {
+    Cancelled,
+    BreakStarting,
+}
+
+pub enum Countdown {
+    PreBreak { seconds_until_break: i64 },
+    Break { remaining: i64, total: i64 },
+}
+
 pub trait Backend {
     type ActionTarget: ?Sized;
 
     fn show_pre_break(&mut self, notice: PreBreakNotice<'_>, target: &Self::ActionTarget);
-    fn update_pre_break_countdown(&mut self, seconds_until_break: i64);
-    fn hide_pre_break(&mut self);
-    fn hide_pre_break_for_break(&mut self);
+    fn dismiss_pre_break(&mut self, dismissal: PreBreakDismissal);
 
     fn show_break(&mut self, overlay: BreakOverlay<'_>, target: &Self::ActionTarget);
-    fn update_break_countdown(&mut self, remaining: i64, total: i64);
+    fn update_countdown(&mut self, countdown: Countdown);
     fn hide_break(&mut self);
 
     fn play_sound(&self, name: &str);
