@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Action flags talk to an already-running agent.
+    // Action flags talk to an already-running app.
     if let Some(cmd) = args.client_command() {
         let running = ipc::send(cmd)?;
         if !running {
@@ -27,11 +27,11 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    run_agent()
+    run_app()
 }
 
 #[cfg(target_os = "macos")]
-fn run_agent() -> anyhow::Result<()> {
+fn run_app() -> anyhow::Result<()> {
     let cfg = config::Config::load();
     if cfg.build_queue().is_none() {
         anyhow::bail!(
@@ -53,6 +53,6 @@ fn run_agent() -> anyhow::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run_agent() -> anyhow::Result<()> {
+fn run_app() -> anyhow::Result<()> {
     anyhow::bail!("omma currently supports macOS only")
 }

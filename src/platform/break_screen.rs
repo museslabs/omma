@@ -256,7 +256,7 @@ impl BreakScreen {
 
         // A break can open from the run-loop timer, with another app in
         // the foreground. Only the *active* app can own a key window, and the
-        // cooperative `activate()` is throttled for a background agent waking on
+        // cooperative `activate()` is throttled for a background app waking on
         // a timer — so without forcing it the overlay never becomes key and the
         // Skip/Postpone keys are dead until the user clicks the screen.
         //
@@ -367,7 +367,7 @@ impl BreakScreen {
 
 /// Force the app to the foreground. We use the deprecated forceful activation
 /// deliberately: the cooperative `activate()` is routinely throttled for a
-/// background agent waking on a timer, leaving the break overlay unable to
+/// background app waking on a timer, leaving the break overlay unable to
 /// become key. The forceful variant is exactly the override this needs.
 #[allow(deprecated)]
 fn force_activate(app: &NSApplication) {

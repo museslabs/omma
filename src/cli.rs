@@ -1,4 +1,4 @@
-//! Command-line interface. With no flags, `omma` starts the menu-bar agent.
+//! Command-line interface. With no flags, `omma` starts the menu-bar app.
 //! The action flags are sent to an already-running instance over a local
 //! socket (see `ipc`).
 
@@ -51,7 +51,7 @@ pub struct Args {
 
 impl Args {
     /// If the user asked to control a running instance, return the command to
-    /// send. `None` means "run the agent".
+    /// send. `None` means "run the app".
     pub fn client_command(&self) -> Option<crate::ipc::Command> {
         use crate::ipc::Command;
         if self.quit {

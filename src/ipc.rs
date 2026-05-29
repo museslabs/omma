@@ -1,6 +1,6 @@
 //! A tiny line-based protocol over a Unix-domain socket so CLI invocations can
-//! drive the running agent. Binding the socket also enforces single-instance:
-//! if another agent already holds it, [`Server::bind`] returns
+//! drive the running app. Binding the socket also enforces single-instance:
+//! if another app already holds it, [`Server::bind`] returns
 //! [`BindError::AlreadyRunning`].
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -71,7 +71,7 @@ impl std::fmt::Display for BindError {
 }
 impl std::error::Error for BindError {}
 
-/// Server side, owned by the agent. Commands arrive on `rx`; the agent keeps
+/// Server side, owned by the app. Commands arrive on `rx`; the app keeps
 /// `status` up to date so `omma --status` can report it.
 pub struct Server {
     pub rx: Receiver<Command>,
@@ -82,7 +82,7 @@ impl Server {
     pub fn bind() -> Result<Server, BindError> {
         let path = socket_path();
 
-        // If the socket file exists, find out whether a live agent is behind
+        // If the socket file exists, find out whether a live app is behind
         // it. A successful connect means yes; otherwise it's stale — remove it.
         if path.exists() {
             match UnixStream::connect(&path) {
@@ -154,8 +154,8 @@ fn accept_loop(listener: UnixListener, tx: Sender<Command>, status: Arc<Mutex<St
     }
 }
 
-/// Client side: send one command to a running agent and print its reply.
-/// Returns `Ok(false)` if no agent is running.
+/// Client side: send one command to a running app and print its reply.
+/// Returns `Ok(false)` if no app is running.
 pub fn send(cmd: Command) -> std::io::Result<bool> {
     let path = socket_path();
     let mut stream = match UnixStream::connect(&path) {

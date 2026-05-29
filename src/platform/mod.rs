@@ -1,4 +1,4 @@
-//! The macOS agent: a status-bar item, a short-interval timer that drives the
+//! The macOS app: a status-bar item, a short-interval timer that drives the
 //! scheduler, and (in later modules) the break screen, sounds, warning dialog,
 //! idle detection and do-not-disturb checks.
 //!
@@ -63,7 +63,7 @@ fn tray_icon_image() -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-/// Entry point for the agent. Builds the status item, schedules the timer and
+/// Entry point for the app. Builds the status item, schedules the timer and
 /// runs the app. Blocks until the user quits.
 pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
@@ -131,7 +131,7 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// All agent state. Mutated only from the main thread, through the delegate.
+/// All app state. Mutated only from the main thread, through the delegate.
 struct App {
     core: Core,
     config: Config,
