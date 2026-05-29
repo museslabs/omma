@@ -254,7 +254,7 @@ impl BreakScreen {
             self.countdown_labels.push(count_label);
         }
 
-        // A break can open from the once-a-second timer, with another app in
+        // A break can open from the run-loop timer, with another app in
         // the foreground. Only the *active* app can own a key window, and the
         // cooperative `activate()` is throttled for a background agent waking on
         // a timer — so without forcing it the overlay never becomes key and the

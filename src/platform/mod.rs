@@ -1,4 +1,4 @@
-//! The macOS agent: a status-bar item, a once-a-second timer that drives the
+//! The macOS agent: a status-bar item, a short-interval timer that drives the
 //! scheduler, and (in later modules) the break screen, sounds, warning dialog,
 //! idle detection and do-not-disturb checks.
 //!
@@ -41,6 +41,11 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), 
 /// Side length, in points, of the menu-bar glyph. macOS scales the source art
 /// down to this and renders it at the screen's backing scale.
 const TRAY_ICON_SIZE: f64 = 18.0;
+/// Visual countdowns need a sub-second heartbeat because a one-second NSTimer
+/// can fire just before or after the scheduler's exact deadline, making digits
+/// visibly linger or jump. The scheduler remains deadline-based, so this only
+/// improves UI refresh latency.
+const TICK_INTERVAL_SECS: f64 = 0.2;
 
 /// Decode the embedded PNG into a template [`NSImage`] sized for the menu bar.
 /// Returns `None` if the bytes ever fail to decode, letting the caller fall
@@ -107,18 +112,20 @@ pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
     // Build the menu bar item, with the delegate as the action target.
     delegate.with_app(|app| app.build_status_item(&delegate));
 
-    // Drive the scheduler once a second. NSTimer retains its target, so the
-    // delegate (and thus all state) stays alive for the run loop's lifetime.
+    // Drive the scheduler frequently enough for second-boundary countdowns to
+    // change close to their actual deadlines. NSTimer retains its target, so
+    // the delegate (and thus all state) stays alive for the run loop's lifetime.
     let target: &AnyObject = &delegate;
     let _timer: Retained<NSTimer> = unsafe {
         NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            1.0,
+            TICK_INTERVAL_SECS,
             target,
             sel!(onTimer:),
             None,
             true,
         )
     };
+    _timer.setTolerance(0.05);
 
     app.run();
     Ok(())
@@ -259,7 +266,7 @@ impl Delegate {
 }
 
 impl App {
-    /// Called once a second from the timer.
+    /// Called by the main run-loop timer.
     fn on_tick(&mut self, now: SystemTime, delegate: &Delegate) {
         // Handle any CLI commands that came in over the socket.
         for cmd in self.server.drain() {

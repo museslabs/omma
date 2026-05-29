@@ -1,7 +1,7 @@
 //! The break scheduler: a deterministic, tick-driven state machine.
 //!
 //! [`Core`] owns no platform code and no threads. The UI layer calls
-//! [`Core::tick`] roughly once a second with the current time; the core
+//! [`Core::tick`] with the current time; the core
 //! advances its state and returns the [`CoreEvent`]s the UI should act on
 //! (show a warning, show the break screen, update the countdown, …). User
 //! actions (skip, postpone, take a break now, enable/disable) and environment
@@ -124,7 +124,7 @@ impl Core {
 
     /// Seconds until the next break warning fires, for status display.
     pub fn seconds_until_next(&self, now: SystemTime) -> Option<i64> {
-        self.warn_at.map(|w| duration_secs(now, w))
+        self.warn_at.map(|w| duration_secs_ceil(now, w))
     }
 
     /// Seconds until the fullscreen break starts while the warning is visible.
