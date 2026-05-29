@@ -1,6 +1,5 @@
-//! The macOS app: a status-bar item, a short-interval timer that drives the
-//! scheduler, and (in later modules) the break screen, sounds, warning dialog,
-//! idle detection and do-not-disturb checks.
+//! The macOS backend: status-bar UI, timer, break overlays, warning dialog,
+//! sounds, idle detection and do-not-disturb checks.
 //!
 //! Everything here runs on the main thread. The `Delegate` object is the
 //! Objective-C target for menu items, buttons and the timer; it owns the whole
@@ -24,11 +23,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
+use super::{Backend, BreakOverlay, PreBreakNotice};
+
 use crate::config::{Config, DndAction};
 use crate::ipc::{self, Command, Server};
 use crate::model::BreakType;
 use crate::scheduler::{Core, CoreEvent, State};
-
 use activity::DndChecker;
 use break_screen::BreakScreen;
 use pre_break_dialog::PreBreakDialog;
@@ -63,9 +63,17 @@ fn tray_icon_image() -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-/// Entry point for the app. Builds the status item, schedules the timer and
-/// runs the app. Blocks until the user quits.
-pub fn run(config: Config, server: Server) -> anyhow::Result<()> {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MacosBackend;
+
+impl MacosBackend {
+    pub fn run(self, config: Config, server: Server) -> anyhow::Result<()> {
+        run(config, server)
+    }
+}
+
+/// Build the status item, schedule the timer and run the app.
+fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
@@ -181,8 +189,8 @@ define_class!(
         fn toggle_enabled(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
                 if app.core.is_enabled() {
-                    app.pre_break_dialog.hide();
-                    app.break_screen.hide();
+                    app.hide_pre_break();
+                    app.hide_break();
                     app.core.disable();
                 } else {
                     let _ = app.core.enable(SystemTime::now());
@@ -193,14 +201,14 @@ define_class!(
 
         #[unsafe(method(openConfig:))]
         fn open_config(&self, _sender: *mut AnyObject) {
-            App::open_config_file();
+            self.with_app(|app| app.open_config_file());
         }
 
         #[unsafe(method(skipBreak:))]
         fn skip_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
-                app.pre_break_dialog.hide();
-                app.break_screen.hide();
+                app.hide_pre_break();
+                app.hide_break();
                 app.core.skip();
             });
         }
@@ -208,8 +216,8 @@ define_class!(
         #[unsafe(method(postponeBreak:))]
         fn postpone_break(&self, _sender: *mut AnyObject) {
             self.with_app(|app| {
-                app.pre_break_dialog.hide();
-                app.break_screen.hide();
+                app.hide_pre_break();
+                app.hide_break();
                 app.core.postpone();
             });
         }
@@ -218,7 +226,7 @@ define_class!(
         fn skip_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
             self.with_app(|app| {
-                app.pre_break_dialog.hide();
+                app.hide_pre_break();
                 let events = app.core.suppress_break(now, true);
                 for ev in events {
                     app.handle_event(now, ev, self);
@@ -230,14 +238,14 @@ define_class!(
 
         #[unsafe(method(dismissWarning:))]
         fn dismiss_warning(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.pre_break_dialog.hide());
+            self.with_app(|app| app.hide_pre_break());
         }
 
         #[unsafe(method(postponeWarning:))]
         fn postpone_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
             self.with_app(|app| {
-                app.pre_break_dialog.hide();
+                app.hide_pre_break();
                 let events = app.core.suppress_break(now, false);
                 for ev in events {
                     app.handle_event(now, ev, self);
@@ -282,7 +290,7 @@ impl App {
         }
         if matches!(self.core.state(), State::PreBreak) {
             if let Some(remaining) = self.core.seconds_until_break_start(now) {
-                self.pre_break_dialog.update_countdown(remaining);
+                self.update_pre_break_countdown(remaining);
             }
         }
 
@@ -348,7 +356,7 @@ impl App {
 
         self.dnd = DndChecker::from_config(&new.do_not_disturb);
         if !new.notification.enabled {
-            self.pre_break_dialog.hide();
+            self.hide_pre_break();
         }
         self.smart_pause_enabled = new.smart_pause.enabled;
         self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
@@ -361,10 +369,10 @@ impl App {
         if !self.smart_pause_enabled || !self.core.is_enabled() {
             return;
         }
-        let idle = idle::idle_seconds();
+        let idle = self.idle_seconds();
         if idle >= self.idle_threshold {
             if matches!(self.core.state(), State::PreBreak) {
-                self.pre_break_dialog.hide();
+                self.hide_pre_break();
             }
             self.core.pause_for_idle(now);
         } else if matches!(self.core.state(), State::Resting) {
@@ -379,34 +387,37 @@ impl App {
             CoreEvent::NextBreakScheduled { .. } => {}
             CoreEvent::PreBreak { name, .. } => {
                 // Do-not-disturb: skip/postpone instead of interrupting.
-                if self.dnd.should_suppress() {
+                if self.should_suppress_break() {
                     let skip = self.config.do_not_disturb.action == DndAction::Skip;
                     let _ = self.core.suppress_break(now, skip);
-                    self.pre_break_dialog.hide();
+                    self.hide_pre_break();
                     return;
                 }
                 if self.config.notification.enabled {
                     let target: &AnyObject = delegate;
-                    let kb = &self.config.keybindings;
+                    let skip_key = self.config.keybindings.skip.clone();
+                    let postpone_key = self.config.keybindings.postpone.clone();
                     let allow_skip = !self.config.strict_break;
                     let allow_postpone = self.config.allow_postpone && !self.config.strict_break;
                     let seconds_until_break = self
                         .core
                         .seconds_until_break_start(now)
                         .unwrap_or(self.config.pre_break_warning);
-                    self.pre_break_dialog.show(
-                        &name,
-                        allow_skip,
-                        allow_postpone,
-                        seconds_until_break,
-                        &kb.skip,
-                        &kb.postpone,
+                    self.show_pre_break(
+                        PreBreakNotice {
+                            name: &name,
+                            allow_skip,
+                            allow_postpone,
+                            seconds_until_break,
+                            skip_key: &skip_key,
+                            postpone_key: &postpone_key,
+                        },
                         target,
                     );
                 }
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.pre_break {
-                    sound::play(&alert.pre_break_sound);
+                    self.play_sound(&alert.pre_break_sound);
                 }
             }
             CoreEvent::StartBreak {
@@ -416,28 +427,31 @@ impl App {
                 allow_postpone,
                 ..
             } => {
-                self.pre_break_dialog.hide_for_break();
+                self.hide_pre_break_for_break();
                 let target: &AnyObject = delegate;
-                let kb = &self.config.keybindings;
-                self.break_screen.show(
-                    &name,
-                    duration,
-                    allow_skip,
-                    allow_postpone,
-                    &kb.skip,
-                    &kb.postpone,
+                let skip_key = self.config.keybindings.skip.clone();
+                let postpone_key = self.config.keybindings.postpone.clone();
+                self.show_break(
+                    BreakOverlay {
+                        name: &name,
+                        duration,
+                        allow_skip,
+                        allow_postpone,
+                        skip_key: &skip_key,
+                        postpone_key: &postpone_key,
+                    },
                     target,
                 );
             }
             CoreEvent::Countdown { remaining, total } => {
-                self.break_screen.update_countdown(remaining, total);
+                self.update_break_countdown(remaining, total);
             }
             CoreEvent::StopBreak => {
-                self.pre_break_dialog.hide();
-                self.break_screen.hide();
+                self.hide_pre_break();
+                self.hide_break();
                 let alert = &self.config.audible_alert;
                 if alert.enabled && alert.post_break {
-                    sound::play(&alert.post_break_sound);
+                    self.play_sound(&alert.post_break_sound);
                 }
             }
         }
@@ -453,8 +467,8 @@ impl App {
                 self.refresh_menu_state();
             }
             Command::Disable => {
-                self.pre_break_dialog.hide();
-                self.break_screen.hide();
+                self.hide_pre_break();
+                self.hide_break();
                 self.core.disable();
                 self.refresh_menu_state();
             }
@@ -466,8 +480,8 @@ impl App {
     }
 
     fn quit(&mut self) {
-        self.pre_break_dialog.hide();
-        self.break_screen.hide();
+        self.hide_pre_break();
+        self.hide_break();
         let _ = std::fs::remove_file(ipc::socket_path());
         let app = NSApplication::sharedApplication(self.mtm);
         app.terminate(None);
@@ -583,8 +597,68 @@ impl App {
             },
         }
     }
+}
 
-    fn open_config_file() {
+impl Backend for App {
+    type ActionTarget = AnyObject;
+
+    fn show_pre_break(&mut self, notice: PreBreakNotice<'_>, target: &Self::ActionTarget) {
+        self.pre_break_dialog.show(
+            notice.name,
+            notice.allow_skip,
+            notice.allow_postpone,
+            notice.seconds_until_break,
+            notice.skip_key,
+            notice.postpone_key,
+            target,
+        );
+    }
+
+    fn update_pre_break_countdown(&mut self, seconds_until_break: i64) {
+        self.pre_break_dialog.update_countdown(seconds_until_break);
+    }
+
+    fn hide_pre_break(&mut self) {
+        self.pre_break_dialog.hide();
+    }
+
+    fn hide_pre_break_for_break(&mut self) {
+        self.pre_break_dialog.hide_for_break();
+    }
+
+    fn show_break(&mut self, overlay: BreakOverlay<'_>, target: &Self::ActionTarget) {
+        self.break_screen.show(
+            overlay.name,
+            overlay.duration,
+            overlay.allow_skip,
+            overlay.allow_postpone,
+            overlay.skip_key,
+            overlay.postpone_key,
+            target,
+        );
+    }
+
+    fn update_break_countdown(&mut self, remaining: i64, total: i64) {
+        self.break_screen.update_countdown(remaining, total);
+    }
+
+    fn hide_break(&mut self) {
+        self.break_screen.hide();
+    }
+
+    fn play_sound(&self, name: &str) {
+        sound::play(name);
+    }
+
+    fn idle_seconds(&self) -> f64 {
+        idle::idle_seconds()
+    }
+
+    fn should_suppress_break(&self) -> bool {
+        self.dnd.should_suppress()
+    }
+
+    fn open_config_file(&self) {
         let path = crate::config::config_path();
         let _ = std::process::Command::new("open").arg(path).status();
     }

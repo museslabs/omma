@@ -1,11 +1,9 @@
+mod backend;
 mod cli;
 mod config;
 mod ipc;
 mod model;
 mod scheduler;
-
-#[cfg(target_os = "macos")]
-mod platform;
 
 use clap::Parser;
 
@@ -51,7 +49,7 @@ fn run_app() -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("could not start omma: {e}"),
     };
 
-    platform::run(cfg, server)
+    backend::macos::MacosBackend.run(cfg, server)
 }
 
 #[cfg(not(target_os = "macos"))]
