@@ -28,7 +28,7 @@ const PANEL_W: f64 = 340.0;
 const PANEL_H: f64 = 112.0;
 const BUTTON_W: f64 = 140.0;
 const BUTTON_H: f64 = 36.0;
-const HIDE_DURATION: f64 = 0.2;
+const HIDE_DURATION: f64 = 0.24;
 
 define_class!(
     #[unsafe(super(NSPanel))]
@@ -101,6 +101,7 @@ impl PreBreakDialog {
         glass.setCornerRadius(26.0);
         glass.setStyle(NSGlassEffectViewStyle::Regular);
         if let Some(layer) = glass.layer() {
+            center_layer_anchor(&layer, PANEL_W, PANEL_H);
             layer.setMasksToBounds(true);
         }
         content.addSubview(&glass);
@@ -175,7 +176,7 @@ impl PreBreakDialog {
 
         if let Some(layer) = glass.layer() {
             let now = CACurrentMediaTime();
-            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.18, false), None);
+            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.16, false), None);
             layer.addAnimation_forKey(&slide_y(28.0, 0.0, now, 0.22, false), None);
         }
         if let Some(layer) = body.layer() {
@@ -218,8 +219,10 @@ impl PreBreakDialog {
         if let Some(glass) = self.glass.take() {
             if let Some(layer) = glass.layer() {
                 let now = CACurrentMediaTime();
+                attach_blur(&layer);
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-                layer.addAnimation_forKey(&slide_y(0.0, -12.0, now, HIDE_DURATION, true), None);
+                layer.addAnimation_forKey(&blur_radius(0.0, 22.0, now, HIDE_DURATION, true), None);
+                layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, true), None);
             }
         }
         if let Some(body) = self.body.take() {
@@ -227,7 +230,7 @@ impl PreBreakDialog {
                 let now = CACurrentMediaTime();
                 attach_blur(&layer);
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-                layer.addAnimation_forKey(&blur_radius(0.0, 12.0, now, HIDE_DURATION, true), None);
+                layer.addAnimation_forKey(&blur_radius(0.0, 18.0, now, HIDE_DURATION, true), None);
             }
         }
         self.countdown_label = None;
@@ -478,6 +481,11 @@ fn slide_y(
     let anim = basic("transform.translation.y", from, to, begin, duration);
     apply_fill(&anim, hold);
     anim
+}
+
+fn center_layer_anchor(layer: &CALayer, width: f64, height: f64) {
+    layer.setAnchorPoint(NSPoint::new(0.5, 0.5));
+    layer.setPosition(NSPoint::new(width / 2.0, height / 2.0));
 }
 
 fn attach_blur(layer: &CALayer) {
