@@ -24,11 +24,10 @@ use objc2_quartz_core::{
 };
 
 const PANEL_LEVEL: isize = 1000;
-const PANEL_W: f64 = 392.0;
-const PANEL_H: f64 = 104.0;
-const BUTTON_W: f64 = 152.0;
+const PANEL_W: f64 = 340.0;
+const PANEL_H: f64 = 112.0;
+const BUTTON_W: f64 = 140.0;
 const BUTTON_H: f64 = 36.0;
-const BUTTON_GAP: f64 = 14.0;
 const HIDE_DURATION: f64 = 0.2;
 
 define_class!(
@@ -50,6 +49,7 @@ pub struct PreBreakDialog {
     window: Option<Retained<PreBreakWindow>>,
     glass: Option<Retained<NSGlassEffectView>>,
     body: Option<Retained<NSView>>,
+    countdown_label: Option<Retained<NSTextField>>,
 }
 
 impl PreBreakDialog {
@@ -59,6 +59,7 @@ impl PreBreakDialog {
             window: None,
             glass: None,
             body: None,
+            countdown_label: None,
         }
     }
 
@@ -67,6 +68,7 @@ impl PreBreakDialog {
         _name: &str,
         allow_skip: bool,
         allow_postpone: bool,
+        seconds_until_break: i64,
         skip_key: &str,
         postpone_key: &str,
         target: &AnyObject,
@@ -116,10 +118,23 @@ impl PreBreakDialog {
             14.0,
             unsafe { NSFontWeightSemibold },
             0.76,
-            NSRect::new(NSPoint::new(24.0, 65.0), NSSize::new(PANEL_W - 48.0, 18.0)),
+            NSTextAlignment::Left,
+            NSRect::new(NSPoint::new(28.0, 65.0), NSSize::new(130.0, 18.0)),
             1,
         );
         body.addSubview(&title);
+
+        let countdown = make_label(
+            self.mtm,
+            &fmt_seconds(seconds_until_break),
+            28.0,
+            unsafe { NSFontWeightMedium },
+            0.95,
+            NSTextAlignment::Left,
+            NSRect::new(NSPoint::new(28.0, 25.0), NSSize::new(130.0, 34.0)),
+            1,
+        );
+        body.addSubview(&countdown);
 
         let primary_title = if allow_skip { "Skip" } else { "Dismiss" };
         let primary_action = if allow_skip {
@@ -128,17 +143,8 @@ impl PreBreakDialog {
             sel!(dismissWarning:)
         };
         let primary_key = if allow_skip { skip_key } else { "" };
-        let total_buttons_w = if allow_postpone {
-            BUTTON_W * 2.0 + BUTTON_GAP
-        } else {
-            BUTTON_W
-        };
-        let first_button_x = (PANEL_W - total_buttons_w) / 2.0;
-        let primary_x = if allow_postpone {
-            first_button_x + BUTTON_W + BUTTON_GAP
-        } else {
-            first_button_x
-        };
+        let button_x = PANEL_W - BUTTON_W - 28.0;
+        let primary_y = if allow_postpone { 18.0 } else { 38.0 };
         let primary = make_button(
             self.mtm,
             primary_title,
@@ -146,7 +152,7 @@ impl PreBreakDialog {
             target,
             primary_action,
             NSRect::new(
-                NSPoint::new(primary_x, 18.0),
+                NSPoint::new(button_x, primary_y),
                 NSSize::new(BUTTON_W, BUTTON_H),
             ),
         );
@@ -160,7 +166,7 @@ impl PreBreakDialog {
                 target,
                 sel!(postponeWarning:),
                 NSRect::new(
-                    NSPoint::new(first_button_x, 18.0),
+                    NSPoint::new(button_x, 58.0),
                     NSSize::new(BUTTON_W, BUTTON_H),
                 ),
             );
@@ -188,6 +194,13 @@ impl PreBreakDialog {
         self.window = Some(window);
         self.glass = Some(glass);
         self.body = Some(body);
+        self.countdown_label = Some(countdown);
+    }
+
+    pub fn update_countdown(&mut self, seconds_until_break: i64) {
+        if let Some(label) = &self.countdown_label {
+            label.setStringValue(&NSString::from_str(&fmt_seconds(seconds_until_break)));
+        }
     }
 
     pub fn hide(&mut self) {
@@ -217,6 +230,7 @@ impl PreBreakDialog {
                 layer.addAnimation_forKey(&blur_radius(0.0, 12.0, now, HIDE_DURATION, true), None);
             }
         }
+        self.countdown_label = None;
 
         let mtm = self.mtm;
         let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
@@ -280,16 +294,21 @@ fn make_label(
     size: f64,
     weight: f64,
     alpha: f64,
+    alignment: NSTextAlignment,
     frame: NSRect,
     max_lines: isize,
 ) -> Retained<NSTextField> {
     let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     label.setFrame(frame);
-    label.setAlignment(NSTextAlignment::Center);
+    label.setAlignment(alignment);
     label.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight)));
     label.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, alpha)));
     label.setMaximumNumberOfLines(max_lines);
     label
+}
+
+fn fmt_seconds(seconds: i64) -> String {
+    format!("{}s", seconds.max(0))
 }
 
 fn make_button(

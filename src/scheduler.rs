@@ -127,6 +127,11 @@ impl Core {
         self.warn_at.map(|w| duration_secs(now, w))
     }
 
+    /// Seconds until the fullscreen break starts while the warning is visible.
+    pub fn seconds_until_break_start(&self, now: SystemTime) -> Option<i64> {
+        self.break_at.map(|b| duration_secs_ceil(now, b))
+    }
+
     pub fn current_break_name(&self) -> &str {
         &self.queue.current().name
     }
@@ -370,6 +375,20 @@ fn duration_secs(from: SystemTime, to: SystemTime) -> i64 {
     }
 }
 
+fn duration_secs_ceil(from: SystemTime, to: SystemTime) -> i64 {
+    match to.duration_since(from) {
+        Ok(d) => {
+            let secs = d.as_secs() as i64;
+            if d.subsec_nanos() > 0 {
+                secs + 1
+            } else {
+                secs
+            }
+        }
+        Err(e) => -(e.duration().as_secs() as i64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +441,10 @@ mod tests {
         let ev = core.tick(at(base, 60));
         assert!(matches!(ev[0], CoreEvent::PreBreak { .. }));
         assert_eq!(core.state(), State::PreBreak);
+        assert_eq!(core.seconds_until_break_start(at(base, 60)), Some(2));
+        assert_eq!(core.seconds_until_break_start(at_ms(base, 60_001)), Some(2));
+        assert_eq!(core.seconds_until_break_start(at(base, 61)), Some(1));
+        assert_eq!(core.seconds_until_break_start(at_ms(base, 61_001)), Some(1));
 
         // Break starts 2s later (pre_break_warning = 2).
         let ev = core.tick(at(base, 62));

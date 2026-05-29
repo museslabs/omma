@@ -273,6 +273,11 @@ impl App {
         for ev in events {
             self.handle_event(now, ev, delegate);
         }
+        if matches!(self.core.state(), State::PreBreak) {
+            if let Some(remaining) = self.core.seconds_until_break_start(now) {
+                self.pre_break_dialog.update_countdown(remaining);
+            }
+        }
 
         self.refresh_status_label(now);
         self.publish_status(now);
@@ -378,10 +383,15 @@ impl App {
                     let kb = &self.config.keybindings;
                     let allow_skip = !self.config.strict_break;
                     let allow_postpone = self.config.allow_postpone && !self.config.strict_break;
+                    let seconds_until_break = self
+                        .core
+                        .seconds_until_break_start(now)
+                        .unwrap_or(self.config.pre_break_warning);
                     self.pre_break_dialog.show(
                         &name,
                         allow_skip,
                         allow_postpone,
+                        seconds_until_break,
                         &kb.skip,
                         &kb.postpone,
                         target,
