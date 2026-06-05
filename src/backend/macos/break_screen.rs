@@ -12,7 +12,7 @@ use objc2_app_kit::{
     NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor,
     NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightHeavy, NSFontWeightMedium,
     NSFontWeightRegular, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
-    NSPanel, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
+    NSImage, NSPanel, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
@@ -22,8 +22,9 @@ use objc2_foundation::{
     NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer,
 };
 use objc2_quartz_core::{
-    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation,
-    CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
+    kCAFillModeBackwards, kCAFillModeBoth, kCAGravityResizeAspectFill,
+    kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation, CACurrentMediaTime, CALayer,
+    CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
 };
 
 /// above normal windows and fullscreen apps
@@ -33,6 +34,12 @@ const SCRIM_ALPHA: f64 = 0.25;
 const BUTTON_HEIGHT: f64 = 46.0;
 /// foreground entry/exit blur radius, the "materialise from blur" look
 const BLUR_RADIUS: f64 = 16.0;
+/// resting blur on a custom background image, eyeballed to match the FullScreenUI desktop blur
+const IMAGE_BLUR_RADIUS_RESTING: f64 = 16.0;
+/// image enters from this radius and animates down to resting, sharpening with the foreground
+const IMAGE_BLUR_RADIUS_START: f64 = 60.0;
+/// below 1.0 the dark void bleeds through and darkens the image so text stays legible
+const IMAGE_OPACITY: f32 = 0.75;
 const EXIT_DURATION: f64 = 0.32;
 
 define_class!(
@@ -83,6 +90,7 @@ impl BreakScreen {
         allow_postpone: bool,
         skip_key: &str,
         postpone_key: &str,
+        image_path: Option<&str>,
         target: &AnyObject,
     ) {
         self.teardown_now();
@@ -124,6 +132,14 @@ impl BreakScreen {
             blur.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             blur.setState(NSVisualEffectState::Active);
             backdrop.addSubview(&blur);
+
+            // optional custom image, between blur and scrim. silently ignored if loading fails.
+            // a permanent gaussian blur keeps it a soft backdrop instead of a sharp photo.
+            let image_view =
+                image_path.and_then(|p| make_image_view(mtm, p, full, screen.backingScaleFactor()));
+            if let Some(view) = &image_view {
+                backdrop.addSubview(view);
+            }
 
             let scrim = NSBox::initWithFrame(NSBox::alloc(mtm), full);
             scrim.setBoxType(NSBoxType::Custom);
@@ -207,7 +223,7 @@ impl BreakScreen {
                 }
                 if let Some(layer) = foreground.layer() {
                     let begin = now + 0.06;
-                    attach_blur(&layer);
+                    attach_blur(&layer, 0.0);
                     layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.55, false), None);
                     layer.addAnimation_forKey(
                         &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, false),
@@ -215,6 +231,20 @@ impl BreakScreen {
                     );
                     // drop the transition blur once the entrance settles so the break renders crisp
                     detach_blur_after(layer, 0.75);
+                }
+                // image holds at its resting radius after the sharpen-in, no detach
+                if let Some(layer) = image_view.as_ref().and_then(|v| v.layer()) {
+                    let begin = now + 0.06;
+                    layer.addAnimation_forKey(
+                        &blur_radius(
+                            IMAGE_BLUR_RADIUS_START,
+                            IMAGE_BLUR_RADIUS_RESTING,
+                            begin,
+                            0.55,
+                            false,
+                        ),
+                        None,
+                    );
                 }
                 let label_begin = now + 0.68;
                 let buttons_begin = label_begin + 0.28;
@@ -280,7 +310,7 @@ impl BreakScreen {
         }
         for foreground in &self.foregrounds {
             if let Some(layer) = foreground.layer() {
-                attach_blur(&layer);
+                attach_blur(&layer, 0.0);
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, true), None);
                 layer.addAnimation_forKey(
                     &blur_radius(0.0, BLUR_RADIUS, now, EXIT_DURATION, true),
@@ -374,6 +404,38 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<BreakWindow> {
     // we hold a Retained ref for the screen's lifetime and orderOut instead of closing
     unsafe { window.setReleasedWhenClosed(false) };
     window
+}
+
+fn make_image_view(
+    mtm: MainThreadMarker,
+    path: &str,
+    frame: NSRect,
+    backing_scale: f64,
+) -> Option<Retained<NSView>> {
+    let expanded = expand_tilde(path);
+    let ns_path = NSString::from_str(&expanded);
+    let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &ns_path)?;
+    let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
+    view.setWantsLayer(true);
+    let layer = view.layer()?;
+    let image_obj: &AnyObject = &*image;
+    unsafe {
+        layer.setContents(Some(image_obj));
+        layer.setContentsGravity(kCAGravityResizeAspectFill);
+    }
+    layer.setContentsScale(backing_scale);
+    layer.setOpacity(IMAGE_OPACITY);
+    attach_blur(&layer, IMAGE_BLUR_RADIUS_RESTING);
+    Some(view)
+}
+
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    path.to_string()
 }
 
 fn make_label(
@@ -484,7 +546,7 @@ fn slide_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
 
 /// invisible until `begin`, then springs in and resolves from blur to sharp
 fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, now: f64) {
-    attach_blur(&layer);
+    attach_blur(&layer, 0.0);
     layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, false), None);
     layer.addAnimation_forKey(&blur_radius(12.0, 0.0, begin, 0.42, false), None);
     layer.addAnimation_forKey(&slide_y(from_y, begin), None);
@@ -514,13 +576,13 @@ fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSS
 
     let now = CACurrentMediaTime();
     if let Some(layer) = outgoing.layer() {
-        attach_blur(&layer);
+        attach_blur(&layer, 0.0);
         layer.addAnimation_forKey(&fade(1.0, 0.0, now, 0.3, true), None);
         layer.addAnimation_forKey(&scale_hold(1.0, 0.88, now, 0.3, true), None);
         layer.addAnimation_forKey(&blur_radius(0.0, 10.0, now, 0.3, true), None);
     }
     if let Some(layer) = label.layer() {
-        attach_blur(&layer);
+        attach_blur(&layer, 0.0);
         layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.3, false), None);
         layer.addAnimation_forKey(&scale(1.12, 1.0, now, 0.3), None);
         layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now, 0.3, false), None);
@@ -529,8 +591,9 @@ fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSS
     remove_view_after(outgoing, 0.34);
 }
 
-/// makes filters.blur.inputRadius animatable
-fn attach_blur(layer: &CALayer) {
+/// makes filters.blur.inputRadius animatable. `resting` is the radius held when no animation
+/// is running, pass 0.0 for a transient blur or a non-zero to keep the layer permanently soft.
+fn attach_blur(layer: &CALayer, resting: f64) {
     let name = NSString::from_str("CIGaussianBlur");
     let Some(filter) = (unsafe { CIFilter::filterWithName(&name) }) else {
         return;
@@ -538,7 +601,7 @@ fn attach_blur(layer: &CALayer) {
     unsafe {
         filter.setDefaults();
         let radius = NSString::from_str("inputRadius");
-        filter.setValue_forKey(Some(&*NSNumber::numberWithDouble(0.0)), &radius);
+        filter.setValue_forKey(Some(&*NSNumber::numberWithDouble(resting)), &radius);
         filter.setName(&NSString::from_str("blur"));
         let item: &AnyObject = &filter;
         let filters = NSArray::from_slice(&[item]);

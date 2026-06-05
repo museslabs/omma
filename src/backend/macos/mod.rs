@@ -424,6 +424,7 @@ impl App {
                 duration,
                 allow_skip,
                 allow_postpone,
+                image,
                 ..
             } => {
                 self.dismiss_pre_break(PreBreakDismissal::BreakStarting);
@@ -438,6 +439,7 @@ impl App {
                         allow_postpone,
                         skip_key: &skip_key,
                         postpone_key: &postpone_key,
+                        image: image.as_deref(),
                     },
                     target,
                 );
@@ -666,6 +668,7 @@ impl Backend for App {
             overlay.allow_postpone,
             overlay.skip_key,
             overlay.postpone_key,
+            overlay.image,
             target,
         );
     }

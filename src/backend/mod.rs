@@ -14,6 +14,7 @@ pub struct BreakOverlay<'a> {
     pub allow_postpone: bool,
     pub skip_key: &'a str,
     pub postpone_key: &'a str,
+    pub image: Option<&'a str>,
 }
 
 pub enum PreBreakDismissal {
