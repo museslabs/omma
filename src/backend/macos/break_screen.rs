@@ -9,23 +9,24 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightHeavy, NSFontWeightMedium,
-    NSFontWeightRegular, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
-    NSImage, NSPanel, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont,
+    NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView, NSImage, NSPanel, NSScreen,
+    NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
+    NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSMutableAttributedString, NSNumber, NSObjectNSKeyValueCoding,
-    NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize,
+    NSString, NSTimer,
 };
 use objc2_quartz_core::{
     kCAFillModeBackwards, kCAFillModeBoth, kCAGravityResizeAspectFill,
     kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation, CACurrentMediaTime, CALayer,
     CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
 };
+
+use super::glass_button::{make_glass_button, GlassButtonStyle};
 
 /// above normal windows and fullscreen apps
 const SCREEN_SAVER_LEVEL: isize = 1000;
@@ -189,15 +190,23 @@ impl BreakScreen {
             let gap = 16.0;
             let mut buttons: Vec<Retained<NSGlassEffectView>> = Vec::new();
             if allow_skip {
-                buttons.push(make_button(mtm, "Skip", skip_key, target, sel!(skipBreak:)));
+                buttons.push(make_glass_button(
+                    mtm,
+                    "Skip",
+                    skip_key,
+                    target,
+                    sel!(skipBreak:),
+                    GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
+                ));
             }
             if allow_postpone {
-                buttons.push(make_button(
+                buttons.push(make_glass_button(
                     mtm,
                     "Postpone",
                     postpone_key,
                     target,
                     sel!(postponeBreak:),
+                    GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
                 ));
             }
             if !buttons.is_empty() {
@@ -628,127 +637,6 @@ fn remove_view_after(view: Retained<NSTextField>, delay: f64) {
     // SAFETY: scheduled on and fired from the main run loop
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
-    }
-}
-
-/// borderless NSButton wrapped in a capsule NSGlassEffectView. sized to fit, caller sets origin.
-/// `key` is the config spec, eg "escape" or "cmd+s". if it names a key it becomes the button's
-/// key equivalent and a dim hint is appended to the title.
-fn make_button(
-    mtm: MainThreadMarker,
-    title: &str,
-    key: &str,
-    target: &AnyObject,
-    action: objc2::runtime::Sel,
-) -> Retained<NSGlassEffectView> {
-    let keybind = parse_keybind(key);
-
-    // optional dim key hint trails the label
-    let title_ns = NSString::from_str(title);
-    let full = match &keybind {
-        Some(kb) => format!("{title}  {}", kb.label),
-        None => title.to_string(),
-    };
-    let full_ns = NSString::from_str(&full);
-    let button = unsafe {
-        NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
-    };
-    button.setBordered(false);
-
-    // borderless buttons draw title in the control colour, force white for the dark glass
-    let font = NSFont::systemFontOfSize_weight(16.0, unsafe { NSFontWeightMedium });
-    let attributed =
-        NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &full_ns);
-    let white = NSColor::whiteColor();
-    let title_range = NSRange::new(0, title_ns.length());
-    unsafe {
-        attributed.addAttribute_value_range(NSForegroundColorAttributeName, &*white, title_range);
-        attributed.addAttribute_value_range(NSFontAttributeName, &*font, title_range);
-    }
-    if keybind.is_some() {
-        let hint_font = NSFont::systemFontOfSize_weight(13.0, unsafe { NSFontWeightMedium });
-        let dim = NSColor::colorWithWhite_alpha(1.0, 0.55);
-        let start = title_ns.length();
-        let hint_range = NSRange::new(start, full_ns.length() - start);
-        unsafe {
-            attributed.addAttribute_value_range(NSForegroundColorAttributeName, &*dim, hint_range);
-            attributed.addAttribute_value_range(NSFontAttributeName, &*hint_font, hint_range);
-        }
-    }
-    button.setAttributedTitle(&attributed);
-
-    if let Some(kb) = &keybind {
-        button.setKeyEquivalent(&kb.key_equivalent);
-        button.setKeyEquivalentModifierMask(kb.mods);
-    }
-
-    button.sizeToFit();
-
-    let cw = (button.frame().size.width + 48.0).max(120.0);
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(cw, BUTTON_HEIGHT));
-    let capsule = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
-    capsule.setWantsLayer(true);
-    capsule.setCornerRadius(BUTTON_HEIGHT / 2.0);
-    capsule.setStyle(NSGlassEffectViewStyle::Regular);
-    button.setFrame(rect);
-    capsule.setContentView(Some(&button));
-    capsule
-}
-
-struct KeyBind {
-    key_equivalent: Retained<NSString>,
-    mods: NSEventModifierFlags,
-    label: String,
-}
-
-/// `+`-separated tokens: modifiers (cmd, shift, alt/option, ctrl) plus exactly one key
-fn parse_keybind(spec: &str) -> Option<KeyBind> {
-    let mut mods = NSEventModifierFlags::empty();
-    let mut symbols = String::new();
-    let mut key: Option<(String, String)> = None;
-    for token in spec.split('+') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        match token.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "super" | "meta" => {
-                mods |= NSEventModifierFlags::Command;
-                symbols.push('⌘');
-            }
-            "shift" => {
-                mods |= NSEventModifierFlags::Shift;
-                symbols.push('⇧');
-            }
-            "alt" | "option" | "opt" => {
-                mods |= NSEventModifierFlags::Option;
-                symbols.push('⌥');
-            }
-            "ctrl" | "control" => {
-                mods |= NSEventModifierFlags::Control;
-                symbols.push('⌃');
-            }
-            _ => key = Some(key_equivalent_for(token)),
-        }
-    }
-    let (equiv, label) = key?;
-    Some(KeyBind {
-        key_equivalent: NSString::from_str(&equiv),
-        mods,
-        label: format!("{symbols}{label}"),
-    })
-}
-
-/// returns (key-equivalent, display label). named keys resolve to control characters,
-/// anything else is taken as a literal char, lowercased so a plain letter matches without shift.
-fn key_equivalent_for(token: &str) -> (String, String) {
-    match token.to_ascii_lowercase().as_str() {
-        "escape" | "esc" => ("\u{1b}".into(), "Esc".into()),
-        "space" => (" ".into(), "Space".into()),
-        "enter" | "return" => ("\r".into(), "↩".into()),
-        "tab" => ("\t".into(), "⇥".into()),
-        "delete" | "backspace" => ("\u{8}".into(), "⌫".into()),
-        other => (other.to_string(), other.to_uppercase()),
     }
 }
 

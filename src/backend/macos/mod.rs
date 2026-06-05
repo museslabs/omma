@@ -3,6 +3,7 @@
 
 mod activity;
 mod break_screen;
+mod glass_button;
 mod idle;
 mod pre_break_dialog;
 mod sound;

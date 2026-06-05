@@ -3,23 +3,24 @@ use core::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSColor, NSEventModifierFlags,
-    NSFont, NSFontAttributeName, NSFontWeightMedium, NSFontWeightSemibold,
-    NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle, NSPanel, NSScreen,
+    NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSFontWeightMedium,
+    NSFontWeightSemibold, NSGlassEffectView, NSGlassEffectViewStyle, NSPanel, NSScreen,
     NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSMutableAttributedString, NSNumber, NSObjectNSKeyValueCoding,
-    NSPoint, NSRange, NSRect, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize,
+    NSString, NSTimer,
 };
 use objc2_quartz_core::{
     kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation,
     CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
 };
+
+use super::glass_button::{make_glass_button, GlassButtonStyle};
 
 const PANEL_LEVEL: isize = 1000;
 const PANEL_W: f64 = 340.0;
@@ -144,31 +145,33 @@ impl PreBreakDialog {
         let primary_key = if allow_skip { skip_key } else { "" };
         let button_x = PANEL_W - BUTTON_W - 28.0;
         let primary_y = if allow_postpone { 18.0 } else { 38.0 };
-        let primary = make_button(
+        let primary = make_glass_button(
             self.mtm,
             primary_title,
             primary_key,
             target,
             primary_action,
-            NSRect::new(
-                NSPoint::new(button_x, primary_y),
-                NSSize::new(BUTTON_W, BUTTON_H),
-            ),
+            GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
         );
+        primary.setFrame(NSRect::new(
+            NSPoint::new(button_x, primary_y),
+            NSSize::new(BUTTON_W, BUTTON_H),
+        ));
         body.addSubview(&primary);
 
         if allow_postpone {
-            let postpone = make_button(
+            let postpone = make_glass_button(
                 self.mtm,
                 "Postpone",
                 postpone_key,
                 target,
                 sel!(postponeWarning:),
-                NSRect::new(
-                    NSPoint::new(button_x, 58.0),
-                    NSSize::new(BUTTON_W, BUTTON_H),
-                ),
+                GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
             );
+            postpone.setFrame(NSRect::new(
+                NSPoint::new(button_x, 58.0),
+                NSSize::new(BUTTON_W, BUTTON_H),
+            ));
             body.addSubview(&postpone);
         }
 
@@ -308,116 +311,6 @@ fn make_label(
 
 fn fmt_seconds(seconds: i64) -> String {
     format!("{}s", seconds.max(0))
-}
-
-fn make_button(
-    mtm: MainThreadMarker,
-    title: &str,
-    key: &str,
-    target: &AnyObject,
-    action: objc2::runtime::Sel,
-    frame: NSRect,
-) -> Retained<NSGlassEffectView> {
-    let keybind = parse_keybind(key);
-    let title_ns = NSString::from_str(title);
-    let full = match &keybind {
-        Some(kb) => format!("{title}  {}", kb.label),
-        None => title.to_string(),
-    };
-    let full_ns = NSString::from_str(&full);
-    let button = unsafe {
-        NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
-    };
-    button.setBordered(false);
-
-    let attributed =
-        NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &full_ns);
-    let font = NSFont::systemFontOfSize_weight(13.0, unsafe { NSFontWeightMedium });
-    let range = NSRange::new(0, title_ns.length());
-    unsafe {
-        attributed.addAttribute_value_range(
-            NSForegroundColorAttributeName,
-            &*NSColor::whiteColor(),
-            range,
-        );
-        attributed.addAttribute_value_range(NSFontAttributeName, &*font, range);
-    }
-    if keybind.is_some() {
-        let hint_font = NSFont::systemFontOfSize_weight(11.0, unsafe { NSFontWeightMedium });
-        let dim = NSColor::colorWithWhite_alpha(1.0, 0.55);
-        let start = title_ns.length();
-        let hint_range = NSRange::new(start, full_ns.length() - start);
-        unsafe {
-            attributed.addAttribute_value_range(NSForegroundColorAttributeName, &*dim, hint_range);
-            attributed.addAttribute_value_range(NSFontAttributeName, &*hint_font, hint_range);
-        }
-    }
-    button.setAttributedTitle(&attributed);
-    if let Some(kb) = &keybind {
-        button.setKeyEquivalent(&kb.key_equivalent);
-        button.setKeyEquivalentModifierMask(kb.mods);
-    }
-    button.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
-
-    let capsule = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-    capsule.setCornerRadius(BUTTON_H / 2.0);
-    capsule.setStyle(NSGlassEffectViewStyle::Regular);
-    capsule.setContentView(Some(&button));
-    capsule
-}
-
-struct KeyBind {
-    key_equivalent: Retained<NSString>,
-    mods: NSEventModifierFlags,
-    label: String,
-}
-
-fn parse_keybind(spec: &str) -> Option<KeyBind> {
-    let mut mods = NSEventModifierFlags::empty();
-    let mut symbols = String::new();
-    let mut key: Option<(String, String)> = None;
-    for token in spec.split('+') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        match token.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "super" | "meta" => {
-                mods |= NSEventModifierFlags::Command;
-                symbols.push('⌘');
-            }
-            "shift" => {
-                mods |= NSEventModifierFlags::Shift;
-                symbols.push('⇧');
-            }
-            "alt" | "option" | "opt" => {
-                mods |= NSEventModifierFlags::Option;
-                symbols.push('⌥');
-            }
-            "ctrl" | "control" => {
-                mods |= NSEventModifierFlags::Control;
-                symbols.push('⌃');
-            }
-            _ => key = Some(key_equivalent_for(token)),
-        }
-    }
-    let (equiv, label) = key?;
-    Some(KeyBind {
-        key_equivalent: NSString::from_str(&equiv),
-        mods,
-        label: format!("{symbols}{label}"),
-    })
-}
-
-fn key_equivalent_for(token: &str) -> (String, String) {
-    match token.to_ascii_lowercase().as_str() {
-        "escape" | "esc" => ("\u{1b}".into(), "Esc".into()),
-        "space" => (" ".into(), "Space".into()),
-        "enter" | "return" => ("\r".into(), "↩".into()),
-        "tab" => ("\t".into(), "⇥".into()),
-        "delete" | "backspace" => ("\u{8}".into(), "⌫".into()),
-        other => (other.to_string(), other.to_uppercase()),
-    }
 }
 
 fn apply_fill(anim: &CABasicAnimation, hold: bool) {
