@@ -8,39 +8,39 @@ use clap::Parser;
     disable_help_subcommand = true
 )]
 pub struct Args {
-    /// Take the next scheduled break now.
+    /// take the next scheduled break now
     #[arg(short = 't', long = "take-break")]
     pub take_break: bool,
 
-    /// Take a short break now.
+    /// take a short break now
     #[arg(short = 's', long = "short-break")]
     pub short_break: bool,
 
-    /// Take a long break now.
+    /// take a long break now
     #[arg(short = 'l', long = "long-break")]
     pub long_break: bool,
 
-    /// Disable the running instance.
+    /// disable the running instance
     #[arg(short = 'd', long)]
     pub disable: bool,
 
-    /// Enable the running instance.
+    /// enable the running instance
     #[arg(short = 'e', long)]
     pub enable: bool,
 
-    /// Quit the running instance.
+    /// quit the running instance
     #[arg(short = 'q', long)]
     pub quit: bool,
 
-    /// Reload the config of the running instance now.
+    /// reload the running instance's config
     #[arg(long)]
     pub reload: bool,
 
-    /// Print the status of the running instance and exit.
+    /// print the running instance's status and exit
     #[arg(long)]
     pub status: bool,
 
-    /// Print the default configuration as TOML and exit.
+    /// print the default config as toml and exit
     #[arg(long = "print-default-config")]
     pub print_default_config: bool,
 }
