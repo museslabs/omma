@@ -76,15 +76,11 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
-    let queue = config
-        .build_queue()
-        .ok_or_else(|| anyhow::anyhow!("no breaks configured"))?;
-
-    let postpone_secs = config.postpone_duration.max(0);
+    let queue = config.build_queue()?;
     let mut core = Core::new(
         queue,
         config.pre_break_warning,
-        postpone_secs,
+        config.postpone_duration,
         config.allow_postpone,
         config.strict_break,
     );
@@ -95,7 +91,7 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
 
     let dnd = DndChecker::from_config(&config.do_not_disturb);
     let smart_pause_enabled = config.smart_pause.enabled;
-    let idle_threshold = config.smart_pause.idle_seconds.max(1) as f64;
+    let idle_threshold = config.smart_pause.idle_seconds as f64;
     let config_mtime = file_mtime(&crate::config::config_path());
 
     let state = App {
@@ -329,22 +325,21 @@ impl App {
             }
         };
 
-        self.apply_config(new, now);
+        if let Err(e) = self.apply_config(new, now) {
+            eprintln!("omma: config not reloaded: {e}");
+            return;
+        }
         eprintln!("omma: reloaded config");
     }
 
-    fn apply_config(&mut self, new: Config, now: SystemTime) {
-        let Some(queue) = new.build_queue() else {
-            eprintln!("omma: config has no breaks; keeping previous schedule");
-            return;
-        };
+    fn apply_config(&mut self, new: Config, now: SystemTime) -> anyhow::Result<()> {
+        let queue = new.build_queue()?;
 
         let was_enabled = self.core.is_enabled();
-        let postpone_secs = new.postpone_duration.max(0);
         let mut core = Core::new(
             queue,
             new.pre_break_warning,
-            postpone_secs,
+            new.postpone_duration,
             new.allow_postpone,
             new.strict_break,
         );
@@ -360,9 +355,10 @@ impl App {
             self.dismiss_pre_break(PreBreakDismissal::Cancelled);
         }
         self.smart_pause_enabled = new.smart_pause.enabled;
-        self.idle_threshold = new.smart_pause.idle_seconds.max(1) as f64;
+        self.idle_threshold = new.smart_pause.idle_seconds as f64;
         self.config = new;
         self.refresh_menu_state();
+        Ok(())
     }
 
     fn apply_smart_pause(&mut self, now: SystemTime, delegate: &Delegate) {

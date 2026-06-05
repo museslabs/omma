@@ -32,13 +32,6 @@ fn run_app() -> anyhow::Result<()> {
     use crate::ipc::CommandTransport;
 
     let cfg = config::Config::load();
-    if cfg.build_queue().is_none() {
-        anyhow::bail!(
-            "no breaks configured in {}",
-            config::config_path().display()
-        );
-    }
-
     let server = match ipc::LocalSocketTransport.bind() {
         Ok(s) => s,
         Err(ipc::BindError::AlreadyRunning) => {

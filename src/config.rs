@@ -207,7 +207,46 @@ fn default_long_breaks() -> Vec<BreakCfg> {
 }
 
 impl Config {
-    pub fn build_queue(&self) -> Option<BreakQueue> {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mut errors = Vec::new();
+
+        require_positive(
+            "short_break_interval",
+            self.short_break_interval,
+            &mut errors,
+        );
+        require_positive("long_break_interval", self.long_break_interval, &mut errors);
+        require_positive(
+            "short_break_duration",
+            self.short_break_duration,
+            &mut errors,
+        );
+        require_positive("long_break_duration", self.long_break_duration, &mut errors);
+        require_non_negative("pre_break_warning", self.pre_break_warning, &mut errors);
+        require_positive("postpone_duration", self.postpone_duration, &mut errors);
+        require_positive(
+            "smart_pause.idle_seconds",
+            self.smart_pause.idle_seconds,
+            &mut errors,
+        );
+
+        validate_breaks("short_breaks", &self.short_breaks, &mut errors);
+        validate_breaks("long_breaks", &self.long_breaks, &mut errors);
+
+        if self.short_breaks.is_empty() && self.long_breaks.is_empty() {
+            errors.push("at least one short_breaks or long_breaks entry is required".to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("{}", errors.join("\n"))
+        }
+    }
+
+    pub fn build_queue(&self) -> anyhow::Result<BreakQueue> {
+        self.validate()?;
+
         let shorts = self
             .short_breaks
             .iter()
@@ -237,6 +276,7 @@ impl Config {
             shorts,
             longs,
         )
+        .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))
     }
 
     pub fn default_toml() -> anyhow::Result<String> {
@@ -247,8 +287,15 @@ impl Config {
     pub fn load() -> Config {
         let path = config_path();
         match std::fs::read_to_string(&path) {
-            Ok(data) => match toml::from_str(&data) {
-                Ok(cfg) => cfg,
+            Ok(data) => match toml::from_str::<Config>(&data) {
+                Ok(cfg) => match cfg.validate() {
+                    Ok(()) => cfg,
+                    Err(e) => {
+                        eprintln!("omma: invalid config at {}: {e}", path.display());
+                        eprintln!("omma: falling back to defaults");
+                        Config::default()
+                    }
+                },
                 Err(e) => {
                     eprintln!("omma: invalid config at {}: {e}", path.display());
                     eprintln!("omma: falling back to defaults");
@@ -269,6 +316,33 @@ impl Config {
                 eprintln!("omma: could not read config at {}: {e}", path.display());
                 Config::default()
             }
+        }
+    }
+}
+
+fn require_positive(name: &str, value: i64, errors: &mut Vec<String>) {
+    if value <= 0 {
+        errors.push(format!("{name} must be greater than 0, got {value}"));
+    }
+}
+
+fn require_non_negative(name: &str, value: i64, errors: &mut Vec<String>) {
+    if value < 0 {
+        errors.push(format!("{name} must be 0 or greater, got {value}"));
+    }
+}
+
+fn validate_breaks(section: &str, breaks: &[BreakCfg], errors: &mut Vec<String>) {
+    for (idx, b) in breaks.iter().enumerate() {
+        let prefix = format!("{section}[{idx}]");
+        if b.name.trim().is_empty() {
+            errors.push(format!("{prefix}.name must not be empty"));
+        }
+        if let Some(interval) = b.interval {
+            require_positive(&format!("{prefix}.interval"), interval, errors);
+        }
+        if let Some(duration) = b.duration {
+            require_positive(&format!("{prefix}.duration"), duration, errors);
         }
     }
 }
@@ -305,7 +379,7 @@ mod tests {
         assert_eq!(parsed.do_not_disturb.action, DndAction::Skip);
         assert_eq!(parsed.keybindings.skip, "escape");
         assert_eq!(parsed.keybindings.postpone, "space");
-        assert!(parsed.build_queue().is_some());
+        assert!(parsed.build_queue().is_ok());
     }
 
     #[test]
@@ -314,5 +388,25 @@ mod tests {
         assert_eq!(cfg.short_break_interval, 20);
         assert_eq!(cfg.long_break_interval, 4500);
         assert!(cfg.smart_pause.enabled);
+    }
+
+    #[test]
+    fn validation_rejects_non_positive_schedule_values() {
+        let mut cfg = Config::default();
+        cfg.short_break_interval = 0;
+        cfg.long_breaks[0].duration = Some(-1);
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("short_break_interval must be greater than 0"));
+        assert!(err.contains("long_breaks[0].duration must be greater than 0"));
+    }
+
+    #[test]
+    fn validation_rejects_empty_break_names() {
+        let mut cfg = Config::default();
+        cfg.short_breaks[0].name = " \t ".into();
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("short_breaks[0].name must not be empty"));
     }
 }
