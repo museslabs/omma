@@ -160,7 +160,7 @@ impl Default for DoNotDisturb {
             enabled: true,
             skip_when_app_running: vec![],
             skip_when_app_active: vec![],
-            skip_when_fullscreen: true,
+            skip_when_fullscreen: false,
             window_title_matches: vec![],
             action: DndAction::Skip,
         }
@@ -377,6 +377,7 @@ mod tests {
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.short_break_interval, 900);
         assert_eq!(parsed.do_not_disturb.action, DndAction::Skip);
+        assert!(!parsed.do_not_disturb.skip_when_fullscreen);
         assert_eq!(parsed.keybindings.skip, "escape");
         assert_eq!(parsed.keybindings.postpone, "space");
         assert!(parsed.build_queue().is_ok());

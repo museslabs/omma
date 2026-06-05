@@ -114,8 +114,8 @@ enabled = true
 skip_when_app_running = ["zoom"]   # matched against app name & bundle id
 skip_when_app_active  = []         # only when the app is frontmost
 
-# Need Accessibility permission (you'll be prompted once):
-skip_when_fullscreen  = true       # frontmost window is fullscreen
+# Need Accessibility permission when enabled (you'll be prompted once):
+skip_when_fullscreen  = false      # set true to skip while the frontmost window is fullscreen
 window_title_matches  = ["Zoom Meeting", "Plain"]  # patterns vs. window titles
 
 action = "skip"                    # "skip" (advance) or "postpone" (retry later)
