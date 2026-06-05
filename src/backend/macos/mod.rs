@@ -20,12 +20,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
-use super::{Backend, BreakOverlay, Countdown, PreBreakDismissal, PreBreakNotice};
+use super::{Backend, BreakOverlay, Countdown, PreBreakDismissal, PreBreakNotice, StatusSnapshot};
 
-use crate::config::{Config, DndAction};
-use crate::ipc::{self, Command, Server};
+use crate::config::Config;
+use crate::ipc::{self, Server};
 use crate::model::BreakType;
-use crate::scheduler::{Core, CoreEvent, State};
+use crate::scheduler::State;
 use activity::DndChecker;
 use break_screen::BreakScreen;
 use pre_break_dialog::PreBreakDialog;
@@ -43,6 +43,8 @@ const TRAY_ICON_INCOMING_WINDOW_SECS: i64 = 60;
 /// sub-second so a 1s NSTimer firing near a deadline doesn't make digits linger or jump.
 /// the scheduler stays deadline-based, this only affects ui refresh latency.
 const TICK_INTERVAL_SECS: f64 = 0.2;
+
+type AppController = crate::controller::Controller<App, Server>;
 
 /// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
@@ -76,28 +78,11 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
-    let queue = config.build_queue()?;
-    let mut core = Core::new(
-        queue,
-        config.pre_break_warning,
-        config.postpone_duration,
-        config.allow_postpone,
-        config.strict_break,
-    );
-    core.start(SystemTime::now());
-
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let dnd = DndChecker::from_config(&config.do_not_disturb);
-    let smart_pause_enabled = config.smart_pause.enabled;
-    let idle_threshold = config.smart_pause.idle_seconds as f64;
-    let config_mtime = file_mtime(&crate::config::config_path());
-
     let state = App {
-        core,
-        config,
-        server,
         mtm,
         status_item: None,
         tray_icon: tray_icon_image(TRAY_ICON_SVG),
@@ -108,14 +93,14 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
         break_screen: BreakScreen::new(mtm),
         pre_break_dialog: PreBreakDialog::new(mtm),
         dnd,
-        smart_pause_enabled,
-        idle_threshold,
-        config_mtime,
     };
 
-    let delegate = Delegate::new(mtm, state);
+    let controller = crate::controller::Controller::new(config, server, state)?;
+    let delegate = Delegate::new(mtm, controller);
 
-    delegate.with_app(|app| app.build_status_item(&delegate));
+    delegate.with_controller(|controller| {
+        controller.backend_mut().build_status_item(&delegate);
+    });
 
     // NSTimer retains its target, so the delegate (and all state) stays alive for the run loop
     let target: &AnyObject = &delegate;
@@ -136,9 +121,6 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
 
 /// mutated only from the main thread, via the delegate
 struct App {
-    core: Core,
-    config: Config,
-    server: Server,
     mtm: MainThreadMarker,
     status_item: Option<Retained<NSStatusItem>>,
     tray_icon: Option<Retained<NSImage>>,
@@ -149,342 +131,97 @@ struct App {
     break_screen: BreakScreen,
     pre_break_dialog: PreBreakDialog,
     dnd: DndChecker,
-    smart_pause_enabled: bool,
-    idle_threshold: f64,
-    config_mtime: Option<SystemTime>,
 }
 
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaDelegate"]
-    #[ivars = RefCell<App>]
+    #[ivars = RefCell<AppController>]
     struct Delegate;
 
     impl Delegate {
         #[unsafe(method(onTimer:))]
         fn on_timer(&self, _timer: *mut AnyObject) {
             let now = SystemTime::now();
-            self.with_app(|app| app.on_tick(now, self));
+            let target: &AnyObject = self;
+            self.with_controller(|controller| controller.on_tick(now, target));
         }
 
         #[unsafe(method(takeBreak:))]
         fn take_break(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.core.take_break(None));
+            self.with_controller(|controller| controller.take_break(None));
         }
 
         #[unsafe(method(takeShortBreak:))]
         fn take_short_break(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.core.take_break(Some(BreakType::Short)));
+            self.with_controller(|controller| controller.take_break(Some(BreakType::Short)));
         }
 
         #[unsafe(method(takeLongBreak:))]
         fn take_long_break(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.core.take_break(Some(BreakType::Long)));
+            self.with_controller(|controller| controller.take_break(Some(BreakType::Long)));
         }
 
         #[unsafe(method(toggleEnabled:))]
         fn toggle_enabled(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| {
-                if app.core.is_enabled() {
-                    app.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                    app.hide_break();
-                    app.core.disable();
-                } else {
-                    let _ = app.core.enable(SystemTime::now());
-                }
-                app.refresh_menu_state();
-            });
+            let now = SystemTime::now();
+            self.with_controller(|controller| controller.toggle_enabled(now));
         }
 
         #[unsafe(method(openConfig:))]
         fn open_config(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.open_config_file());
+            self.with_controller(|controller| controller.open_config_file());
         }
 
         #[unsafe(method(skipBreak:))]
         fn skip_break(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| {
-                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                app.hide_break();
-                app.core.skip();
-            });
+            self.with_controller(|controller| controller.skip_break());
         }
 
         #[unsafe(method(postponeBreak:))]
         fn postpone_break(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| {
-                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                app.hide_break();
-                app.core.postpone();
-            });
+            self.with_controller(|controller| controller.postpone_break());
         }
 
         #[unsafe(method(skipWarning:))]
         fn skip_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
-            self.with_app(|app| {
-                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                let events = app.core.suppress_break(now, true);
-                for ev in events {
-                    app.handle_event(now, ev, self);
-                }
-                app.refresh_status_label(now);
-                app.publish_status(now);
-            });
+            let target: &AnyObject = self;
+            self.with_controller(|controller| controller.skip_warning(now, target));
         }
 
         #[unsafe(method(dismissWarning:))]
         fn dismiss_warning(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.dismiss_pre_break(PreBreakDismissal::Cancelled));
+            self.with_controller(|controller| controller.dismiss_warning());
         }
 
         #[unsafe(method(postponeWarning:))]
         fn postpone_warning(&self, _sender: *mut AnyObject) {
             let now = SystemTime::now();
-            self.with_app(|app| {
-                app.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                let events = app.core.suppress_break(now, false);
-                for ev in events {
-                    app.handle_event(now, ev, self);
-                }
-                app.refresh_status_label(now);
-                app.publish_status(now);
-            });
+            let target: &AnyObject = self;
+            self.with_controller(|controller| controller.postpone_warning(now, target));
         }
 
         #[unsafe(method(quitApp:))]
         fn quit_app(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.quit());
+            self.with_controller(|controller| controller.quit());
         }
     }
 );
 
 impl Delegate {
-    fn new(mtm: MainThreadMarker, app: App) -> Retained<Delegate> {
-        let this = Delegate::alloc(mtm).set_ivars(RefCell::new(app));
+    fn new(mtm: MainThreadMarker, controller: AppController) -> Retained<Delegate> {
+        let this = Delegate::alloc(mtm).set_ivars(RefCell::new(controller));
         unsafe { msg_send![super(this), init] }
     }
 
-    fn with_app<R>(&self, f: impl FnOnce(&mut App) -> R) -> R {
+    fn with_controller<R>(&self, f: impl FnOnce(&mut AppController) -> R) -> R {
         f(&mut self.ivars().borrow_mut())
     }
 }
 
 impl App {
-    fn on_tick(&mut self, now: SystemTime, delegate: &Delegate) {
-        // drain any cli commands from the socket
-        for cmd in self.server.drain() {
-            self.handle_command(cmd);
-        }
-
-        self.maybe_reload_config(now);
-        self.apply_smart_pause(now, delegate);
-
-        let events = self.core.tick(now);
-        for ev in events {
-            self.handle_event(now, ev, delegate);
-        }
-        if matches!(self.core.state(), State::PreBreak) {
-            if let Some(remaining) = self.core.seconds_until_break_start(now) {
-                self.update_countdown(Countdown::PreBreak {
-                    seconds_until_break: remaining,
-                });
-            }
-        }
-
-        self.refresh_status_icon(now);
-        self.refresh_status_label(now);
-        self.publish_status(now);
-    }
-
-    fn maybe_reload_config(&mut self, now: SystemTime) {
-        // don't swap the schedule mid-break, retry on a later tick
-        if matches!(self.core.state(), State::PreBreak | State::Break) {
-            return;
-        }
-
-        let path = crate::config::config_path();
-        let mtime = file_mtime(&path);
-        if mtime == self.config_mtime {
-            return;
-        }
-        self.config_mtime = mtime;
-
-        // parse directly so a transient/partial write doesn't clobber the running config
-        // with defaults. only apply a clean parse.
-        let data = match std::fs::read_to_string(&path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let new: Config = match toml::from_str(&data) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("omma: config not reloaded (parse error): {e}");
-                return;
-            }
-        };
-
-        if let Err(e) = self.apply_config(new, now) {
-            eprintln!("omma: config not reloaded: {e}");
-            return;
-        }
-        eprintln!("omma: reloaded config");
-    }
-
-    fn apply_config(&mut self, new: Config, now: SystemTime) -> anyhow::Result<()> {
-        let queue = new.build_queue()?;
-
-        let was_enabled = self.core.is_enabled();
-        let mut core = Core::new(
-            queue,
-            new.pre_break_warning,
-            new.postpone_duration,
-            new.allow_postpone,
-            new.strict_break,
-        );
-        if was_enabled {
-            let _ = core.start(now);
-        } else {
-            core.disable();
-        }
-        self.core = core;
-
-        self.dnd = DndChecker::from_config(&new.do_not_disturb);
-        if !new.notification.enabled {
-            self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-        }
-        self.smart_pause_enabled = new.smart_pause.enabled;
-        self.idle_threshold = new.smart_pause.idle_seconds as f64;
-        self.config = new;
-        self.refresh_menu_state();
-        Ok(())
-    }
-
-    fn apply_smart_pause(&mut self, now: SystemTime, delegate: &Delegate) {
-        if !self.smart_pause_enabled || !self.core.is_enabled() {
-            return;
-        }
-        let idle = self.idle_seconds();
-        if idle >= self.idle_threshold {
-            if matches!(self.core.state(), State::PreBreak) {
-                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-            }
-            self.core.pause_for_idle(now);
-        } else if matches!(self.core.state(), State::Resting) {
-            for ev in self.core.resume_from_idle(now) {
-                self.handle_event(now, ev, delegate);
-            }
-        }
-    }
-
-    fn handle_event(&mut self, now: SystemTime, ev: CoreEvent, delegate: &Delegate) {
-        match ev {
-            CoreEvent::NextBreakScheduled { .. } => {}
-            CoreEvent::PreBreak { name, .. } => {
-                // dnd: skip/postpone instead of interrupting
-                if self.should_suppress_break() {
-                    let skip = self.config.do_not_disturb.action == DndAction::Skip;
-                    let _ = self.core.suppress_break(now, skip);
-                    self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                    return;
-                }
-                if self.config.notification.enabled {
-                    let target: &AnyObject = delegate;
-                    let skip_key = self.config.keybindings.skip.clone();
-                    let postpone_key = self.config.keybindings.postpone.clone();
-                    let allow_skip = !self.config.strict_break;
-                    let allow_postpone = self.config.allow_postpone && !self.config.strict_break;
-                    let seconds_until_break = self
-                        .core
-                        .seconds_until_break_start(now)
-                        .unwrap_or(self.config.pre_break_warning);
-                    self.show_pre_break(
-                        PreBreakNotice {
-                            name: &name,
-                            allow_skip,
-                            allow_postpone,
-                            seconds_until_break,
-                            skip_key: &skip_key,
-                            postpone_key: &postpone_key,
-                        },
-                        target,
-                    );
-                }
-                let alert = &self.config.audible_alert;
-                if alert.enabled && alert.pre_break {
-                    self.play_sound(&alert.pre_break_sound);
-                }
-            }
-            CoreEvent::StartBreak {
-                name,
-                duration,
-                allow_skip,
-                allow_postpone,
-                image,
-                ..
-            } => {
-                self.dismiss_pre_break(PreBreakDismissal::BreakStarting);
-                let target: &AnyObject = delegate;
-                let skip_key = self.config.keybindings.skip.clone();
-                let postpone_key = self.config.keybindings.postpone.clone();
-                self.show_break(
-                    BreakOverlay {
-                        name: &name,
-                        duration,
-                        allow_skip,
-                        allow_postpone,
-                        skip_key: &skip_key,
-                        postpone_key: &postpone_key,
-                        image: image.as_deref(),
-                    },
-                    target,
-                );
-            }
-            CoreEvent::Countdown { remaining, total } => {
-                self.update_countdown(Countdown::Break { remaining, total });
-            }
-            CoreEvent::StopBreak => {
-                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                self.hide_break();
-                let alert = &self.config.audible_alert;
-                if alert.enabled && alert.post_break {
-                    self.play_sound(&alert.post_break_sound);
-                }
-            }
-        }
-    }
-
-    fn handle_command(&mut self, cmd: Command) {
-        match cmd {
-            Command::TakeBreak => self.core.take_break(None),
-            Command::TakeShortBreak => self.core.take_break(Some(BreakType::Short)),
-            Command::TakeLongBreak => self.core.take_break(Some(BreakType::Long)),
-            Command::Enable => {
-                let _ = self.core.enable(SystemTime::now());
-                self.refresh_menu_state();
-            }
-            Command::Disable => {
-                self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-                self.hide_break();
-                self.core.disable();
-                self.refresh_menu_state();
-            }
-            Command::Quit => self.quit(),
-            Command::Status => {} // ipc thread handles it from the snapshot
-            // invalidate cached mtime so reload runs this same tick
-            Command::Reload => self.config_mtime = None,
-        }
-    }
-
-    fn quit(&mut self) {
-        self.dismiss_pre_break(PreBreakDismissal::Cancelled);
-        self.hide_break();
-        let _ = std::fs::remove_file(ipc::socket_path());
-        let app = NSApplication::sharedApplication(self.mtm);
-        app.terminate(None);
-    }
-
     fn build_status_item(&mut self, delegate: &Delegate) {
         let status_bar = NSStatusBar::systemStatusBar();
         let item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
@@ -506,7 +243,7 @@ impl App {
         item.setMenu(Some(&menu));
         self.status_item = Some(item);
         self.apply_status_icon(TrayIconState::Normal);
-        self.refresh_menu_state();
+        self.refresh_menu_state(true);
     }
 
     fn add_item(
@@ -547,9 +284,8 @@ impl App {
         item
     }
 
-    fn refresh_menu_state(&self) {
+    fn refresh_menu_state(&self, enabled: bool) {
         if let Some(item) = &self.enable_item {
-            let enabled = self.core.is_enabled();
             item.setTitle(&NSString::from_str(if enabled {
                 "Enabled"
             } else {
@@ -560,8 +296,8 @@ impl App {
         }
     }
 
-    fn refresh_status_icon(&mut self, now: SystemTime) {
-        let state = self.desired_tray_icon_state(now);
+    fn refresh_status_icon(&mut self, now: SystemTime, status: &StatusSnapshot) {
+        let state = self.desired_tray_icon_state(now, status);
         if state == self.tray_icon_state {
             return;
         }
@@ -590,13 +326,12 @@ impl App {
         }
     }
 
-    fn desired_tray_icon_state(&self, now: SystemTime) -> TrayIconState {
-        if !matches!(self.core.state(), State::Waiting) {
+    fn desired_tray_icon_state(&self, now: SystemTime, status: &StatusSnapshot) -> TrayIconState {
+        if !matches!(status.state, State::Waiting) {
             return TrayIconState::Normal;
         }
-        let incoming = self
-            .core
-            .seconds_until_next(now)
+        let incoming = status
+            .seconds_until_next
             .is_some_and(|s| (0..=TRAY_ICON_INCOMING_WINDOW_SECS).contains(&s));
         if incoming && tray_icon_blink_on(now) {
             TrayIconState::Incoming
@@ -605,38 +340,19 @@ impl App {
         }
     }
 
-    fn refresh_status_label(&self, now: SystemTime) {
-        let text = self.status_text(now);
+    fn refresh_status_label(&self, text: &str) {
         if let Some(item) = &self.status_item_label {
-            item.setTitle(&NSString::from_str(&text));
-        }
-    }
-
-    fn publish_status(&self, now: SystemTime) {
-        self.server.set_status(self.status_text(now));
-    }
-
-    fn status_text(&self, now: SystemTime) -> String {
-        if !self.core.is_enabled() {
-            return "Disabled".to_string();
-        }
-        match self.core.state() {
-            State::Break | State::PreBreak => "Break in progress".to_string(),
-            State::Resting => "Paused (idle)".to_string(),
-            _ => match self.core.seconds_until_next(now) {
-                Some(s) if s > 0 => format!(
-                    "Next break in {} - {}",
-                    fmt_duration(s),
-                    self.core.current_break_name()
-                ),
-                _ => "Next break shortly".to_string(),
-            },
+            item.setTitle(&NSString::from_str(text));
         }
     }
 }
 
 impl Backend for App {
     type ActionTarget = AnyObject;
+
+    fn config_updated(&mut self, config: &Config) {
+        self.dnd = DndChecker::from_config(&config.do_not_disturb);
+    }
 
     fn show_pre_break(&mut self, notice: PreBreakNotice<'_>, target: &Self::ActionTarget) {
         self.pre_break_dialog.show(
@@ -685,6 +401,16 @@ impl Backend for App {
         self.break_screen.hide();
     }
 
+    fn refresh_menu_state(&mut self, enabled: bool) {
+        App::refresh_menu_state(self, enabled);
+    }
+
+    fn refresh_status(&mut self, now: SystemTime, status: &StatusSnapshot) {
+        App::refresh_menu_state(self, status.enabled);
+        self.refresh_status_icon(now, status);
+        self.refresh_status_label(&status.text);
+    }
+
     fn play_sound(&self, name: &str) {
         sound::play(name);
     }
@@ -701,20 +427,11 @@ impl Backend for App {
         let path = crate::config::config_path();
         let _ = std::process::Command::new("open").arg(path).status();
     }
-}
 
-fn file_mtime(path: &std::path::Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
-fn fmt_duration(secs: i64) -> String {
-    let secs = secs.max(0);
-    let m = secs / 60;
-    let s = secs % 60;
-    if m > 0 {
-        format!("{m}m {s:02}s")
-    } else {
-        format!("{s}s")
+    fn quit(&mut self) {
+        let _ = std::fs::remove_file(ipc::socket_path());
+        let app = NSApplication::sharedApplication(self.mtm);
+        app.terminate(None);
     }
 }
 
