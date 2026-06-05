@@ -15,7 +15,6 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Action flags talk to an already-running app.
     if let Some(cmd) = args.client_command() {
         let running = ipc::send(cmd)?;
         if !running {

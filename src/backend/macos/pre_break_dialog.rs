@@ -1,5 +1,3 @@
-//! A small top-center Liquid Glass pre-break warning.
-
 use core::ptr::NonNull;
 
 use block2::RcBlock;
@@ -266,11 +264,9 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<PreBreakWindow>
     };
 
     window.setOpaque(false);
-    // Native window shadows follow the rectangular panel bounds, not the
-    // rounded glass content, which creates a visible square/jagged outline.
+    // native shadows follow the panel rect, not the rounded glass, so they leak a jagged outline
     window.setHasShadow(false);
-    // Menu-bar apps normally stay inactive; without this, NSPanel remains
-    // hidden until the fullscreen break activates the app.
+    // accessory apps stay inactive, so NSPanel stays hidden until the break activates the app
     window.setHidesOnDeactivate(false);
     window.setBackgroundColor(Some(&NSColor::clearColor()));
     if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {

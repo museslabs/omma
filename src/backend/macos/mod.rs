@@ -1,9 +1,5 @@
-//! The macOS backend: status-bar UI, timer, break overlays, warning dialog,
-//! sounds, idle detection and do-not-disturb checks.
-//!
-//! Everything here runs on the main thread. The `Delegate` object is the
-//! Objective-C target for menu items, buttons and the timer; it owns the whole
-//! [`App`] state in a `RefCell` ivar.
+//! all main-thread. Delegate is the obj-c target for menu items, buttons and the timer,
+//! and owns the App state in a RefCell ivar.
 
 mod activity;
 mod break_screen;
@@ -33,34 +29,25 @@ use activity::DndChecker;
 use break_screen::BreakScreen;
 use pre_break_dialog::PreBreakDialog;
 
-/// The menu-bar glyph, embedded so it travels with the binary whether omma is
-/// launched from its `.app` bundle or run bare. Rendered as a template image,
-/// so only the alpha channel matters and macOS tints it to match the menu bar.
+/// embedded so it travels with the binary whether launched from .app or bare
 const TRAY_ICON_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tray-icon.svg"));
 const TRAY_ICON_INCOMING_SVG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tray-icon-incoming.svg"
 ));
 
-/// Side length, in points, of the menu-bar glyph. macOS scales the source art
-/// down to this and renders it at the screen's backing scale.
 const TRAY_ICON_SIZE: f64 = 18.0;
-/// Blink the menu-bar icon shortly before the normal pre-break warning appears.
+/// start blinking the tray icon this many seconds before the warning
 const TRAY_ICON_INCOMING_WINDOW_SECS: i64 = 60;
-/// Visual countdowns need a sub-second heartbeat because a one-second NSTimer
-/// can fire just before or after the scheduler's exact deadline, making digits
-/// visibly linger or jump. The scheduler remains deadline-based, so this only
-/// improves UI refresh latency.
+/// sub-second so a 1s NSTimer firing near a deadline doesn't make digits linger or jump.
+/// the scheduler stays deadline-based, this only affects ui refresh latency.
 const TICK_INTERVAL_SECS: f64 = 0.2;
 
-/// Decode the embedded SVG into a template [`NSImage`] sized for the menu bar.
-/// Returns `None` if the bytes ever fail to decode, letting the caller fall
-/// back to a text glyph.
+/// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
     let data = NSData::with_bytes(bytes);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
-    // Template images are drawn from alpha alone, so the glyph follows the menu
-    // bar's appearance (dark in light mode, light in dark mode) automatically.
+    // template images draw from alpha alone, so the glyph auto-tints with the menu bar
     image.setTemplate(true);
     image.setSize(NSSize {
         width: TRAY_ICON_SIZE,
@@ -84,7 +71,6 @@ impl MacosBackend {
     }
 }
 
-/// Build the status item, schedule the timer and run the app.
 fn run(config: Config, server: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
@@ -132,12 +118,9 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
 
     let delegate = Delegate::new(mtm, state);
 
-    // Build the menu bar item, with the delegate as the action target.
     delegate.with_app(|app| app.build_status_item(&delegate));
 
-    // Drive the scheduler frequently enough for second-boundary countdowns to
-    // change close to their actual deadlines. NSTimer retains its target, so
-    // the delegate (and thus all state) stays alive for the run loop's lifetime.
+    // NSTimer retains its target, so the delegate (and all state) stays alive for the run loop
     let target: &AnyObject = &delegate;
     let _timer: Retained<NSTimer> = unsafe {
         NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
@@ -154,7 +137,7 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// All app state. Mutated only from the main thread, through the delegate.
+/// mutated only from the main thread, via the delegate
 struct App {
     core: Core,
     config: Config,
@@ -292,9 +275,8 @@ impl Delegate {
 }
 
 impl App {
-    /// Called by the main run-loop timer.
     fn on_tick(&mut self, now: SystemTime, delegate: &Delegate) {
-        // Handle any CLI commands that came in over the socket.
+        // drain any cli commands from the socket
         for cmd in self.server.drain() {
             self.handle_command(cmd);
         }
@@ -319,10 +301,8 @@ impl App {
         self.publish_status(now);
     }
 
-    /// Re-read the config file when it changes on disk and apply it live.
     fn maybe_reload_config(&mut self, now: SystemTime) {
-        // Don't swap the schedule out from under an in-progress break; retry
-        // on a later tick.
+        // don't swap the schedule mid-break, retry on a later tick
         if matches!(self.core.state(), State::PreBreak | State::Break) {
             return;
         }
@@ -334,8 +314,8 @@ impl App {
         }
         self.config_mtime = mtime;
 
-        // Parse directly so a transient/partial write doesn't clobber the
-        // running config with defaults — only apply a clean parse.
+        // parse directly so a transient/partial write doesn't clobber the running config
+        // with defaults. only apply a clean parse.
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
             Err(_) => return,
@@ -352,7 +332,6 @@ impl App {
         eprintln!("omma: reloaded config");
     }
 
-    /// Rebuild the schedule and feature state from a freshly read config.
     fn apply_config(&mut self, new: Config, now: SystemTime) {
         let Some(queue) = new.build_queue() else {
             eprintln!("omma: config has no breaks; keeping previous schedule");
@@ -385,7 +364,6 @@ impl App {
         self.refresh_menu_state();
     }
 
-    /// Pause the schedule while the user is idle; resume when they return.
     fn apply_smart_pause(&mut self, now: SystemTime, delegate: &Delegate) {
         if !self.smart_pause_enabled || !self.core.is_enabled() {
             return;
@@ -407,7 +385,7 @@ impl App {
         match ev {
             CoreEvent::NextBreakScheduled { .. } => {}
             CoreEvent::PreBreak { name, .. } => {
-                // Do-not-disturb: skip/postpone instead of interrupting.
+                // dnd: skip/postpone instead of interrupting
                 if self.should_suppress_break() {
                     let skip = self.config.do_not_disturb.action == DndAction::Skip;
                     let _ = self.core.suppress_break(now, skip);
@@ -494,8 +472,8 @@ impl App {
                 self.refresh_menu_state();
             }
             Command::Quit => self.quit(),
-            Command::Status => {} // handled by the IPC thread from the snapshot
-            // Invalidate the cached mtime so the reload runs this same tick.
+            Command::Status => {} // ipc thread handles it from the snapshot
+            // invalidate cached mtime so reload runs this same tick
             Command::Reload => self.config_mtime = None,
         }
     }
@@ -507,8 +485,6 @@ impl App {
         let app = NSApplication::sharedApplication(self.mtm);
         app.terminate(None);
     }
-
-    // --- menu bar ---------------------------------------------------------
 
     fn build_status_item(&mut self, delegate: &Delegate) {
         let status_bar = NSStatusBar::systemStatusBar();
@@ -580,7 +556,7 @@ impl App {
             } else {
                 "Disabled"
             }));
-            // 1 = NSControlStateValueOn, 0 = off.
+            // 1 = NSControlStateValueOn, 0 = off
             item.setState(if enabled { 1 } else { 0 });
         }
     }
@@ -611,7 +587,7 @@ impl App {
                 button.setTitle(&NSString::from_str(""));
                 button.setImage(Some(image));
             }
-            None => button.setTitle(&NSString::from_str("\u{1F441}")), // 👁 fallback
+            None => button.setTitle(&NSString::from_str("\u{1F441}")), // fallback glyph
         }
     }
 

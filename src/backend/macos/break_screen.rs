@@ -1,10 +1,5 @@
-//! The break screen: one fullscreen overlay window per display in Apple's
-//! Liquid Glass style — a frosted, blurred backdrop (the desktop, softly
-//! defocused) dimmed evenly for the eyes, with the break message, a live
-//! countdown and (unless strict) Skip / Postpone laid directly on the glass.
-//! The buttons are `NSGlassEffectView` capsules (the Control Center chip look)
-//! wrapping a borderless `NSButton` that fires `skipBreak:` / `postponeBreak:`
-//! on the delegate.
+//! one fullscreen overlay per display in liquid glass style. buttons are
+//! NSGlassEffectView capsules wrapping a borderless NSButton.
 
 use core::ptr::NonNull;
 
@@ -31,17 +26,13 @@ use objc2_quartz_core::{
     CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
 };
 
-/// Window level above normal windows and fullscreen apps.
+/// above normal windows and fullscreen apps
 const SCREEN_SAVER_LEVEL: isize = 1000;
-/// Darkness of the dim scrim laid over the blur. High enough to even out a
-/// busy desktop into a calm, uniformly dark backdrop with consistent contrast.
+/// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
 const SCRIM_ALPHA: f64 = 0.25;
-/// Height of the glass capsule buttons.
 const BUTTON_HEIGHT: f64 = 46.0;
-/// Gaussian-blur radius the foreground resolves from on entry and dissolves
-/// back into on exit — the "materialise from blur" look.
+/// foreground entry/exit blur radius, the "materialise from blur" look
 const BLUR_RADIUS: f64 = 16.0;
-/// How long the exit blur-out plays before the windows are torn down.
 const EXIT_DURATION: f64 = 0.32;
 
 define_class!(
@@ -62,13 +53,11 @@ pub struct BreakScreen {
     mtm: MainThreadMarker,
     windows: Vec<Retained<BreakWindow>>,
     countdown_labels: Vec<Retained<NSTextField>>,
-    /// The foreground container (message, countdown, buttons) per window. Kept
-    /// so the exit transition can blur and fade it back out.
+    /// kept so the exit transition can blur and fade out the message/countdown/buttons
     foregrounds: Vec<Retained<NSView>>,
-    /// The backdrop container (blur + scrim) per window, faded on exit.
+    /// blur + scrim per window, faded on exit
     backdrops: Vec<Retained<NSView>>,
-    /// Whether to play the entrance/exit transitions and per-tick cross-fades;
-    /// off when the user has asked macOS to minimise motion.
+    /// off when the user has asked macos to reduce motion
     animate: bool,
     visible: bool,
 }
@@ -101,13 +90,12 @@ impl BreakScreen {
         let weight_regular = unsafe { NSFontWeightRegular };
         let weight_heavy = unsafe { NSFontWeightHeavy };
 
-        // Respect the system "Reduce Motion" setting: when it's on we lay the
-        // overlay out statically and skip every blur, slide and cross-fade.
+        // reduce motion: skip every blur, slide and cross-fade
         self.animate = !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
         let animate = self.animate;
         let now = CACurrentMediaTime();
 
-        // A chunky countdown; monospaced so the digits don't shift as they tick.
+        // monospaced so the digits don't shift as they tick
         let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_heavy);
 
         let screens = NSScreen::screens(mtm);
@@ -126,8 +114,7 @@ impl BreakScreen {
             };
             content.setWantsLayer(true);
 
-            // Backdrop: the frosted desktop blur and the dim scrim, grouped in
-            // their own layer-backed container so they fade in and out as one.
+            // backdrop: blur + scrim in one container so they fade as a group
             let backdrop = NSView::initWithFrame(NSView::alloc(mtm), full);
             backdrop.setWantsLayer(true);
             content.addSubview(&backdrop);
@@ -146,15 +133,13 @@ impl BreakScreen {
             scrim.setFillColor(&NSColor::colorWithWhite_alpha(0.0, SCRIM_ALPHA));
             backdrop.addSubview(&scrim);
 
-            // Foreground: message, countdown and buttons, in their own
-            // layer-backed container. A single gaussian blur on this layer lets
-            // the whole group materialise from blur into focus on the way in,
-            // and dissolve back into blur on the way out.
+            // foreground: message, countdown, buttons. one gaussian blur on this layer lets
+            // the group materialise from blur on the way in and dissolve back on the way out.
             let foreground = NSView::initWithFrame(NSView::alloc(mtm), full);
             foreground.setWantsLayer(true);
             content.addSubview(&foreground);
 
-            // Break message, laid directly on the glass (wraps to two lines).
+            // wraps to two lines
             let msg_w = (w - 160.0).min(1000.0);
             let title_font = NSFont::systemFontOfSize_weight(28.0, weight_regular);
             let msg_color = NSColor::colorWithWhite_alpha(1.0, 0.92);
@@ -171,7 +156,7 @@ impl BreakScreen {
             );
             foreground.addSubview(&name_label);
 
-            // Big countdown number; each tick cross-fades in `update_countdown`.
+            // each tick cross-fades via update_countdown
             let count_label = make_label(
                 mtm,
                 &duration.to_string(),
@@ -185,7 +170,6 @@ impl BreakScreen {
             );
             foreground.addSubview(&count_label);
 
-            // Glass capsule buttons, centered side by side below the countdown.
             let gap = 16.0;
             let mut buttons: Vec<Retained<NSGlassEffectView>> = Vec::new();
             if allow_skip {
@@ -215,10 +199,8 @@ impl BreakScreen {
                 }
             }
 
-            // Choreograph the entrance: the backdrop fades up; the foreground
-            // resolves out of the blur while the message slides down from above
-            // and the buttons slide up from below. The countdown stays put —
-            // it simply sharpens out of the blur as the foreground does.
+            // entrance choreography: backdrop fades up, foreground resolves out of blur, message
+            // slides down from above, buttons slide up from below. countdown just sharpens.
             if animate {
                 if let Some(layer) = backdrop.layer() {
                     layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, false), None);
@@ -231,8 +213,7 @@ impl BreakScreen {
                         &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, false),
                         None,
                     );
-                    // The blur is only for the transition; drop it once the
-                    // entrance settles so the static break renders crisp.
+                    // drop the transition blur once the entrance settles so the break renders crisp
                     detach_blur_after(layer, 0.75);
                 }
                 let label_begin = now + 0.68;
@@ -254,17 +235,10 @@ impl BreakScreen {
             self.countdown_labels.push(count_label);
         }
 
-        // A break can open from the run-loop timer, with another app in
-        // the foreground. Only the *active* app can own a key window, and the
-        // cooperative `activate()` is throttled for a background app waking on
-        // a timer — so without forcing it the overlay never becomes key and the
-        // Skip/Postpone keys are dead until the user clicks the screen.
-        //
-        // Promote to a regular app and force activation so the panel becomes key
-        // straight away; `hide()` drops us back to Accessory. The Dock icon this
-        // briefly creates is hidden behind the full-screen overlay (already
-        // ordered front above), and reverting on hide returns focus to whatever
-        // the user was doing.
+        // only the active app can own a key window. cooperative activate() is throttled for a
+        // background app waking on a timer, so without forcing it the overlay never becomes key
+        // and skip/postpone keys are dead until the user clicks. promote to regular and force
+        // activate so the panel becomes key, hide() drops us back to accessory.
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         force_activate(&app);
@@ -290,15 +264,14 @@ impl BreakScreen {
         if self.windows.is_empty() {
             return;
         }
-        // No animation (Reduce Motion): tear the overlay down immediately.
+        // reduce motion: tear down immediately
         if !self.animate {
             self.teardown_now();
             return;
         }
 
-        // Reverse of the entrance: the backdrop fades out while the foreground
-        // dissolves back into blur. The animations hold their final state
-        // (`hold`), so the overlay stays faded/blurred right up to teardown.
+        // reverse of the entrance. animations hold their final state so the overlay stays
+        // faded/blurred right up to teardown.
         let now = CACurrentMediaTime();
         for backdrop in &self.backdrops {
             if let Some(layer) = backdrop.layer() {
@@ -316,9 +289,9 @@ impl BreakScreen {
             }
         }
 
-        // Defer the actual teardown until the blur-out finishes. The windows
-        // move into the timer block so they stay alive (and on screen) for the
-        // animation; the block orders them out and restores Accessory mode.
+        // defer teardown until the blur-out finishes. windows move into the timer block so
+        // they stay on screen for the animation, then the block orders them out and restores
+        // accessory mode.
         let windows: Vec<Retained<BreakWindow>> = self.windows.drain(..).collect();
         let mtm = self.mtm;
         let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
@@ -328,8 +301,8 @@ impl BreakScreen {
             NSApplication::sharedApplication(mtm)
                 .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         });
-        // SAFETY: the timer is scheduled on, and fires on, the main run loop,
-        // where these main-thread-only windows are safe to touch.
+        // SAFETY: scheduled on and fired from the main run loop where these main-thread-only
+        // windows are safe to touch.
         unsafe {
             NSTimer::scheduledTimerWithTimeInterval_repeats_block(
                 EXIT_DURATION + 0.05,
@@ -344,10 +317,8 @@ impl BreakScreen {
         self.visible = false;
     }
 
-    /// Tear the overlay down at once, with no exit animation: order every
-    /// window out, forget the views, and drop back to a menu-bar-only Accessory
-    /// app (we promote to Regular in `show()` so the overlay can take keyboard
-    /// focus). Used when reopening and when Reduce Motion is on.
+    /// no exit animation. order every window out, forget the views, drop back to accessory.
+    /// used when reopening and when reduce motion is on.
     fn teardown_now(&mut self) {
         let had_windows = !self.windows.is_empty();
         for window in self.windows.drain(..) {
@@ -365,10 +336,8 @@ impl BreakScreen {
     }
 }
 
-/// Force the app to the foreground. We use the deprecated forceful activation
-/// deliberately: the cooperative `activate()` is routinely throttled for a
-/// background app waking on a timer, leaving the break overlay unable to
-/// become key. The forceful variant is exactly the override this needs.
+/// deprecated forceful activation is deliberate. cooperative activate() is throttled for a
+/// background app waking on a timer, which leaves the overlay unable to become key.
 #[allow(deprecated)]
 fn force_activate(app: &NSApplication) {
     app.activateIgnoringOtherApps(true);
@@ -388,12 +357,10 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<BreakWindow> {
 
     window.setOpaque(false);
     window.setHasShadow(false);
-    // NSPanel hides itself when its app deactivates; a menu-bar (Accessory)
-    // app is never "active", so without this the overlay never shows.
+    // NSPanel hides on app deactivate, and an accessory app is never "active"
     window.setHidesOnDeactivate(false);
-    // Clear background so the behind-window blur can sample the desktop, and a
-    // dark appearance so the glass reads dark and the native buttons render as
-    // light-on-dark controls that stay legible.
+    // clear background so the behind-window blur samples the desktop. dark appearance keeps
+    // the glass and native buttons legible.
     window.setBackgroundColor(Some(&NSColor::clearColor()));
     if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
         window.setAppearance(Some(&appearance));
@@ -404,8 +371,7 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<BreakWindow> {
             | NSWindowCollectionBehavior::Stationary
             | NSWindowCollectionBehavior::FullScreenAuxiliary,
     );
-    // We keep a Retained reference for the screen's lifetime and order it out
-    // rather than closing, so opting out of release-on-close is sound.
+    // we hold a Retained ref for the screen's lifetime and orderOut instead of closing
     unsafe { window.setReleasedWhenClosed(false) };
     window
 }
@@ -429,11 +395,9 @@ fn make_label(
     label
 }
 
-/// Apply the fill behaviour shared by the basic animations. When `hold` is set
-/// (exit), the animation keeps its final value on screen instead of snapping
-/// back to the model value, since the windows are about to be torn down. When
-/// not (entrance), `Backwards` fill holds the *start* value until `begin`, so
-/// callers can stagger entrances by pushing `begin` later.
+/// hold=true (exit) keeps the final value on screen instead of snapping back to the model
+/// value, since windows are about to be torn down. hold=false (entrance) uses backwards fill so
+/// callers can stagger entrances by pushing begin later.
 fn apply_fill(anim: &CABasicAnimation, hold: bool) {
     if hold {
         anim.setFillMode(unsafe { kCAFillModeBoth });
@@ -443,8 +407,6 @@ fn apply_fill(anim: &CABasicAnimation, hold: bool) {
     }
 }
 
-/// A basic animation from `from` to `to` on `key_path`, eased smoothly in and
-/// out over `duration` starting at `begin` (in `CACurrentMediaTime` units).
 fn basic(
     key_path: &str,
     from: f64,
@@ -465,15 +427,12 @@ fn basic(
     anim
 }
 
-/// An opacity fade between `from` and `to`. See [`apply_fill`] for `hold`.
 fn fade(from: f64, to: f64, begin: f64, duration: f64, hold: bool) -> Retained<CABasicAnimation> {
     let anim = basic("opacity", from, to, begin, duration);
     apply_fill(&anim, hold);
     anim
 }
 
-/// Animates the foreground's gaussian-blur radius (see [`attach_blur`]) so the
-/// content resolves from blur into focus, or dissolves back. See [`apply_fill`].
 fn blur_radius(
     from: f64,
     to: f64,
@@ -486,14 +445,12 @@ fn blur_radius(
     anim
 }
 
-/// A scale animation used for countdown number changes.
 fn scale(from: f64, to: f64, begin: f64, duration: f64) -> Retained<CABasicAnimation> {
     let anim = basic("transform.scale", from, to, begin, duration);
     apply_fill(&anim, false);
     anim
 }
 
-/// A scale animation that can optionally hold its final presentation value.
 fn scale_hold(
     from: f64,
     to: f64,
@@ -506,9 +463,7 @@ fn scale_hold(
     anim
 }
 
-/// A vertical slide that eases from `from_y` points off its resting spot up to
-/// rest. Positive `from_y` starts above (slides down); negative starts below
-/// (slides up).
+/// positive from_y starts above (slides down), negative starts below (slides up)
 fn slide_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
     let anim = CASpringAnimation::animationWithKeyPath(Some(&NSString::from_str(
         "transform.translation.y",
@@ -527,8 +482,7 @@ fn slide_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
     anim
 }
 
-/// Keep an entrance layer invisible until `begin`, then reveal it while it
-/// springs in and resolves from blur to sharp.
+/// invisible until `begin`, then springs in and resolves from blur to sharp
 fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, now: f64) {
     attach_blur(&layer);
     layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, false), None);
@@ -537,8 +491,7 @@ fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, n
     detach_blur_after(layer, begin - now + 0.5);
 }
 
-/// Swap countdown digits with two static layers: the old digit shrinks/blurs
-/// out while the new digit starts larger/blurred and resolves in-place.
+/// old digit shrinks/blurs out, new digit starts larger/blurred and resolves in place
 fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSString) {
     let old_text = label.stringValue();
     let outgoing = NSTextField::labelWithString(&old_text, mtm);
@@ -576,8 +529,7 @@ fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSS
     remove_view_after(outgoing, 0.34);
 }
 
-/// Attach a named gaussian blur (resting radius 0) to `layer`, so the
-/// `filters.blur.inputRadius` key path is animatable for the blur in/out.
+/// makes filters.blur.inputRadius animatable
 fn attach_blur(layer: &CALayer) {
     let name = NSString::from_str("CIGaussianBlur");
     let Some(filter) = (unsafe { CIFilter::filterWithName(&name) }) else {
@@ -592,42 +544,33 @@ fn attach_blur(layer: &CALayer) {
         let filters = NSArray::from_slice(&[item]);
         layer.setFilters(Some(&filters));
     }
-    // Let the blur bleed past the layer's edge instead of clipping at it.
+    // let the blur bleed past the layer's edge instead of clipping
     layer.setMasksToBounds(false);
 }
 
-/// Remove `layer`'s blur filter after `delay` seconds, so the static break
-/// renders crisp once the entrance blur-in has finished.
 fn detach_blur_after(layer: Retained<CALayer>, delay: f64) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| unsafe {
         layer.setFilters(None);
     });
-    // SAFETY: scheduled on and fired from the main run loop, where this
-    // main-thread layer is safe to mutate.
+    // SAFETY: scheduled on and fired from the main run loop
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
     }
 }
 
-/// Remove a temporary view once its presentation animation has finished.
 fn remove_view_after(view: Retained<NSTextField>, delay: f64) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         view.removeFromSuperview();
     });
-    // SAFETY: scheduled on and fired from the main run loop, where this
-    // main-thread view is safe to mutate.
+    // SAFETY: scheduled on and fired from the main run loop
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
     }
 }
 
-/// A Liquid Glass capsule button: a borderless `NSButton` (white title, click
-/// target/action) embedded in an `NSGlassEffectView` rounded to a capsule. The
-/// returned view is sized to fit its title; the caller sets its origin.
-///
-/// `key` is the config key spec (e.g. `"escape"`, `"space"`, `"cmd+s"`); when
-/// it names a key it becomes the button's key equivalent so the action fires on
-/// that keypress, and a dim hint (e.g. `Esc`) is appended to the title.
+/// borderless NSButton wrapped in a capsule NSGlassEffectView. sized to fit, caller sets origin.
+/// `key` is the config spec, eg "escape" or "cmd+s". if it names a key it becomes the button's
+/// key equivalent and a dim hint is appended to the title.
 fn make_button(
     mtm: MainThreadMarker,
     title: &str,
@@ -637,7 +580,7 @@ fn make_button(
 ) -> Retained<NSGlassEffectView> {
     let keybind = parse_keybind(key);
 
-    // The full title carries an optional dim key hint after the label.
+    // optional dim key hint trails the label
     let title_ns = NSString::from_str(title);
     let full = match &keybind {
         Some(kb) => format!("{title}  {}", kb.label),
@@ -649,8 +592,7 @@ fn make_button(
     };
     button.setBordered(false);
 
-    // Borderless buttons draw their title in the control colour; force white so
-    // it stays legible on the dark glass. The hint is dimmer and smaller.
+    // borderless buttons draw title in the control colour, force white for the dark glass
     let font = NSFont::systemFontOfSize_weight(16.0, unsafe { NSFontWeightMedium });
     let attributed =
         NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &full_ns);
@@ -672,7 +614,6 @@ fn make_button(
     }
     button.setAttributedTitle(&attributed);
 
-    // Fire the action on the configured keypress while the break window is key.
     if let Some(kb) = &keybind {
         button.setKeyEquivalent(&kb.key_equivalent);
         button.setKeyEquivalentModifierMask(kb.mods);
@@ -691,19 +632,13 @@ fn make_button(
     capsule
 }
 
-/// A parsed key spec ready to apply to an `NSButton`: the key-equivalent string
-/// AppKit matches against, its required modifier mask, and a human label for
-/// the on-screen hint (e.g. `⌘S`, `Esc`).
 struct KeyBind {
     key_equivalent: Retained<NSString>,
     mods: NSEventModifierFlags,
     label: String,
 }
 
-/// Parse a config key spec like `"s"`, `"escape"`, or `"cmd+shift+p"` into a
-/// [`KeyBind`]. `+`-separated tokens are modifiers (`cmd`, `shift`,
-/// `alt`/`option`, `ctrl`) plus exactly one key. Returns `None` when the spec
-/// is empty or names no key.
+/// `+`-separated tokens: modifiers (cmd, shift, alt/option, ctrl) plus exactly one key
 fn parse_keybind(spec: &str) -> Option<KeyBind> {
     let mut mods = NSEventModifierFlags::empty();
     let mut symbols = String::new();
@@ -741,9 +676,8 @@ fn parse_keybind(spec: &str) -> Option<KeyBind> {
     })
 }
 
-/// Map a key token to `(key-equivalent string, display label)`. Named keys
-/// resolve to their control characters; anything else is taken as a literal
-/// character, lowercased so a plain letter matches without requiring Shift.
+/// returns (key-equivalent, display label). named keys resolve to control characters,
+/// anything else is taken as a literal char, lowercased so a plain letter matches without shift.
 fn key_equivalent_for(token: &str) -> (String, String) {
     match token.to_ascii_lowercase().as_str() {
         "escape" | "esc" => ("\u{1b}".into(), "Esc".into()),
@@ -755,8 +689,6 @@ fn key_equivalent_for(token: &str) -> (String, String) {
     }
 }
 
-// Silence "field is never read" for `visible`; it documents intent and may be
-// used by future logic.
 impl BreakScreen {
     #[allow(dead_code)]
     pub fn is_visible(&self) -> bool {

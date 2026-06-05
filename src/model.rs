@@ -1,9 +1,3 @@
-//! Break model and scheduling queue.
-//!
-//! The queue interleaves short breaks with periodic long breaks: with the
-//! defaults (short every 15 min, long every 75 min) you get four short breaks
-//! followed by one long break, repeating.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,9 +10,7 @@ pub enum BreakType {
 pub struct Break {
     pub kind: BreakType,
     pub name: String,
-    /// Seconds to wait before this break is shown.
     pub interval: i64,
-    /// Break length in seconds.
     pub duration: i64,
     pub image: Option<String>,
 }
@@ -33,9 +25,7 @@ impl Break {
     }
 }
 
-/// A cyclic queue of breaks that decides whether the next break is short or
-/// long. Construct with [`BreakQueue::create`]; it returns `None` when there
-/// are no breaks at all.
+/// interleaves shorts with periodic longs. defaults give four shorts then a long, repeating.
 pub struct BreakQueue {
     long_interval: i64,
     random_order: bool,
@@ -43,9 +33,7 @@ pub struct BreakQueue {
     longs: Vec<Break>,
     cur_short: usize,
     cur_long: usize,
-    /// Seconds remaining until the next long break is due. Short breaks "eat
-    /// into" this; when it drops to or below the next short interval, a long
-    /// break takes the slot.
+    /// shorts eat into this. when it drops to or below the next short's interval, a long takes the slot.
     seconds_until_long: i64,
     current: Break,
     rng: Rng,
@@ -77,7 +65,7 @@ impl BreakQueue {
             cur_short: 0,
             cur_long: 0,
             seconds_until_long: long_interval,
-            // Replaced immediately by select_next below.
+            // overwritten by select_next below
             current: Break {
                 kind: BreakType::Short,
                 name: String::new(),
@@ -103,8 +91,6 @@ impl BreakQueue {
         !self.longs.is_empty()
     }
 
-    /// Advance to the next break (optionally forcing a particular type), and
-    /// return a reference to it.
     pub fn advance(&mut self, force: Option<BreakType>) -> &Break {
         self.select_next(force);
         &self.current
@@ -126,7 +112,7 @@ impl BreakQueue {
         if pick_long {
             let mut b = self.longs[self.cur_long].clone();
             if has_s {
-                // Wait the leftover time, then reset the long countdown.
+                // wait the leftover, then reset the long countdown
                 b.interval = self.seconds_until_long.max(0);
             }
             self.seconds_until_long = self.long_interval;
@@ -154,15 +140,12 @@ impl BreakQueue {
         }
     }
 
-    /// The duration of the next long break, if any (used by smart-pause to
-    /// decide whether a long idle period already counts as a long break).
+    /// used by smart-pause to decide whether a long idle already counts as a long break
     pub fn next_long_duration(&self) -> Option<i64> {
         self.longs.get(self.cur_long).map(|b| b.duration)
     }
 
-    /// Reset the long-break countdown and, if the current break is a long one,
-    /// move past it to a short break. Used when a long idle period substitutes
-    /// for the upcoming long break.
+    /// reset the long countdown and skip past a current long. used when a long idle stood in for it.
     pub fn skip_long_break(&mut self) {
         self.seconds_until_long = self.long_interval;
         if self.current.is_long() && self.has_short() {
@@ -171,8 +154,7 @@ impl BreakQueue {
     }
 }
 
-/// Tiny xorshift64 PRNG — enough for shuffling break order without pulling in
-/// a dependency.
+/// xorshift64, just enough to shuffle break order without a dep
 struct Rng(u64);
 
 impl Rng {
@@ -229,9 +211,8 @@ mod tests {
 
     #[test]
     fn interleaves_four_shorts_then_long() {
-        // Ordered (non-random) so the sequence is deterministic.
         let mut q = BreakQueue::create(15, 75, false, shorts(13, 15), longs(6, 75)).unwrap();
-        // First break is already selected by create().
+        // create() already picked the first break
         let mut types = vec![q.current().kind];
         for _ in 0..9 {
             types.push(q.advance(None).kind);
@@ -246,8 +227,7 @@ mod tests {
     #[test]
     fn long_break_waits_leftover() {
         let mut q = BreakQueue::create(15, 75, false, shorts(13, 15), longs(6, 75)).unwrap();
-        // s0..s3 then the long; the long should be due after the 15-minute
-        // leftover, not its configured 75.
+        // s0..s3 then the long. the long is due after the 15s leftover, not its configured 75.
         for _ in 0..4 {
             q.advance(None);
         }

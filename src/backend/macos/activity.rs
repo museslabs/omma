@@ -1,12 +1,5 @@
-//! Do-not-disturb: decide whether a scheduled break should be suppressed
-//! because the user is busy.
-//!
-//! Two tiers:
-//!  * **Tier 1** — is one of the named apps running, or frontmost? Uses
-//!    `NSWorkspace`; needs no special permission.
-//!  * **Tier 2** — is the frontmost window fullscreen, or does any on-screen
-//!    window title match a pattern (e.g. "Zoom Meeting", or a phrase from a
-//!    browser tab)? Uses the Accessibility API, which the user must grant.
+//! do-not-disturb. tier 1 checks running/frontmost apps via NSWorkspace, no permission.
+//! tier 2 checks fullscreen or window titles via the accessibility api, which the user grants.
 
 use std::ffi::{c_char, c_void, CStr, CString};
 
@@ -27,9 +20,7 @@ pub struct DndChecker {
 
 impl DndChecker {
     pub fn from_config(dnd: &DoNotDisturb) -> DndChecker {
-        // Case-insensitive by default (like app matching). A plain word such
-        // as "Plain" is just a case-insensitive substring match; full regex
-        // syntax still works.
+        // case-insensitive by default. a plain word is a substring match, full regex still works.
         let title_regexes = dnd
             .window_title_matches
             .iter()
@@ -70,7 +61,6 @@ impl DndChecker {
         }
     }
 
-    /// True if the upcoming break should be suppressed right now.
     pub fn should_suppress(&self) -> bool {
         if !self.enabled {
             return false;
@@ -78,7 +68,7 @@ impl DndChecker {
 
         let workspace = NSWorkspace::sharedWorkspace();
 
-        // Tier 1: frontmost app.
+        // tier 1: frontmost app
         if !self.apps_active.is_empty() {
             if let Some(front) = workspace.frontmostApplication() {
                 if app_matches(&front, &self.apps_active) {
@@ -87,7 +77,7 @@ impl DndChecker {
             }
         }
 
-        // Tier 1: any running app.
+        // tier 1: any running app
         if !self.apps_running.is_empty() {
             let running = workspace.runningApplications();
             for i in 0..running.count() {
@@ -98,7 +88,7 @@ impl DndChecker {
             }
         }
 
-        // Tier 2: Accessibility-based checks.
+        // tier 2: accessibility-based checks
         if self.needs_ax && self.ax_trusted {
             if self.check_fullscreen && frontmost_is_fullscreen(&workspace) {
                 return true;
@@ -132,9 +122,7 @@ fn app_matches(app: &objc2_app_kit::NSRunningApplication, patterns: &[String]) -
     })
 }
 
-// ---------------------------------------------------------------------------
-// Accessibility (AX) interop. Inherently unsafe C; kept contained here.
-// ---------------------------------------------------------------------------
+// accessibility (AX) interop. unsafe C, kept contained here.
 
 type CFTypeRef = *const c_void;
 type CFStringRef = *const c_void;
@@ -190,7 +178,7 @@ unsafe extern "C" {
     static kCFTypeDictionaryValueCallBacks: c_void;
 }
 
-/// Check (and, on first run, prompt for) Accessibility permission.
+/// check and, on first run, prompt for accessibility permission
 fn prompt_accessibility() -> bool {
     unsafe {
         let keys: [*const c_void; 1] = [kAXTrustedCheckOptionPrompt];
@@ -211,7 +199,7 @@ fn prompt_accessibility() -> bool {
     }
 }
 
-/// Build a CFString from a UTF-8 attribute name. Caller must `CFRelease`.
+/// caller must CFRelease
 unsafe fn cfstr(s: &str) -> CFStringRef {
     let c = CString::new(s).unwrap();
     unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), CFSTRING_ENCODING_UTF8) }
@@ -239,7 +227,7 @@ unsafe fn cfstring_to_string(s: CFStringRef) -> Option<String> {
     Some(cstr.to_string_lossy().into_owned())
 }
 
-/// Copy an AX attribute as a generic CFType. Returns null on failure.
+/// null on failure
 unsafe fn ax_copy(element: AXUIElementRef, attr: CFStringRef) -> CFTypeRef {
     let mut value: CFTypeRef = std::ptr::null();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut value) };
@@ -290,7 +278,7 @@ fn any_window_title_matches(workspace: &NSWorkspace, regexes: &[Regex]) -> bool 
         let mut matched = false;
         'apps: for i in 0..running.count() {
             let app = running.objectAtIndex(i);
-            // Only apps with a visible UI have inspectable windows.
+            // only regular apps have inspectable windows
             if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
                 continue;
             }

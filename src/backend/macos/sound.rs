@@ -1,10 +1,7 @@
-//! Audible alerts, played through `NSSound`. Names refer to the system sounds
-//! in `/System/Library/Sounds` (e.g. "Tink", "Glass", "Ping").
-
 use objc2_app_kit::NSSound;
 use objc2_foundation::NSString;
 
-/// Play a named system sound. Silently does nothing if the name is unknown.
+/// names come from /System/Library/Sounds (eg "Tink", "Glass"). unknown names are a no-op.
 pub fn play(name: &str) {
     if name.is_empty() {
         return;

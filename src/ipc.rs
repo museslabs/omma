@@ -1,8 +1,3 @@
-//! IPC used by one-shot CLI invocations to control the running app.
-//!
-//! The public traits describe the app boundary; the current transport is a
-//! local socket on macOS and Linux.
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     TakeBreak,
@@ -88,8 +83,6 @@ mod local_socket {
         std::env::temp_dir().join("omma.sock")
     }
 
-    /// Server side, owned by the app. Commands arrive on `rx`; the app keeps
-    /// `status` up to date so `omma --status` can report it.
     pub struct Server {
         pub rx: Receiver<Command>,
         pub status: Arc<Mutex<String>>,
@@ -101,7 +94,7 @@ mod local_socket {
         fn bind(&self) -> Result<Server, BindError> {
             let path = socket_path();
 
-            // A successful connect means a live app owns the socket.
+            // a live app owns the socket if connect succeeds
             if path.exists() {
                 match UnixStream::connect(&path) {
                     Ok(_) => return Err(BindError::AlreadyRunning),
@@ -127,7 +120,6 @@ mod local_socket {
     }
 
     impl Server {
-        /// Pull all queued commands (non-blocking).
         pub fn drain(&self) -> Vec<Command> {
             self.rx.try_iter().collect()
         }
@@ -175,8 +167,7 @@ mod local_socket {
     }
 
     impl CommandClient for LocalSocketTransport {
-        /// Send one command to a running app and print its reply.
-        /// Returns `Ok(false)` if no app is running.
+        /// returns Ok(false) if no app is running
         fn send(&self, cmd: Command) -> std::io::Result<bool> {
             let path = socket_path();
             let mut stream = match UnixStream::connect(&path) {

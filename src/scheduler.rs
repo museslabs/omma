@@ -1,12 +1,6 @@
-//! The break scheduler: a deterministic, tick-driven state machine.
-//!
-//! [`Core`] owns no platform code and no threads. The UI layer calls
-//! [`Core::tick`] with the current time; the core
-//! advances its state and returns the [`CoreEvent`]s the UI should act on
-//! (show a warning, show the break screen, update the countdown, …). User
-//! actions (skip, postpone, take a break now, enable/disable) and environment
-//! signals (idle, do-not-disturb) are fed in as method calls and take effect
-//! on the next tick.
+//! deterministic tick-driven state machine. no platform code, no threads.
+//! the ui calls tick() with the current time and acts on the returned events.
+//! user actions and env signals are fed in via methods and apply on the next tick.
 
 use std::time::{Duration, SystemTime};
 
@@ -14,30 +8,25 @@ use crate::model::{BreakQueue, BreakType};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
-    /// Counting down to the next break.
     Waiting,
-    /// The pre-break warning is showing.
     PreBreak,
-    /// A break screen is on display.
     Break,
-    /// Disabled by the user.
     Stopped,
-    /// Paused because the user is idle (smart pause).
+    /// paused by smart pause
     Resting,
 }
 
-/// Things the UI should do in response to a tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreEvent {
-    /// A break has been scheduled `seconds_until` from now.
     NextBreakScheduled {
         name: String,
         kind: BreakType,
         seconds_until: i64,
     },
-    /// Show the pre-break warning for the upcoming break.
-    PreBreak { name: String, kind: BreakType },
-    /// Put up the break screen.
+    PreBreak {
+        name: String,
+        kind: BreakType,
+    },
     StartBreak {
         name: String,
         kind: BreakType,
@@ -46,9 +35,11 @@ pub enum CoreEvent {
         allow_skip: bool,
         allow_postpone: bool,
     },
-    /// Update the countdown shown on the break screen.
-    Countdown { remaining: i64, total: i64 },
-    /// Take the break screen down (it ran to completion).
+    Countdown {
+        remaining: i64,
+        total: i64,
+    },
+    /// the break ran to completion. take the screen down.
     StopBreak,
 }
 
@@ -56,26 +47,23 @@ pub struct Core {
     queue: BreakQueue,
     state: State,
 
-    pre_break_warning: i64, // seconds
-    postpone_duration: i64, // seconds
+    pre_break_warning: i64,
+    postpone_duration: i64,
     allow_postpone: bool,
     strict_break: bool,
 
-    // Scheduled instants.
     warn_at: Option<SystemTime>,
     break_at: Option<SystemTime>,
 
-    // Break countdown.
     countdown_total: i64,
     countdown_remaining: i64,
     next_count_at: Option<SystemTime>,
 
-    // Pending user actions, consumed on the next tick.
+    // consumed on the next tick
     pending_skip: bool,
     pending_postpone: bool,
     pending_take_break: Option<Option<BreakType>>,
 
-    // Smart pause.
     paused_at: Option<SystemTime>,
 }
 
@@ -114,7 +102,6 @@ impl Core {
         !matches!(self.state, State::Stopped)
     }
 
-    /// Begin counting down to the first break. Returns the scheduling event.
     pub fn start(&mut self, now: SystemTime) -> Vec<CoreEvent> {
         let mut ev = Vec::new();
         let wait = self.queue.current().interval;
@@ -122,12 +109,10 @@ impl Core {
         ev
     }
 
-    /// Seconds until the next break warning fires, for status display.
     pub fn seconds_until_next(&self, now: SystemTime) -> Option<i64> {
         self.warn_at.map(|w| duration_secs_ceil(now, w))
     }
 
-    /// Seconds until the fullscreen break starts while the warning is visible.
     pub fn seconds_until_break_start(&self, now: SystemTime) -> Option<i64> {
         self.break_at.map(|b| duration_secs_ceil(now, b))
     }
@@ -135,8 +120,6 @@ impl Core {
     pub fn current_break_name(&self) -> &str {
         &self.queue.current().name
     }
-
-    // --- user actions -----------------------------------------------------
 
     pub fn skip(&mut self) {
         self.pending_skip = true;
@@ -168,9 +151,7 @@ impl Core {
         ev
     }
 
-    /// Suppress the break we're currently waiting for or warning about
-    /// (do-not-disturb). `skip` advances to the next break; otherwise the same
-    /// break is retried after the postpone delay.
+    /// dnd path. `skip` advances to the next break, else the same one retries after the postpone delay.
     pub fn suppress_break(&mut self, now: SystemTime, skip: bool) -> Vec<CoreEvent> {
         let mut ev = Vec::new();
         if !matches!(self.state, State::Waiting | State::PreBreak) {
@@ -186,9 +167,7 @@ impl Core {
         ev
     }
 
-    // --- smart pause ------------------------------------------------------
-
-    /// Pause because the user went idle. Only meaningful while waiting.
+    /// only meaningful while waiting
     pub fn pause_for_idle(&mut self, now: SystemTime) {
         if matches!(self.state, State::Waiting | State::PreBreak) {
             self.paused_at = Some(now);
@@ -198,8 +177,7 @@ impl Core {
         }
     }
 
-    /// Resume after idle. A long enough idle period stands in for the next
-    /// long break, so we skip it.
+    /// a long enough idle stands in for the next long break, so skip it
     pub fn resume_from_idle(&mut self, now: SystemTime) -> Vec<CoreEvent> {
         let mut ev = Vec::new();
         if !matches!(self.state, State::Resting) {
@@ -217,12 +195,10 @@ impl Core {
         ev
     }
 
-    // --- the tick ---------------------------------------------------------
-
     pub fn tick(&mut self, now: SystemTime) -> Vec<CoreEvent> {
         let mut ev = Vec::new();
 
-        // A "take break now" request short-circuits any waiting state.
+        // "take break now" short-circuits any waiting state
         if matches!(self.state, State::Waiting | State::PreBreak) {
             if let Some(kind) = self.pending_take_break.take() {
                 self.begin_break(now, kind, &mut ev);
@@ -254,8 +230,7 @@ impl Core {
             State::Break => {
                 if self.pending_skip {
                     self.pending_skip = false;
-                    // The UI closes its own screen when Skip is pressed, so we
-                    // just advance — no StopBreak.
+                    // ui closes its own screen on skip, so just advance, no StopBreak
                     self.end_break(now, false, &mut ev);
                 } else if self.pending_postpone {
                     self.pending_postpone = false;
@@ -269,10 +244,7 @@ impl Core {
         ev
     }
 
-    // --- internal helpers -------------------------------------------------
-
-    /// Schedule the current break `wait_secs` from `now` without advancing the
-    /// queue.
+    /// schedule the current break wait_secs from now without advancing the queue
     fn schedule(&mut self, now: SystemTime, wait_secs: i64, ev: &mut Vec<CoreEvent>) {
         let wait = wait_secs.max(0) as u64;
         let warn = now + Duration::from_secs(wait);
@@ -289,17 +261,11 @@ impl Core {
         });
     }
 
-    /// Step the break countdown forward to `now`.
-    ///
-    /// Deadlines sit on a fixed one-second cadence anchored to the break's
-    /// start (start+1, start+2, …); we decrement once per whole second elapsed
-    /// since the last tick. Earlier code re-anchored the next deadline to `now`
-    /// — the timer's actual, jittery fire time — so a single late fire pushed
-    /// the deadline past the following fire; that fire saw `now < nc`, did
-    /// nothing, and the digit visibly lingered for ~2s while the countdown fell
-    /// behind real time. Looping over the fixed cadence keeps each digit on
-    /// screen for one second and lets a late or coalesced tick catch up instead
-    /// of stalling.
+    /// deadlines sit on a fixed 1s cadence anchored to break start. earlier code re-anchored
+    /// each next deadline to the jittery fire time, so one late tick pushed the next deadline
+    /// past the following fire and a digit hung for ~2s while the countdown fell behind real
+    /// time. looping over the fixed cadence keeps every digit on screen for 1s and lets a late
+    /// or coalesced tick catch up instead of stalling.
     fn advance_countdown(&mut self, now: SystemTime, ev: &mut Vec<CoreEvent>) {
         let mut changed = false;
         while self.next_count_at.is_some_and(|nc| now >= nc) {
@@ -340,8 +306,7 @@ impl Core {
         });
     }
 
-    /// Start a break immediately (used by "take a break now"), skipping the
-    /// warning.
+    /// start a break immediately, no warning. used by "take a break now".
     fn begin_break(&mut self, now: SystemTime, kind: Option<BreakType>, ev: &mut Vec<CoreEvent>) {
         if let Some(k) = kind {
             if self.queue.current().kind != k {
@@ -362,7 +327,7 @@ impl Core {
     }
 
     fn postpone_now(&mut self, now: SystemTime, ev: &mut Vec<CoreEvent>) {
-        // Same break, shown again after the postpone delay.
+        // same break, retried after the postpone delay
         self.next_count_at = None;
         self.schedule(now, self.postpone_duration, ev);
     }
@@ -406,14 +371,14 @@ mod tests {
 
     fn core_with(strict: bool, allow_postpone: bool) -> Core {
         let q = BreakQueue::create(
-            60,  // short interval (seconds)
-            300, // long interval (seconds)
+            60,
+            300,
             false,
             vec![brk(BreakType::Short, "look away", 60, 3)],
             vec![brk(BreakType::Long, "stand up", 300, 6)],
         )
         .unwrap();
-        // pre_break_warning = 2s, postpone = 300s.
+        // pre_break_warning = 2s, postpone = 300s
         Core::new(q, 2, 300, allow_postpone, strict)
     }
 
@@ -440,10 +405,10 @@ mod tests {
         ));
         assert_eq!(core.state(), State::Waiting);
 
-        // Nothing happens before the 60-second warning.
+        // nothing before the 60s warning
         assert!(core.tick(at(base, 59)).is_empty());
 
-        // Warning fires at 60s.
+        // warning fires at 60s
         let ev = core.tick(at(base, 60));
         assert!(matches!(ev[0], CoreEvent::PreBreak { .. }));
         assert_eq!(core.state(), State::PreBreak);
@@ -452,7 +417,7 @@ mod tests {
         assert_eq!(core.seconds_until_break_start(at(base, 61)), Some(1));
         assert_eq!(core.seconds_until_break_start(at_ms(base, 61_001)), Some(1));
 
-        // Break starts 2s later (pre_break_warning = 2).
+        // break starts 2s later (pre_break_warning = 2)
         let ev = core.tick(at(base, 62));
         assert!(matches!(
             ev[0],
@@ -464,12 +429,12 @@ mod tests {
         ));
         assert_eq!(core.state(), State::Break);
 
-        // Countdown ticks each second; ends after `duration` seconds.
+        // ticks each second, ends after `duration` seconds
         core.tick(at(base, 63));
         core.tick(at(base, 64));
         let ev = core.tick(at(base, 65));
         assert!(ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
-        // Next break re-scheduled afterwards.
+        // next break gets re-scheduled
         assert!(ev
             .iter()
             .any(|e| matches!(e, CoreEvent::NextBreakScheduled { .. })));
@@ -482,27 +447,25 @@ mod tests {
         let mut core = core_with(false, true);
         core.start(base);
         core.tick(at(base, 60)); // PreBreak
-        core.tick(at(base, 62)); // break starts (duration 3): deadlines 63/64/65
+        core.tick(at(base, 62)); // break starts (duration 3), deadlines 63/64/65
 
-        // A fire that lands late (the run loop was busy drawing the overlay)
-        // still shows "2"…
+        // a late fire (run loop was busy drawing the overlay) still shows "2"
         let ev = core.tick(at_ms(base, 63_400));
         assert!(matches!(
             ev.as_slice(),
             [CoreEvent::Countdown { remaining: 2, .. }]
         ));
 
-        // …and the next on-schedule fire at 64s must show "1", not linger on
-        // "2". The old code re-anchored the deadline to 64.4s, so this tick saw
-        // now < deadline and emitted nothing — the digit hung for a full extra
-        // second and the countdown fell behind the wall clock.
+        // the next on-schedule fire at 64s must show "1", not linger on "2". the old code
+        // re-anchored the deadline to 64.4s, so this tick saw now < deadline and emitted
+        // nothing. the digit hung for a full extra second and the countdown fell behind.
         let ev = core.tick(at(base, 64));
         assert!(matches!(
             ev.as_slice(),
             [CoreEvent::Countdown { remaining: 1, .. }]
         ));
 
-        // The break still ends exactly at 65s — three seconds after it began.
+        // break still ends exactly at 65s, three seconds after it began
         let ev = core.tick(at(base, 65));
         assert!(ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
         assert_eq!(core.state(), State::Waiting);
@@ -516,9 +479,8 @@ mod tests {
         core.tick(at(base, 60));
         core.tick(at(base, 62)); // break starts (duration 3), ends at 65
 
-        // No ticks fire between 63 and 65 (the main thread was blocked). A
-        // single catch-up tick runs the countdown to completion rather than
-        // stalling on a stale "3".
+        // no ticks between 63 and 65 (main thread was blocked). one catch-up tick runs the
+        // countdown to completion instead of stalling on a stale "3".
         let ev = core.tick(at(base, 65));
         assert!(ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
         assert_eq!(core.state(), State::Waiting);
@@ -530,7 +492,7 @@ mod tests {
         let mut core = core_with(false, true);
         core.start(base);
         core.tick(at(base, 60));
-        core.tick(at(base, 62)); // break started
+        core.tick(at(base, 62));
         core.skip();
         let ev = core.tick(at(base, 62));
         assert!(!ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
@@ -558,7 +520,7 @@ mod tests {
             }
             other => panic!("expected StartBreak, got {other:?}"),
         }
-        // postpone() is a no-op under strict mode.
+        // postpone() is a no-op under strict mode
         core.postpone();
         let ev = core.tick(at(base, 63));
         assert!(ev.iter().any(|e| matches!(e, CoreEvent::Countdown { .. })));
@@ -599,11 +561,11 @@ mod tests {
         let mut core = core_with(false, true);
         core.start(base);
         core.tick(at(base, 60));
-        core.tick(at(base, 62)); // break started
+        core.tick(at(base, 62));
         let before = core.current_break_name().to_string();
         core.postpone();
         let ev = core.tick(at(base, 62));
-        // 5-minute postpone.
+        // 5-minute postpone
         assert!(ev.iter().any(|e| matches!(
             e,
             CoreEvent::NextBreakScheduled {

@@ -1,8 +1,3 @@
-//! User configuration, stored as TOML at `~/.config/omma/config.toml`.
-//!
-//! A default file is written on first run. Unknown/missing keys fall back to
-//! defaults, so the file can be partial.
-
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -12,22 +7,15 @@ use crate::model::{Break, BreakQueue, BreakType};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Seconds between short breaks.
     pub short_break_interval: i64,
-    /// Seconds between long breaks.
     pub long_break_interval: i64,
-    /// Short break length, seconds.
     pub short_break_duration: i64,
-    /// Long break length, seconds.
     pub long_break_duration: i64,
-    /// Seconds of warning shown before a break begins.
     pub pre_break_warning: i64,
-    /// Seconds a postponed break is delayed.
     pub postpone_duration: i64,
     pub allow_postpone: bool,
-    /// Strict mode: breaks cannot be skipped or postponed.
+    /// if true, breaks cannot be skipped or postponed
     pub strict_break: bool,
-    /// Shuffle the order breaks are shown in.
     pub random_order: bool,
 
     pub short_breaks: Vec<BreakCfg>,
@@ -43,13 +31,10 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BreakCfg {
     pub name: String,
-    /// Override the global interval for this break (seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<i64>,
-    /// Override the global duration for this break (seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<i64>,
-    /// Optional image path shown on the break screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 }
@@ -57,9 +42,7 @@ pub struct BreakCfg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SmartPause {
-    /// Pause the schedule when the keyboard/mouse are idle.
     pub enabled: bool,
-    /// Idle seconds before pausing.
     pub idle_seconds: i64,
 }
 
@@ -67,32 +50,22 @@ pub struct SmartPause {
 #[serde(default)]
 pub struct AudibleAlert {
     pub enabled: bool,
-    /// Play a sound when a break starts.
     pub pre_break: bool,
-    /// Play a sound when a break ends.
     pub post_break: bool,
-    /// Named system sound for break start (see /System/Library/Sounds).
+    /// system sound name from /System/Library/Sounds
     pub pre_break_sound: String,
-    /// Named system sound for break end.
     pub post_break_sound: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotificationCfg {
-    /// Show the top-center Liquid Glass warning before each break.
     pub enabled: bool,
 }
 
-/// Keys that skip or postpone the break from the warning dialog or break screen.
-///
-/// Each value is a key spec like `"escape"`, `"space"`, a single letter
-/// (`"s"`), or a combination with modifiers (`"cmd+s"`, `"shift+p"`).
-/// Recognised modifiers: `cmd`, `shift`, `alt`/`option`, `ctrl`. Recognised
-/// named keys: `escape`/`esc`, `space`, `enter`/`return`, `tab`,
-/// `delete`/`backspace`. An empty string disables that keybind. A keybind only
-/// works when its action is allowed (postpone needs `allow_postpone`, and
-/// neither works under `strict_break`).
+/// key spec accepts `escape`, `space`, a letter like `s`, or combos like `cmd+s`.
+/// modifiers: cmd, shift, alt/option, ctrl. named keys: escape/esc, space,
+/// enter/return, tab, delete/backspace. empty string disables the bind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Keybindings {
@@ -100,28 +73,18 @@ pub struct Keybindings {
     pub postpone: String,
 }
 
-/// Conditions under which a break is suppressed (skipped or postponed) because
-/// the user is busy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DoNotDisturb {
     pub enabled: bool,
-    /// Suppress when any of these apps is running. Matched (case-insensitive,
-    /// as a substring) against the app's name and bundle identifier — e.g.
-    /// `"zoom"` or `"us.zoom.xos"`. Needs no extra permission.
+    /// case-insensitive substring match against app name or bundle id
     pub skip_when_app_running: Vec<String>,
-    /// Suppress only when one of these apps is frontmost. Needs no extra
-    /// permission.
     pub skip_when_app_active: Vec<String>,
-    /// Suppress when the frontmost app is in fullscreen. Needs Accessibility
-    /// permission.
+    /// needs accessibility permission
     pub skip_when_fullscreen: bool,
-    /// Suppress when any on-screen window title matches one of these regular
-    /// expressions — e.g. `"Zoom Meeting"` for an active call, or a phrase
-    /// from a browser tab title. Needs Accessibility permission.
+    /// regex match against on-screen window titles. needs accessibility permission
     pub window_title_matches: Vec<String>,
-    /// What to do when suppressed: `"skip"` (move to the next break) or
-    /// `"postpone"` (try again after the postpone delay).
+    /// `skip` advances to the next break, `postpone` retries after the postpone delay
     pub action: DndAction,
 }
 
@@ -244,8 +207,6 @@ fn default_long_breaks() -> Vec<BreakCfg> {
 }
 
 impl Config {
-    /// Build the scheduler queue from this config. Returns `None` when both
-    /// break lists are empty.
     pub fn build_queue(&self) -> Option<BreakQueue> {
         let shorts = self
             .short_breaks
@@ -282,7 +243,7 @@ impl Config {
         Ok(toml::to_string_pretty(&Config::default())?)
     }
 
-    /// Load config, writing a default file if none exists.
+    /// write a default file if none exists
     pub fn load() -> Config {
         let path = config_path();
         match std::fs::read_to_string(&path) {
@@ -351,7 +312,7 @@ mod tests {
     fn partial_config_uses_defaults() {
         let cfg: Config = toml::from_str("short_break_interval = 20\n").unwrap();
         assert_eq!(cfg.short_break_interval, 20);
-        assert_eq!(cfg.long_break_interval, 4500); // default preserved
+        assert_eq!(cfg.long_break_interval, 4500);
         assert!(cfg.smart_pause.enabled);
     }
 }
