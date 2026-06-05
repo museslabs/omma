@@ -12,7 +12,7 @@ mod pre_break_dialog;
 mod sound;
 
 use std::cell::RefCell;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, Sel};
@@ -37,10 +37,16 @@ use pre_break_dialog::PreBreakDialog;
 /// launched from its `.app` bundle or run bare. Rendered as a template image,
 /// so only the alpha channel matters and macOS tints it to match the menu bar.
 const TRAY_ICON_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tray-icon.svg"));
+const TRAY_ICON_INCOMING_SVG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tray-icon-incoming.svg"
+));
 
 /// Side length, in points, of the menu-bar glyph. macOS scales the source art
 /// down to this and renders it at the screen's backing scale.
 const TRAY_ICON_SIZE: f64 = 18.0;
+/// Blink the menu-bar icon shortly before the normal pre-break warning appears.
+const TRAY_ICON_INCOMING_WINDOW_SECS: i64 = 60;
 /// Visual countdowns need a sub-second heartbeat because a one-second NSTimer
 /// can fire just before or after the scheduler's exact deadline, making digits
 /// visibly linger or jump. The scheduler remains deadline-based, so this only
@@ -50,8 +56,8 @@ const TICK_INTERVAL_SECS: f64 = 0.2;
 /// Decode the embedded SVG into a template [`NSImage`] sized for the menu bar.
 /// Returns `None` if the bytes ever fail to decode, letting the caller fall
 /// back to a text glyph.
-fn tray_icon_image() -> Option<Retained<NSImage>> {
-    let data = NSData::with_bytes(TRAY_ICON_SVG);
+fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
+    let data = NSData::with_bytes(bytes);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
     // Template images are drawn from alpha alone, so the glyph follows the menu
     // bar's appearance (dark in light mode, light in dark mode) automatically.
@@ -61,6 +67,12 @@ fn tray_icon_image() -> Option<Retained<NSImage>> {
         height: TRAY_ICON_SIZE,
     });
     Some(image)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayIconState {
+    Normal,
+    Incoming,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,6 +117,9 @@ fn run(config: Config, server: Server) -> anyhow::Result<()> {
         server,
         mtm,
         status_item: None,
+        tray_icon: tray_icon_image(TRAY_ICON_SVG),
+        tray_icon_incoming: tray_icon_image(TRAY_ICON_INCOMING_SVG),
+        tray_icon_state: TrayIconState::Normal,
         enable_item: None,
         status_item_label: None,
         break_screen: BreakScreen::new(mtm),
@@ -146,6 +161,9 @@ struct App {
     server: Server,
     mtm: MainThreadMarker,
     status_item: Option<Retained<NSStatusItem>>,
+    tray_icon: Option<Retained<NSImage>>,
+    tray_icon_incoming: Option<Retained<NSImage>>,
+    tray_icon_state: TrayIconState,
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     break_screen: BreakScreen,
@@ -296,6 +314,7 @@ impl App {
             }
         }
 
+        self.refresh_status_icon(now);
         self.refresh_status_label(now);
         self.publish_status(now);
     }
@@ -494,12 +513,6 @@ impl App {
     fn build_status_item(&mut self, delegate: &Delegate) {
         let status_bar = NSStatusBar::systemStatusBar();
         let item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
-        if let Some(button) = item.button(self.mtm) {
-            match tray_icon_image() {
-                Some(image) => button.setImage(Some(&image)),
-                None => button.setTitle(&NSString::from_str("\u{1F441}")), // 👁 fallback
-            }
-        }
 
         let menu = NSMenu::new(self.mtm);
         let target: &AnyObject = delegate;
@@ -517,6 +530,7 @@ impl App {
 
         item.setMenu(Some(&menu));
         self.status_item = Some(item);
+        self.apply_status_icon(TrayIconState::Normal);
         self.refresh_menu_state();
     }
 
@@ -568,6 +582,51 @@ impl App {
             }));
             // 1 = NSControlStateValueOn, 0 = off.
             item.setState(if enabled { 1 } else { 0 });
+        }
+    }
+
+    fn refresh_status_icon(&mut self, now: SystemTime) {
+        let state = self.desired_tray_icon_state(now);
+        if state == self.tray_icon_state {
+            return;
+        }
+        self.tray_icon_state = state;
+        self.apply_status_icon(state);
+    }
+
+    fn apply_status_icon(&self, state: TrayIconState) {
+        let Some(item) = &self.status_item else {
+            return;
+        };
+        let Some(button) = item.button(self.mtm) else {
+            return;
+        };
+
+        let image = match state {
+            TrayIconState::Normal => self.tray_icon.as_ref(),
+            TrayIconState::Incoming => self.tray_icon_incoming.as_ref().or(self.tray_icon.as_ref()),
+        };
+        match image {
+            Some(image) => {
+                button.setTitle(&NSString::from_str(""));
+                button.setImage(Some(image));
+            }
+            None => button.setTitle(&NSString::from_str("\u{1F441}")), // 👁 fallback
+        }
+    }
+
+    fn desired_tray_icon_state(&self, now: SystemTime) -> TrayIconState {
+        if !matches!(self.core.state(), State::Waiting) {
+            return TrayIconState::Normal;
+        }
+        let incoming = self
+            .core
+            .seconds_until_next(now)
+            .is_some_and(|s| (0..=TRAY_ICON_INCOMING_WINDOW_SECS).contains(&s));
+        if incoming && tray_icon_blink_on(now) {
+            TrayIconState::Incoming
+        } else {
+            TrayIconState::Normal
         }
     }
 
@@ -681,4 +740,10 @@ fn fmt_duration(secs: i64) -> String {
     } else {
         format!("{s}s")
     }
+}
+
+fn tray_icon_blink_on(now: SystemTime) -> bool {
+    now.duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
+        .unwrap_or(false)
 }
