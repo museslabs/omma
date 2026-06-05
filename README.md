@@ -27,16 +27,16 @@ confined to the few framework FFI calls that have no safe wrapper.
 ## Build & run
 
 ```sh
-# Bundle and ad-hoc sign:
-./bundle.sh
-open ./Omma.app
+# Run from the repo:
+cargo run --release
 
-# Optional: CLI on your PATH
-ln -sf "$PWD/Omma.app/Contents/MacOS/omma" /usr/local/bin/omma
+# Optional: install the binary on your PATH
+cargo install --path .
+omma
 ```
 
-> The bare `cargo run` binary also works for development; bundling is the
-> easiest way to launch omma like a normal menu-bar app.
+> omma currently runs as a bare menu-bar binary. macOS app bundling is not part
+> of the default workflow.
 
 ## CLI
 
