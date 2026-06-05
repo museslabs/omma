@@ -36,7 +36,7 @@ use pre_break_dialog::PreBreakDialog;
 /// The menu-bar glyph, embedded so it travels with the binary whether omma is
 /// launched from its `.app` bundle or run bare. Rendered as a template image,
 /// so only the alpha channel matters and macOS tints it to match the menu bar.
-const TRAY_ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tray-icon.png"));
+const TRAY_ICON_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tray-icon.svg"));
 
 /// Side length, in points, of the menu-bar glyph. macOS scales the source art
 /// down to this and renders it at the screen's backing scale.
@@ -47,11 +47,11 @@ const TRAY_ICON_SIZE: f64 = 18.0;
 /// improves UI refresh latency.
 const TICK_INTERVAL_SECS: f64 = 0.2;
 
-/// Decode the embedded PNG into a template [`NSImage`] sized for the menu bar.
+/// Decode the embedded SVG into a template [`NSImage`] sized for the menu bar.
 /// Returns `None` if the bytes ever fail to decode, letting the caller fall
 /// back to a text glyph.
 fn tray_icon_image() -> Option<Retained<NSImage>> {
-    let data = NSData::with_bytes(TRAY_ICON_PNG);
+    let data = NSData::with_bytes(TRAY_ICON_SVG);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
     // Template images are drawn from alpha alone, so the glyph follows the menu
     // bar's appearance (dark in light mode, light in dark mode) automatically.
