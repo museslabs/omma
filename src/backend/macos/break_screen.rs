@@ -187,7 +187,7 @@ impl BreakScreen {
             if !buttons.is_empty() {
                 let widths: Vec<f64> = buttons.iter().map(|b| b.frame().size.width).collect();
                 let total: f64 = widths.iter().sum::<f64>() + gap * (buttons.len() as f64 - 1.0);
-                let by = cy - 170.0;
+                let by = 150.0;
                 let mut x = cx - total / 2.0;
                 for (button, bw) in buttons.iter().zip(widths.iter()) {
                     button.setFrame(NSRect::new(
