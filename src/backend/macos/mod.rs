@@ -625,7 +625,7 @@ impl App {
             State::Resting => "Paused (idle)".to_string(),
             _ => match self.core.seconds_until_next(now) {
                 Some(s) if s > 0 => format!(
-                    "Next break in {} — {}",
+                    "Next break in {} - {}",
                     fmt_duration(s),
                     self.core.current_break_name()
                 ),
