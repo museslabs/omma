@@ -81,10 +81,10 @@ pub fn make_glass_button(
     unsafe {
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
-            &*NSColor::whiteColor(),
+            &NSColor::whiteColor(),
             title_range,
         );
-        attributed.addAttribute_value_range(NSFontAttributeName, &*title_font, title_range);
+        attributed.addAttribute_value_range(NSFontAttributeName, &title_font, title_range);
     }
 
     if keybind.is_some() {
@@ -94,8 +94,8 @@ pub fn make_glass_button(
         let start = title_ns.length();
         let hint_range = NSRange::new(start, full_ns.length() - start);
         unsafe {
-            attributed.addAttribute_value_range(NSForegroundColorAttributeName, &*dim, hint_range);
-            attributed.addAttribute_value_range(NSFontAttributeName, &*hint_font, hint_range);
+            attributed.addAttribute_value_range(NSForegroundColorAttributeName, &dim, hint_range);
+            attributed.addAttribute_value_range(NSFontAttributeName, &hint_font, hint_range);
         }
     }
     button.setAttributedTitle(&attributed);

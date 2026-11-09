@@ -62,6 +62,10 @@ impl PreBreakDialog {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "grouped into a struct when the panel code is shared"
+    )]
     pub fn show(
         &mut self,
         _name: &str,
@@ -285,11 +289,18 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<PreBreakWindow>
     window
 }
 
-#[allow(deprecated)]
+#[expect(
+    deprecated,
+    reason = "cooperative activate() is throttled for a background app woken by a timer, so the panel never becomes key"
+)]
 fn force_activate(app: &NSApplication) {
     app.activateIgnoringOtherApps(true);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "grouped into a struct when the panel code is shared"
+)]
 fn make_label(
     mtm: MainThreadMarker,
     text: &str,

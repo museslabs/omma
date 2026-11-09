@@ -393,8 +393,10 @@ mod tests {
 
     #[test]
     fn validation_rejects_non_positive_schedule_values() {
-        let mut cfg = Config::default();
-        cfg.short_break_interval = 0;
+        let mut cfg = Config {
+            short_break_interval: 0,
+            ..Config::default()
+        };
         cfg.long_breaks[0].duration = Some(-1);
 
         let err = cfg.validate().unwrap_err().to_string();

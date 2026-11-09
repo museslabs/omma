@@ -83,6 +83,10 @@ impl BreakScreen {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "grouped into a struct when the panel code is shared"
+    )]
     pub fn show(
         &mut self,
         name: &str,
@@ -331,7 +335,7 @@ impl BreakScreen {
         // defer teardown until the blur-out finishes. windows move into the timer block so
         // they stay on screen for the animation, then the block orders them out and restores
         // accessory mode.
-        let windows: Vec<Retained<BreakWindow>> = self.windows.drain(..).collect();
+        let windows = std::mem::take(&mut self.windows);
         let mtm = self.mtm;
         let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
             for window in &windows {
@@ -375,9 +379,10 @@ impl BreakScreen {
     }
 }
 
-/// deprecated forceful activation is deliberate. cooperative activate() is throttled for a
-/// background app waking on a timer, which leaves the overlay unable to become key.
-#[allow(deprecated)]
+#[expect(
+    deprecated,
+    reason = "cooperative activate() is throttled for a background app woken by a timer, so the panel never becomes key"
+)]
 fn force_activate(app: &NSApplication) {
     app.activateIgnoringOtherApps(true);
 }
@@ -427,7 +432,7 @@ fn make_image_view(
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
     view.setWantsLayer(true);
     let layer = view.layer()?;
-    let image_obj: &AnyObject = &*image;
+    let image_obj: &AnyObject = &image;
     unsafe {
         layer.setContents(Some(image_obj));
         layer.setContentsGravity(kCAGravityResizeAspectFill);
