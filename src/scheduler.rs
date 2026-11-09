@@ -199,32 +199,32 @@ impl Core {
         let mut ev = Vec::new();
 
         // "take break now" short-circuits any waiting state
-        if matches!(self.state, State::Waiting | State::PreBreak) {
-            if let Some(kind) = self.pending_take_break.take() {
-                self.begin_break(now, kind, &mut ev);
-                return ev;
-            }
+        if matches!(self.state, State::Waiting | State::PreBreak)
+            && let Some(kind) = self.pending_take_break.take()
+        {
+            self.begin_break(now, kind, &mut ev);
+            return ev;
         }
 
         match self.state {
             State::Stopped | State::Resting => {}
             State::Waiting => {
-                if let Some(warn) = self.warn_at {
-                    if now >= warn {
-                        self.state = State::PreBreak;
-                        let b = self.queue.current();
-                        ev.push(CoreEvent::PreBreak {
-                            name: b.name.clone(),
-                            kind: b.kind,
-                        });
-                    }
+                if let Some(warn) = self.warn_at
+                    && now >= warn
+                {
+                    self.state = State::PreBreak;
+                    let b = self.queue.current();
+                    ev.push(CoreEvent::PreBreak {
+                        name: b.name.clone(),
+                        kind: b.kind,
+                    });
                 }
             }
             State::PreBreak => {
-                if let Some(bt) = self.break_at {
-                    if now >= bt {
-                        self.start_break(now, &mut ev);
-                    }
+                if let Some(bt) = self.break_at
+                    && now >= bt
+                {
+                    self.start_break(now, &mut ev);
                 }
             }
             State::Break => {
@@ -308,10 +308,10 @@ impl Core {
 
     /// start a break immediately, no warning. used by "take a break now".
     fn begin_break(&mut self, now: SystemTime, kind: Option<BreakType>, ev: &mut Vec<CoreEvent>) {
-        if let Some(k) = kind {
-            if self.queue.current().kind != k {
-                self.queue.advance(Some(k));
-            }
+        if let Some(k) = kind
+            && self.queue.current().kind != k
+        {
+            self.queue.advance(Some(k));
         }
         self.start_break(now, ev);
     }
@@ -344,11 +344,7 @@ fn duration_secs_ceil(from: SystemTime, to: SystemTime) -> i64 {
     match to.duration_since(from) {
         Ok(d) => {
             let secs = d.as_secs() as i64;
-            if d.subsec_nanos() > 0 {
-                secs + 1
-            } else {
-                secs
-            }
+            if d.subsec_nanos() > 0 { secs + 1 } else { secs }
         }
         Err(e) => -(e.duration().as_secs() as i64),
     }
@@ -434,9 +430,10 @@ mod tests {
         let ev = core.tick(at(base, 65));
         assert!(ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
         // next break gets re-scheduled
-        assert!(ev
-            .iter()
-            .any(|e| matches!(e, CoreEvent::NextBreakScheduled { .. })));
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, CoreEvent::NextBreakScheduled { .. }))
+        );
         assert_eq!(core.state(), State::Waiting);
     }
 
@@ -495,9 +492,10 @@ mod tests {
         core.skip();
         let ev = core.tick(at(base, 62));
         assert!(!ev.iter().any(|e| matches!(e, CoreEvent::StopBreak)));
-        assert!(ev
-            .iter()
-            .any(|e| matches!(e, CoreEvent::NextBreakScheduled { .. })));
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, CoreEvent::NextBreakScheduled { .. }))
+        );
         assert_eq!(core.state(), State::Waiting);
     }
 

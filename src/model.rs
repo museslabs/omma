@@ -215,7 +215,9 @@ mod tests {
         use BreakType::*;
         assert_eq!(
             types,
-            vec![Short, Short, Short, Short, Long, Short, Short, Short, Short, Long]
+            vec![
+                Short, Short, Short, Short, Long, Short, Short, Short, Short, Long
+            ]
         );
     }
 

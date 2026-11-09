@@ -63,12 +63,12 @@ impl<B: Backend, S: CommandServer> Controller<B, S> {
         let events = self.core.tick(now);
         self.handle_events(now, events, target);
 
-        if matches!(self.core.state(), State::PreBreak) {
-            if let Some(remaining) = self.core.seconds_until_break_start(now) {
-                self.backend.update_countdown(Countdown::PreBreak {
-                    seconds_until_break: remaining,
-                });
-            }
+        if matches!(self.core.state(), State::PreBreak)
+            && let Some(remaining) = self.core.seconds_until_break_start(now)
+        {
+            self.backend.update_countdown(Countdown::PreBreak {
+                seconds_until_break: remaining,
+            });
         }
 
         self.refresh_status(now);

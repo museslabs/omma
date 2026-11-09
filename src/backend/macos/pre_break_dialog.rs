@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, sel, MainThreadOnly};
+use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSFontWeightMedium,
@@ -16,11 +16,11 @@ use objc2_foundation::{
     NSString, NSTimer,
 };
 use objc2_quartz_core::{
-    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation,
-    CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    CABasicAnimation, CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
 };
 
-use super::glass_button::{make_glass_button, GlassButtonStyle};
+use super::glass_button::{GlassButtonStyle, make_glass_button};
 
 const PANEL_LEVEL: isize = 1000;
 const PANEL_W: f64 = 340.0;
@@ -221,22 +221,22 @@ impl PreBreakDialog {
         let Some(window) = self.window.take() else {
             return;
         };
-        if let Some(glass) = self.glass.take() {
-            if let Some(layer) = glass.layer() {
-                let now = CACurrentMediaTime();
-                attach_blur(&layer);
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-                layer.addAnimation_forKey(&blur_radius(0.0, 22.0, now, HIDE_DURATION, true), None);
-                layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, true), None);
-            }
+        if let Some(glass) = self.glass.take()
+            && let Some(layer) = glass.layer()
+        {
+            let now = CACurrentMediaTime();
+            attach_blur(&layer);
+            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
+            layer.addAnimation_forKey(&blur_radius(0.0, 22.0, now, HIDE_DURATION, true), None);
+            layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, true), None);
         }
-        if let Some(body) = self.body.take() {
-            if let Some(layer) = body.layer() {
-                let now = CACurrentMediaTime();
-                attach_blur(&layer);
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-                layer.addAnimation_forKey(&blur_radius(0.0, 18.0, now, HIDE_DURATION, true), None);
-            }
+        if let Some(body) = self.body.take()
+            && let Some(layer) = body.layer()
+        {
+            let now = CACurrentMediaTime();
+            attach_blur(&layer);
+            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
+            layer.addAnimation_forKey(&blur_radius(0.0, 18.0, now, HIDE_DURATION, true), None);
         }
         self.countdown_label = None;
 

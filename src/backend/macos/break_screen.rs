@@ -6,7 +6,7 @@ use core::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
+use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont,
@@ -21,12 +21,12 @@ use objc2_foundation::{
     NSString, NSTimer,
 };
 use objc2_quartz_core::{
-    kCAFillModeBackwards, kCAFillModeBoth, kCAGravityResizeAspectFill,
-    kCAMediaTimingFunctionEaseInEaseOut, CABasicAnimation, CACurrentMediaTime, CALayer,
-    CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
+    CABasicAnimation, CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    CASpringAnimation, kCAFillModeBackwards, kCAFillModeBoth, kCAGravityResizeAspectFill,
+    kCAMediaTimingFunctionEaseInEaseOut,
 };
 
-use super::glass_button::{make_glass_button, GlassButtonStyle};
+use super::glass_button::{GlassButtonStyle, make_glass_button};
 
 /// above normal windows and fullscreen apps
 const SCREEN_SAVER_LEVEL: isize = 1000;
@@ -438,10 +438,10 @@ fn make_image_view(
 }
 
 fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{home}/{rest}");
     }
     path.to_string()
 }

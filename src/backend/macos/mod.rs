@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, Sel};
-use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuItem, NSStatusBar,
     NSStatusItem, NSVariableStatusItemLength,

@@ -1,7 +1,7 @@
 //! do-not-disturb. tier 1 checks running/frontmost apps via NSWorkspace, no permission.
 //! tier 2 checks fullscreen or window titles via the accessibility api, which the user grants.
 
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use regex::{Regex, RegexBuilder};
@@ -69,12 +69,11 @@ impl DndChecker {
         let workspace = NSWorkspace::sharedWorkspace();
 
         // tier 1: frontmost app
-        if !self.apps_active.is_empty() {
-            if let Some(front) = workspace.frontmostApplication() {
-                if app_matches(&front, &self.apps_active) {
-                    return true;
-                }
-            }
+        if !self.apps_active.is_empty()
+            && let Some(front) = workspace.frontmostApplication()
+            && app_matches(&front, &self.apps_active)
+        {
+            return true;
         }
 
         // tier 1: any running app
@@ -298,10 +297,10 @@ fn any_window_title_matches(workspace: &NSWorkspace, regexes: &[Regex]) -> bool 
                     }
                     let title_ref = ax_copy(window, title_attr);
                     if !title_ref.is_null() {
-                        if let Some(title) = cfstring_to_string(title_ref) {
-                            if regexes.iter().any(|re| re.is_match(&title)) {
-                                matched = true;
-                            }
+                        if let Some(title) = cfstring_to_string(title_ref)
+                            && regexes.iter().any(|re| re.is_match(&title))
+                        {
+                            matched = true;
                         }
                         CFRelease(title_ref);
                     }
