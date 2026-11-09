@@ -9,10 +9,6 @@ readme = "README.md"
 keywords = ["macos", "health", "eye-strain", "break", "menu-bar"]
 categories = ["command-line-utilities"]
 
-[[bin]]
-name = "omma"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

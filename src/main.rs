@@ -1,5 +1,12 @@
+mod backend;
+mod cli;
+mod config;
+mod controller;
+mod ipc;
+mod model;
+mod scheduler;
+
 use clap::Parser;
-use omma::{cli, config, ipc};
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
@@ -23,7 +30,7 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn run_app() -> anyhow::Result<()> {
-    use omma::ipc::CommandTransport;
+    use ipc::CommandTransport;
 
     let cfg = config::Config::load();
     let server = match ipc::LocalSocketTransport.bind() {
@@ -35,7 +42,7 @@ fn run_app() -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("could not start omma: {e}"),
     };
 
-    omma::backend::macos::MacosBackend.run(cfg, server)
+    backend::macos::MacosBackend.run(cfg, server)
 }
 
 #[cfg(not(target_os = "macos"))]
