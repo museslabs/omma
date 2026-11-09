@@ -269,14 +269,8 @@ impl Config {
                 image: b.image.clone(),
             })
             .collect();
-        BreakQueue::create(
-            self.short_break_interval,
-            self.long_break_interval,
-            self.random_order,
-            shorts,
-            longs,
-        )
-        .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))
+        BreakQueue::create(self.long_break_interval, self.random_order, shorts, longs)
+            .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))
     }
 
     pub fn default_toml() -> anyhow::Result<String> {

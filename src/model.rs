@@ -19,10 +19,6 @@ impl Break {
     pub fn is_long(&self) -> bool {
         self.kind == BreakType::Long
     }
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn is_short(&self) -> bool {
-        self.kind == BreakType::Short
-    }
 }
 
 /// interleaves shorts with periodic longs. defaults give four shorts then a long, repeating.
@@ -41,7 +37,6 @@ pub struct BreakQueue {
 
 impl BreakQueue {
     pub fn create(
-        _short_interval: i64,
         long_interval: i64,
         random_order: bool,
         mut shorts: Vec<Break>,
@@ -211,7 +206,7 @@ mod tests {
 
     #[test]
     fn interleaves_four_shorts_then_long() {
-        let mut q = BreakQueue::create(15, 75, false, shorts(13, 15), longs(6, 75)).unwrap();
+        let mut q = BreakQueue::create(75, false, shorts(13, 15), longs(6, 75)).unwrap();
         // create() already picked the first break
         let mut types = vec![q.current().kind];
         for _ in 0..9 {
@@ -226,7 +221,7 @@ mod tests {
 
     #[test]
     fn long_break_waits_leftover() {
-        let mut q = BreakQueue::create(15, 75, false, shorts(13, 15), longs(6, 75)).unwrap();
+        let mut q = BreakQueue::create(75, false, shorts(13, 15), longs(6, 75)).unwrap();
         // s0..s3 then the long. the long is due after the 15s leftover, not its configured 75.
         for _ in 0..4 {
             q.advance(None);
@@ -237,22 +232,22 @@ mod tests {
 
     #[test]
     fn only_short_breaks() {
-        let mut q = BreakQueue::create(15, 75, false, shorts(3, 15), vec![]).unwrap();
-        assert!(q.current().is_short());
+        let mut q = BreakQueue::create(75, false, shorts(3, 15), vec![]).unwrap();
+        assert_eq!(q.current().kind, BreakType::Short);
         for _ in 0..5 {
-            assert!(q.advance(None).is_short());
+            assert_eq!(q.advance(None).kind, BreakType::Short);
         }
     }
 
     #[test]
     fn only_long_breaks() {
-        let q = BreakQueue::create(15, 75, false, vec![], longs(2, 75)).unwrap();
+        let q = BreakQueue::create(75, false, vec![], longs(2, 75)).unwrap();
         assert!(q.current().is_long());
         assert_eq!(q.current().interval, 75);
     }
 
     #[test]
     fn empty_queue_is_none() {
-        assert!(BreakQueue::create(15, 75, false, vec![], vec![]).is_none());
+        assert!(BreakQueue::create(75, false, vec![], vec![]).is_none());
     }
 }

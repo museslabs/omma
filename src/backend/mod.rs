@@ -36,7 +36,6 @@ pub struct StatusSnapshot {
     pub enabled: bool,
     pub state: State,
     pub seconds_until_next: Option<i64>,
-    pub current_break_name: String,
     pub text: String,
 }
 

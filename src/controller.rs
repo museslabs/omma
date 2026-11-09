@@ -322,14 +322,12 @@ impl<B: Backend, S: CommandServer> Controller<B, S> {
         let enabled = self.core.is_enabled();
         let state = self.core.state();
         let seconds_until_next = self.core.seconds_until_next(now);
-        let current_break_name = self.core.current_break_name().to_string();
         let text = self.status_text(now);
 
         crate::backend::StatusSnapshot {
             enabled,
             state,
             seconds_until_next,
-            current_break_name,
             text,
         }
     }

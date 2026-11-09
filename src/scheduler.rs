@@ -371,7 +371,6 @@ mod tests {
 
     fn core_with(strict: bool, allow_postpone: bool) -> Core {
         let q = BreakQueue::create(
-            60,
             300,
             false,
             vec![brk(BreakType::Short, "look away", 60, 3)],

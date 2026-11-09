@@ -67,7 +67,6 @@ pub struct BreakScreen {
     backdrops: Vec<Retained<NSView>>,
     /// off when the user has asked macos to reduce motion
     animate: bool,
-    visible: bool,
 }
 
 impl BreakScreen {
@@ -79,7 +78,6 @@ impl BreakScreen {
             foregrounds: Vec::new(),
             backdrops: Vec::new(),
             animate: true,
-            visible: false,
         }
     }
 
@@ -288,8 +286,6 @@ impl BreakScreen {
         if let Some(first) = self.windows.first() {
             first.makeKeyAndOrderFront(None);
         }
-
-        self.visible = true;
     }
 
     pub fn update_countdown(&self, remaining: i64, _total: i64) {
@@ -357,7 +353,6 @@ impl BreakScreen {
         self.backdrops.clear();
         self.foregrounds.clear();
         self.countdown_labels.clear();
-        self.visible = false;
     }
 
     /// no exit animation. order every window out, forget the views, drop back to accessory.
@@ -370,7 +365,6 @@ impl BreakScreen {
         self.backdrops.clear();
         self.foregrounds.clear();
         self.countdown_labels.clear();
-        self.visible = false;
 
         if had_windows {
             let app = NSApplication::sharedApplication(self.mtm);
@@ -642,12 +636,5 @@ fn remove_view_after(view: Retained<NSTextField>, delay: f64) {
     // SAFETY: scheduled on and fired from the main run loop
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
-    }
-}
-
-impl BreakScreen {
-    #[allow(dead_code)]
-    pub fn is_visible(&self) -> bool {
-        self.visible
     }
 }
