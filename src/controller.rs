@@ -366,7 +366,6 @@ fn fmt_duration(secs: i64) -> String {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl CommandServer for crate::ipc::Server {
     fn drain(&self) -> Vec<Command> {
         crate::ipc::Server::drain(self)

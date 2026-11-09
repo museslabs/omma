@@ -1,3 +1,6 @@
+#[cfg(not(target_os = "macos"))]
+compile_error!("omma supports macOS only");
+
 mod backend;
 mod cli;
 mod config;
@@ -7,6 +10,7 @@ mod model;
 mod scheduler;
 
 use clap::Parser;
+use ipc::CommandTransport;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
@@ -25,13 +29,6 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    run_app()
-}
-
-#[cfg(target_os = "macos")]
-fn run_app() -> anyhow::Result<()> {
-    use ipc::CommandTransport;
-
     let cfg = config::Config::load();
     let server = match ipc::LocalSocketTransport.bind() {
         Ok(s) => s,
@@ -43,9 +40,4 @@ fn run_app() -> anyhow::Result<()> {
     };
 
     backend::macos::MacosBackend.run(cfg, server)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn run_app() -> anyhow::Result<()> {
-    anyhow::bail!("omma currently supports macOS only")
 }

@@ -61,5 +61,4 @@ pub trait Backend {
     fn quit(&mut self);
 }
 
-#[cfg(target_os = "macos")]
 pub mod macos;
