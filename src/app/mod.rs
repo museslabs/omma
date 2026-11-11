@@ -19,7 +19,9 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
     NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
+use objc2_foundation::{
+    MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+};
 
 use crate::config::{self, Config};
 use crate::ipc::{self, Command, Server};
@@ -37,11 +39,14 @@ const TRAY_ICON_INCOMING_SVG: &[u8] = include_bytes!(concat!(
 ));
 
 const TRAY_ICON_SIZE: f64 = 18.0;
-/// start blinking the tray icon this many seconds before the warning
+/// the tray icon blinks, and the timer ticks fast, this many seconds before the warning
 const INCOMING_WINDOW_SECS: u64 = 60;
-/// sub-second so a tick landing near a deadline doesn't make digits linger or jump; the
-/// core is deadline-based either way
-const TICK_INTERVAL_SECS: f64 = 0.2;
+/// while something counts down on screen. sub-second so a tick landing near a deadline
+/// doesn't make digits linger or jump; the core is deadline-based either way.
+const FAST_TICK_SECS: f64 = 0.2;
+const SLOW_TICK_SECS: f64 = 1.0;
+/// the config file is checked for changes at most this often
+const CONFIG_POLL: Duration = Duration::from_secs(1);
 
 /// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
@@ -79,18 +84,6 @@ pub fn run(config: Config, ipc: Server) -> anyhow::Result<()> {
         app.sync(now, target);
     });
 
-    // NSTimer retains its target, so the delegate (and all state) stays alive for the run loop
-    let timer: Retained<NSTimer> = unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            TICK_INTERVAL_SECS,
-            target,
-            sel!(onTimer:),
-            None,
-            true,
-        )
-    };
-    timer.setTolerance(0.05);
-
     ns_app.run();
     Ok(())
 }
@@ -102,6 +95,7 @@ struct App {
     config: Config,
     config_path: PathBuf,
     config_mtime: Option<SystemTime>,
+    config_checked: Option<SystemTime>,
     ipc: Server,
     status_item: Option<Retained<NSStatusItem>>,
     tray_icon: Option<Retained<NSImage>>,
@@ -114,6 +108,8 @@ struct App {
     /// the user closed the warning without skipping or postponing; cleared when it ends
     warning_dismissed: bool,
     shown: Shown,
+    /// set up by the first `sync`
+    timer: Option<Retained<NSTimer>>,
 }
 
 /// what the widgets show, so `sync` touches only what changed
@@ -123,6 +119,7 @@ struct Shown {
     status: String,
     enabled: Option<bool>,
     tray_icon: TrayIconState,
+    fast_ticks: bool,
 }
 
 define_class!(
@@ -238,6 +235,7 @@ impl App {
             config,
             config_path,
             config_mtime,
+            config_checked: None,
             ipc,
             status_item: None,
             tray_icon,
@@ -249,6 +247,7 @@ impl App {
             dnd,
             warning_dismissed: false,
             shown: Shown::default(),
+            timer: None,
         })
     }
 
@@ -258,7 +257,7 @@ impl App {
             self.react(now, event, target);
         }
 
-        self.maybe_reload_config();
+        self.maybe_reload_config(now);
 
         let idle = Duration::try_from_secs_f64(idle::idle_seconds()).unwrap_or_default();
         let event = self.core.tick(now, idle);
@@ -280,6 +279,7 @@ impl App {
             Command::Status => None,
             Command::Reload => {
                 self.config_mtime = None;
+                self.config_checked = None;
                 None
             }
         }
@@ -383,6 +383,7 @@ impl App {
         } else {
             TrayIconState::Normal
         });
+        self.sync_timer(warning || in_break || incoming, target);
     }
 
     fn sync_menu(&mut self, now: SystemTime) {
@@ -417,6 +418,39 @@ impl App {
         }
     }
 
+    /// ticks fast while a countdown is on screen or the warning is near, slowly otherwise.
+    /// the timer runs in the common run-loop modes so ticks keep coming while the status
+    /// menu is open. that's re-entrancy-safe: menu tracking starts from event dispatch,
+    /// never while the delegate's RefCell is borrowed.
+    fn sync_timer(&mut self, fast: bool, target: &AnyObject) {
+        if self.timer.is_some() && self.shown.fast_ticks == fast {
+            return;
+        }
+        if let Some(timer) = self.timer.take() {
+            timer.invalidate();
+        }
+        let (interval, tolerance) = if fast {
+            (FAST_TICK_SECS, 0.05)
+        } else {
+            (SLOW_TICK_SECS, 0.1)
+        };
+        // the timer retains its target, and the run loop the timer, which keeps the
+        // delegate and all state alive
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                interval,
+                target,
+                sel!(onTimer:),
+                None,
+                true,
+            )
+        };
+        timer.setTolerance(tolerance);
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        self.timer = Some(timer);
+        self.shown.fast_ticks = fast;
+    }
+
     fn open_config_file(&self) {
         let _ = std::process::Command::new("open")
             .arg(&self.config_path)
@@ -430,13 +464,21 @@ impl App {
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
 
-    fn maybe_reload_config(&mut self) {
+    fn maybe_reload_config(&mut self, now: SystemTime) {
         if matches!(
             self.core.phase(),
             Phase::Warning { .. } | Phase::Break { .. }
         ) {
             return;
         }
+        if self
+            .config_checked
+            .is_some_and(|t| now.duration_since(t).is_ok_and(|d| d < CONFIG_POLL))
+        {
+            return;
+        }
+        self.config_checked = Some(now);
+
         let mtime = file_mtime(&self.config_path);
         if mtime == self.config_mtime {
             return;
