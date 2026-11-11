@@ -62,57 +62,40 @@ impl std::fmt::Display for BindError {
 }
 impl std::error::Error for BindError {}
 
-pub trait CommandClient {
-    fn send(&self, cmd: Command) -> std::io::Result<bool>;
-}
-
-pub trait CommandTransport {
-    type Server;
-
-    fn bind(&self) -> Result<Self::Server, BindError>;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LocalSocketTransport;
-
 pub fn socket_path() -> PathBuf {
     std::env::temp_dir().join("omma.sock")
 }
 
 pub struct Server {
-    pub rx: Receiver<Command>,
-    pub status: Arc<Mutex<String>>,
+    rx: Receiver<Command>,
+    status: Arc<Mutex<String>>,
 }
 
-impl CommandTransport for LocalSocketTransport {
-    type Server = Server;
+pub fn bind() -> Result<Server, BindError> {
+    let path = socket_path();
 
-    fn bind(&self) -> Result<Server, BindError> {
-        let path = socket_path();
-
-        // a live app owns the socket if connect succeeds
-        if path.exists() {
-            match UnixStream::connect(&path) {
-                Ok(_) => return Err(BindError::AlreadyRunning),
-                Err(_) => {
-                    let _ = std::fs::remove_file(&path);
-                }
+    // a live app owns the socket if connect succeeds
+    if path.exists() {
+        match UnixStream::connect(&path) {
+            Ok(_) => return Err(BindError::AlreadyRunning),
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
             }
         }
-
-        let listener = UnixListener::bind(&path).map_err(BindError::Io)?;
-
-        let (tx, rx) = mpsc::channel();
-        let status = Arc::new(Mutex::new(String::from("starting")));
-        let status_for_thread = Arc::clone(&status);
-
-        std::thread::Builder::new()
-            .name("omma-ipc".into())
-            .spawn(move || accept_loop(listener, tx, status_for_thread))
-            .map_err(BindError::Io)?;
-
-        Ok(Server { rx, status })
     }
+
+    let listener = UnixListener::bind(&path).map_err(BindError::Io)?;
+
+    let (tx, rx) = mpsc::channel();
+    let status = Arc::new(Mutex::new(String::from("starting")));
+    let status_for_thread = Arc::clone(&status);
+
+    std::thread::Builder::new()
+        .name("omma-ipc".into())
+        .spawn(move || accept_loop(listener, tx, status_for_thread))
+        .map_err(BindError::Io)?;
+
+    Ok(Server { rx, status })
 }
 
 impl Server {
@@ -162,30 +145,24 @@ fn accept_loop(listener: UnixListener, tx: Sender<Command>, status: Arc<Mutex<St
     }
 }
 
-impl CommandClient for LocalSocketTransport {
-    /// returns Ok(false) if no app is running
-    fn send(&self, cmd: Command) -> std::io::Result<bool> {
-        let path = socket_path();
-        let mut stream = match UnixStream::connect(&path) {
-            Ok(s) => s,
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        writeln!(stream, "{}", cmd.as_wire())?;
-        stream.flush()?;
-
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp)?;
-        let resp = resp.trim();
-        if !resp.is_empty() {
-            println!("{resp}");
-        }
-        Ok(true)
-    }
-}
-
+/// returns Ok(false) if no app is running
 pub fn send(cmd: Command) -> std::io::Result<bool> {
-    LocalSocketTransport.send(cmd)
+    let path = socket_path();
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(s) => s,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    writeln!(stream, "{}", cmd.as_wire())?;
+    stream.flush()?;
+
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp)?;
+    let resp = resp.trim();
+    if !resp.is_empty() {
+        println!("{resp}");
+    }
+    Ok(true)
 }

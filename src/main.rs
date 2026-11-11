@@ -10,7 +10,6 @@ mod model;
 mod scheduler;
 
 use clap::Parser;
-use ipc::CommandTransport;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
@@ -30,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cfg = config::Config::load();
-    let server = match ipc::LocalSocketTransport.bind() {
+    let server = match ipc::bind() {
         Ok(s) => s,
         Err(ipc::BindError::AlreadyRunning) => {
             eprintln!("omma is already running.");
