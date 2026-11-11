@@ -9,14 +9,15 @@ mod pre_break_dialog;
 mod sound;
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuItem, NSStatusBar,
-    NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
+    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
@@ -68,12 +69,14 @@ pub fn run(config: Config, ipc: Server) -> anyhow::Result<()> {
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let delegate = Delegate::new(mtm, App::new(mtm, config, ipc)?);
+    let mut app = App::new(mtm, config, ipc)?;
+    app.core.start(SystemTime::now());
+    let delegate = Delegate::new(mtm, app);
     delegate.with_app(|app| app.build_status_item(&delegate));
 
     // NSTimer retains its target, so the delegate (and all state) stays alive for the run loop
     let target: &AnyObject = &delegate;
-    let _timer: Retained<NSTimer> = unsafe {
+    let timer: Retained<NSTimer> = unsafe {
         NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
             TICK_INTERVAL_SECS,
             target,
@@ -82,7 +85,7 @@ pub fn run(config: Config, ipc: Server) -> anyhow::Result<()> {
             true,
         )
     };
-    _timer.setTolerance(0.05);
+    timer.setTolerance(0.05);
 
     ns_app.run();
     Ok(())
@@ -93,9 +96,8 @@ struct App {
     mtm: MainThreadMarker,
     core: Core,
     config: Config,
+    config_path: PathBuf,
     config_mtime: Option<SystemTime>,
-    smart_pause_enabled: bool,
-    idle_threshold: f64,
     ipc: Server,
     status_item: Option<Retained<NSStatusItem>>,
     tray_icon: Option<Retained<NSImage>>,
@@ -197,6 +199,7 @@ impl Delegate {
 }
 
 impl App {
+    /// the core is built but not started
     fn new(mtm: MainThreadMarker, config: Config, ipc: Server) -> anyhow::Result<App> {
         let dnd = DndChecker::from_config(&config.do_not_disturb);
         let tray_icon = tray_icon_image(TRAY_ICON_SVG);
@@ -205,26 +208,23 @@ impl App {
         let pre_break_dialog = PreBreakDialog::new(mtm);
 
         let queue = config.build_queue()?;
-        let mut core = Core::new(
+        let core = Core::new(
             queue,
             config.pre_break_warning,
             config.postpone_duration,
             config.allow_postpone,
             config.strict_break,
         );
-        core.start(SystemTime::now());
 
-        let smart_pause_enabled = config.smart_pause.enabled;
-        let idle_threshold = config.smart_pause.idle_seconds as f64;
-        let config_mtime = file_mtime(&config::config_path());
+        let config_path = config::config_path();
+        let config_mtime = file_mtime(&config_path);
 
         Ok(App {
             mtm,
             core,
             config,
+            config_path,
             config_mtime,
-            smart_pause_enabled,
-            idle_threshold,
             ipc,
             status_item: None,
             tray_icon,
@@ -240,7 +240,7 @@ impl App {
 
     fn on_tick(&mut self, now: SystemTime, target: &AnyObject) {
         for cmd in self.ipc.drain() {
-            self.handle_command(cmd);
+            self.handle_command(now, cmd);
         }
 
         self.maybe_reload_config(now);
@@ -263,14 +263,18 @@ impl App {
     }
 
     fn toggle_enabled(&mut self, now: SystemTime) {
-        if self.core.is_enabled() {
+        self.set_enabled(now, !self.core.is_enabled());
+    }
+
+    fn set_enabled(&mut self, now: SystemTime, on: bool) {
+        if on {
+            let _ = self.core.enable(now);
+        } else {
             self.pre_break_dialog.hide();
             self.break_screen.hide();
             self.core.disable();
-        } else {
-            let _ = self.core.enable(now);
         }
-        self.refresh_menu_state(self.core.is_enabled());
+        self.refresh_menu_state();
     }
 
     fn skip_break(&mut self) {
@@ -298,8 +302,9 @@ impl App {
     }
 
     fn open_config_file(&self) {
-        let path = config::config_path();
-        let _ = std::process::Command::new("open").arg(path).status();
+        let _ = std::process::Command::new("open")
+            .arg(&self.config_path)
+            .status();
     }
 
     fn quit(&mut self) {
@@ -321,14 +326,13 @@ impl App {
             return;
         }
 
-        let path = config::config_path();
-        let mtime = file_mtime(&path);
+        let mtime = file_mtime(&self.config_path);
         if mtime == self.config_mtime {
             return;
         }
         self.config_mtime = mtime;
 
-        let data = match std::fs::read_to_string(&path) {
+        let data = match std::fs::read_to_string(&self.config_path) {
             Ok(d) => d,
             Err(_) => return,
         };
@@ -366,22 +370,16 @@ impl App {
         self.core = core;
 
         self.dnd = DndChecker::from_config(&new.do_not_disturb);
-        if !new.notification.enabled {
-            self.pre_break_dialog.hide();
-        }
-        self.smart_pause_enabled = new.smart_pause.enabled;
-        self.idle_threshold = new.smart_pause.idle_seconds as f64;
         self.config = new;
-        self.refresh_menu_state(self.core.is_enabled());
         Ok(())
     }
 
     fn apply_smart_pause(&mut self, now: SystemTime, target: &AnyObject) {
-        if !self.smart_pause_enabled || !self.core.is_enabled() {
+        let smart_pause = &self.config.smart_pause;
+        if !smart_pause.enabled || !self.core.is_enabled() {
             return;
         }
-        let idle = idle::idle_seconds();
-        if idle >= self.idle_threshold {
+        if idle::idle_seconds() >= smart_pause.idle_seconds as f64 {
             if matches!(self.core.state(), State::PreBreak) {
                 self.pre_break_dialog.hide();
             }
@@ -411,8 +409,6 @@ impl App {
                 }
 
                 if self.config.notification.enabled {
-                    let skip_key = self.config.keybindings.skip.clone();
-                    let postpone_key = self.config.keybindings.postpone.clone();
                     let allow_skip = !self.config.strict_break;
                     let allow_postpone = self.config.allow_postpone && !self.config.strict_break;
                     let seconds_until_break = self
@@ -424,13 +420,13 @@ impl App {
                         allow_skip,
                         allow_postpone,
                         seconds_until_break,
-                        &skip_key,
-                        &postpone_key,
+                        &self.config.keybindings.skip,
+                        &self.config.keybindings.postpone,
                         target,
                     );
                 }
 
-                let alert = self.config.audible_alert.clone();
+                let alert = &self.config.audible_alert;
                 if alert.enabled && alert.pre_break {
                     sound::play(&alert.pre_break_sound);
                 }
@@ -444,15 +440,13 @@ impl App {
                 ..
             } => {
                 self.pre_break_dialog.hide_for_break();
-                let skip_key = self.config.keybindings.skip.clone();
-                let postpone_key = self.config.keybindings.postpone.clone();
                 self.break_screen.show(
                     &name,
                     duration,
                     allow_skip,
                     allow_postpone,
-                    &skip_key,
-                    &postpone_key,
+                    &self.config.keybindings.skip,
+                    &self.config.keybindings.postpone,
                     image.as_deref(),
                     target,
                 );
@@ -463,7 +457,7 @@ impl App {
             CoreEvent::StopBreak => {
                 self.pre_break_dialog.hide();
                 self.break_screen.hide();
-                let alert = self.config.audible_alert.clone();
+                let alert = &self.config.audible_alert;
                 if alert.enabled && alert.post_break {
                     sound::play(&alert.post_break_sound);
                 }
@@ -471,22 +465,15 @@ impl App {
         }
     }
 
-    fn handle_command(&mut self, cmd: Command) {
+    fn handle_command(&mut self, now: SystemTime, cmd: Command) {
         match cmd {
             Command::TakeBreak => self.core.take_break(None),
             Command::TakeShortBreak => self.core.take_break(Some(BreakType::Short)),
             Command::TakeLongBreak => self.core.take_break(Some(BreakType::Long)),
-            Command::Enable => {
-                let _ = self.core.enable(SystemTime::now());
-                self.refresh_menu_state(self.core.is_enabled());
-            }
-            Command::Disable => {
-                self.pre_break_dialog.hide();
-                self.break_screen.hide();
-                self.core.disable();
-                self.refresh_menu_state(self.core.is_enabled());
-            }
+            Command::Enable => self.set_enabled(now, true),
+            Command::Disable => self.set_enabled(now, false),
             Command::Quit => self.quit(),
+            // answered on the IPC thread
             Command::Status => {}
             Command::Reload => self.config_mtime = None,
         }
@@ -494,7 +481,6 @@ impl App {
 
     fn refresh_status(&mut self, now: SystemTime) {
         let text = self.status_text(now);
-        self.refresh_menu_state(self.core.is_enabled());
         self.refresh_status_icon(now);
         self.refresh_status_label(&text);
         self.ipc.set_status(text);
@@ -539,7 +525,7 @@ impl App {
         item.setMenu(Some(&menu));
         self.status_item = Some(item);
         self.apply_status_icon(TrayIconState::Normal);
-        self.refresh_menu_state(true);
+        self.refresh_menu_state();
     }
 
     fn add_item(
@@ -580,16 +566,19 @@ impl App {
         item
     }
 
-    fn refresh_menu_state(&self, enabled: bool) {
-        if let Some(item) = &self.enable_item {
-            item.setTitle(&NSString::from_str(if enabled {
-                "Enabled"
-            } else {
-                "Disabled"
-            }));
-            // 1 = NSControlStateValueOn, 0 = off
-            item.setState(if enabled { 1 } else { 0 });
-        }
+    /// after startup, only `set_enabled` changes whether the core is enabled; a reload
+    /// keeps it
+    fn refresh_menu_state(&self) {
+        let Some(item) = &self.enable_item else {
+            return;
+        };
+        let (title, state) = if self.core.is_enabled() {
+            ("Enabled", NSControlStateValueOn)
+        } else {
+            ("Disabled", NSControlStateValueOff)
+        };
+        item.setTitle(&NSString::from_str(title));
+        item.setState(state);
     }
 
     fn refresh_status_icon(&mut self, now: SystemTime) {
@@ -650,7 +639,7 @@ fn tray_icon_blink_on(now: SystemTime) -> bool {
         .unwrap_or(false)
 }
 
-fn file_mtime(path: &std::path::Path) -> Option<SystemTime> {
+fn file_mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
