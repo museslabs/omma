@@ -88,7 +88,7 @@ impl BreakScreen {
     pub fn show(
         &mut self,
         name: &str,
-        duration: i64,
+        remaining: u64,
         allow_skip: bool,
         allow_postpone: bool,
         skip_key: &str,
@@ -178,7 +178,7 @@ impl BreakScreen {
             // each tick cross-fades via update_countdown
             let count_label = make_label(
                 mtm,
-                &duration.to_string(),
+                &remaining.to_string(),
                 &count_font,
                 &NSColor::whiteColor(),
                 NSRect::new(
@@ -197,7 +197,7 @@ impl BreakScreen {
                     "Skip",
                     skip_key,
                     target,
-                    sel!(skipBreak:),
+                    sel!(skip:),
                     GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
                 ));
             }
@@ -207,7 +207,7 @@ impl BreakScreen {
                     "Postpone",
                     postpone_key,
                     target,
-                    sel!(postponeBreak:),
+                    sel!(postpone:),
                     GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
                 ));
             }
@@ -281,15 +281,23 @@ impl BreakScreen {
         // and skip/postpone keys are dead until the user clicks. promote to regular and force
         // activate so the panel becomes key, hide() drops us back to accessory.
         let app = NSApplication::sharedApplication(mtm);
+        let Some(first) = self.windows.first() else {
+            // no display to cover. the warning hands over without restoring accessory, so
+            // restore it here rather than leave the app regular
+            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            return;
+        };
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         force_activate(&app);
-        if let Some(first) = self.windows.first() {
-            first.makeKeyAndOrderFront(None);
-        }
+        first.makeKeyAndOrderFront(None);
     }
 
-    pub fn update_countdown(&self, remaining: i64, _total: i64) {
-        let text = NSString::from_str(&remaining.max(0).to_string());
+    pub fn is_visible(&self) -> bool {
+        !self.windows.is_empty()
+    }
+
+    pub fn update_countdown(&self, remaining: u64) {
+        let text = NSString::from_str(&remaining.to_string());
         for label in &self.countdown_labels {
             if self.animate {
                 animate_countdown_swap(self.mtm, label, &text);

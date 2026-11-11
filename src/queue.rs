@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+//! the configured breaks and the order each kind comes in. which kind is due when is the
+//! scheduler's call.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BreakType {
@@ -6,145 +9,100 @@ pub enum BreakType {
     Long,
 }
 
-#[derive(Clone, Debug)]
+impl BreakType {
+    fn other(self) -> BreakType {
+        match self {
+            BreakType::Short => BreakType::Long,
+            BreakType::Long => BreakType::Short,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Break {
     pub kind: BreakType,
     pub name: String,
-    pub interval: i64,
-    pub duration: i64,
+    pub duration: Duration,
     pub image: Option<String>,
 }
 
-impl Break {
-    pub fn is_long(&self) -> bool {
-        self.kind == BreakType::Long
+/// the configured breaks, never both lists empty
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Breaks {
+    shorts: Vec<Break>,
+    longs: Vec<Break>,
+}
+
+impl Breaks {
+    pub fn new(shorts: Vec<Break>, longs: Vec<Break>) -> Option<Breaks> {
+        (!shorts.is_empty() || !longs.is_empty()).then_some(Breaks { shorts, longs })
     }
 }
 
-/// interleaves shorts with periodic longs. defaults give four shorts then a long, repeating.
+/// cycles through each kind's breaks, reshuffling every round when the order is random
 pub struct BreakQueue {
-    long_interval: i64,
-    random_order: bool,
-    shorts: Vec<Break>,
-    longs: Vec<Break>,
-    cur_short: usize,
-    cur_long: usize,
-    /// shorts eat into this. when it drops to or below the next short's interval, a long takes the slot.
-    seconds_until_long: i64,
-    current: Break,
-    rng: Rng,
+    shorts: Deck,
+    longs: Deck,
+    /// None keeps the configured order
+    rng: Option<Rng>,
+}
+
+struct Deck {
+    breaks: Vec<Break>,
+    next: usize,
 }
 
 impl BreakQueue {
-    pub fn create(
-        long_interval: i64,
-        random_order: bool,
-        mut shorts: Vec<Break>,
-        mut longs: Vec<Break>,
-    ) -> Option<BreakQueue> {
-        if shorts.is_empty() && longs.is_empty() {
-            return None;
-        }
-
-        let mut rng = Rng::new();
-        if random_order {
-            rng.shuffle(&mut shorts);
-            rng.shuffle(&mut longs);
-        }
-
-        let mut q = BreakQueue {
-            long_interval,
-            random_order,
-            shorts,
-            longs,
-            cur_short: 0,
-            cur_long: 0,
-            seconds_until_long: long_interval,
-            // overwritten by select_next below
-            current: Break {
-                kind: BreakType::Short,
-                name: String::new(),
-                interval: 0,
-                duration: 0,
-                image: None,
-            },
+    /// `seed` seeds the shuffle when the order is random
+    pub fn new(breaks: &Breaks, random_order: bool, seed: SystemTime) -> BreakQueue {
+        let mut rng = random_order.then(|| Rng::new(seed));
+        let mut deck = |breaks: &[Break]| {
+            let mut breaks = breaks.to_vec();
+            if let Some(rng) = &mut rng {
+                rng.shuffle(&mut breaks);
+            }
+            Deck { breaks, next: 0 }
+        };
+        BreakQueue {
+            shorts: deck(&breaks.shorts),
+            longs: deck(&breaks.longs),
             rng,
+        }
+    }
+
+    pub fn has(&self, kind: BreakType) -> bool {
+        !self.deck(kind).breaks.is_empty()
+    }
+
+    /// the next break of `kind`, or of the other kind when none of `kind` are configured
+    pub fn peek(&self, kind: BreakType) -> &Break {
+        let kind = if self.has(kind) { kind } else { kind.other() };
+        let deck = self.deck(kind);
+        &deck.breaks[deck.next]
+    }
+
+    /// moves `kind` on to its following break
+    pub fn advance(&mut self, kind: BreakType) {
+        let deck = match kind {
+            BreakType::Short => &mut self.shorts,
+            BreakType::Long => &mut self.longs,
         };
-        q.select_next(None);
-        Some(q)
-    }
-
-    pub fn current(&self) -> &Break {
-        &self.current
-    }
-
-    pub fn has_short(&self) -> bool {
-        !self.shorts.is_empty()
-    }
-
-    pub fn has_long(&self) -> bool {
-        !self.longs.is_empty()
-    }
-
-    pub fn advance(&mut self, force: Option<BreakType>) -> &Break {
-        self.select_next(force);
-        &self.current
-    }
-
-    fn select_next(&mut self, force: Option<BreakType>) {
-        let has_s = self.has_short();
-        let has_l = self.has_long();
-
-        let pick_long = if !has_s {
-            true
-        } else if !has_l {
-            false
-        } else {
-            force == Some(BreakType::Long)
-                || self.seconds_until_long <= self.shorts[self.cur_short].interval
-        };
-
-        if pick_long {
-            let mut b = self.longs[self.cur_long].clone();
-            if has_s {
-                // wait the leftover, then reset the long countdown
-                b.interval = self.seconds_until_long.max(0);
-            }
-            self.seconds_until_long = self.long_interval;
-            self.current = b;
-
-            self.cur_long += 1;
-            if self.cur_long >= self.longs.len() {
-                self.cur_long = 0;
-                if self.random_order {
-                    self.rng.shuffle(&mut self.longs);
-                }
-            }
-        } else {
-            let b = self.shorts[self.cur_short].clone();
-            self.seconds_until_long -= b.interval;
-            self.current = b;
-
-            self.cur_short += 1;
-            if self.cur_short >= self.shorts.len() {
-                self.cur_short = 0;
-                if self.random_order {
-                    self.rng.shuffle(&mut self.shorts);
-                }
+        if deck.breaks.is_empty() {
+            return;
+        }
+        deck.next += 1;
+        if deck.next == deck.breaks.len() {
+            deck.next = 0;
+            if let Some(rng) = &mut self.rng {
+                rng.shuffle(&mut deck.breaks);
             }
         }
     }
 
-    /// used by smart-pause to decide whether a long idle already counts as a long break
-    pub fn next_long_duration(&self) -> Option<i64> {
-        self.longs.get(self.cur_long).map(|b| b.duration)
-    }
-
-    /// reset the long countdown and skip past a current long. used when a long idle stood in for it.
-    pub fn skip_long_break(&mut self) {
-        self.seconds_until_long = self.long_interval;
-        if self.current.is_long() && self.has_short() {
-            self.select_next(Some(BreakType::Short));
+    fn deck(&self, kind: BreakType) -> &Deck {
+        match kind {
+            BreakType::Short => &self.shorts,
+            BreakType::Long => &self.longs,
         }
     }
 }
@@ -153,8 +111,8 @@ impl BreakQueue {
 struct Rng(u64);
 
 impl Rng {
-    fn new() -> Self {
-        let seed = SystemTime::now()
+    fn new(seed: SystemTime) -> Self {
+        let seed = seed
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e37_79b9_7f4a_7c15)
@@ -180,76 +138,85 @@ impl Rng {
 }
 
 #[cfg(test)]
+pub fn brk(kind: BreakType, name: &str, duration_secs: u64) -> Break {
+    Break {
+        kind,
+        name: name.into(),
+        duration: Duration::from_secs(duration_secs),
+        image: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn mk(kind: BreakType, name: &str, interval: i64) -> Break {
-        Break {
-            kind,
-            name: name.into(),
-            interval,
-            duration: if kind == BreakType::Short { 15 } else { 60 },
-            image: None,
-        }
+    fn named(kind: BreakType, names: &[&str]) -> Vec<Break> {
+        names.iter().map(|n| brk(kind, n, 15)).collect()
     }
 
-    fn shorts(n: usize, interval: i64) -> Vec<Break> {
+    fn take_names(q: &mut BreakQueue, kind: BreakType, n: usize) -> Vec<String> {
         (0..n)
-            .map(|i| mk(BreakType::Short, &format!("s{i}"), interval))
-            .collect()
-    }
-    fn longs(n: usize, interval: i64) -> Vec<Break> {
-        (0..n)
-            .map(|i| mk(BreakType::Long, &format!("l{i}"), interval))
+            .map(|_| {
+                let name = q.peek(kind).name.clone();
+                q.advance(kind);
+                name
+            })
             .collect()
     }
 
     #[test]
-    fn interleaves_four_shorts_then_long() {
-        let mut q = BreakQueue::create(75, false, shorts(13, 15), longs(6, 75)).unwrap();
-        // create() already picked the first break
-        let mut types = vec![q.current().kind];
-        for _ in 0..9 {
-            types.push(q.advance(None).kind);
-        }
-        use BreakType::*;
+    fn fixed_order_cycles_each_kind_on_its_own() {
+        let breaks = Breaks::new(
+            named(BreakType::Short, &["s0", "s1", "s2"]),
+            named(BreakType::Long, &["l0", "l1"]),
+        )
+        .unwrap();
+        let mut q = BreakQueue::new(&breaks, false, UNIX_EPOCH);
         assert_eq!(
-            types,
-            vec![
-                Short, Short, Short, Short, Long, Short, Short, Short, Short, Long
-            ]
+            take_names(&mut q, BreakType::Short, 4),
+            ["s0", "s1", "s2", "s0"]
         );
+        assert_eq!(take_names(&mut q, BreakType::Long, 3), ["l0", "l1", "l0"]);
+        assert_eq!(q.peek(BreakType::Short).name, "s1");
     }
 
     #[test]
-    fn long_break_waits_leftover() {
-        let mut q = BreakQueue::create(75, false, shorts(13, 15), longs(6, 75)).unwrap();
-        // s0..s3 then the long. the long is due after the 15s leftover, not its configured 75.
-        for _ in 0..4 {
-            q.advance(None);
+    fn peeking_does_not_advance() {
+        let breaks = Breaks::new(named(BreakType::Short, &["s0", "s1"]), vec![]).unwrap();
+        let q = BreakQueue::new(&breaks, false, UNIX_EPOCH);
+        assert_eq!(q.peek(BreakType::Short).name, "s0");
+        assert_eq!(q.peek(BreakType::Short).name, "s0");
+    }
+
+    #[test]
+    fn random_order_shows_every_break_once_per_round() {
+        let names = ["a", "b", "c", "d", "e"];
+        let breaks = Breaks::new(named(BreakType::Short, &names), vec![]).unwrap();
+        let mut q = BreakQueue::new(
+            &breaks,
+            true,
+            UNIX_EPOCH + Duration::from_nanos(123_456_789),
+        );
+        for _ in 0..3 {
+            let mut round = take_names(&mut q, BreakType::Short, names.len());
+            round.sort();
+            assert_eq!(round, names);
         }
-        assert!(q.current().is_long());
-        assert_eq!(q.current().interval, 15);
     }
 
     #[test]
-    fn only_short_breaks() {
-        let mut q = BreakQueue::create(75, false, shorts(3, 15), vec![]).unwrap();
-        assert_eq!(q.current().kind, BreakType::Short);
-        for _ in 0..5 {
-            assert_eq!(q.advance(None).kind, BreakType::Short);
-        }
+    fn a_missing_kind_falls_back_to_the_other() {
+        let breaks = Breaks::new(named(BreakType::Short, &["s0"]), vec![]).unwrap();
+        let mut q = BreakQueue::new(&breaks, false, UNIX_EPOCH);
+        assert!(!q.has(BreakType::Long));
+        assert_eq!(q.peek(BreakType::Long).kind, BreakType::Short);
+        q.advance(BreakType::Long);
+        assert_eq!(q.peek(BreakType::Short).name, "s0");
     }
 
     #[test]
-    fn only_long_breaks() {
-        let q = BreakQueue::create(75, false, vec![], longs(2, 75)).unwrap();
-        assert!(q.current().is_long());
-        assert_eq!(q.current().interval, 75);
-    }
-
-    #[test]
-    fn empty_queue_is_none() {
-        assert!(BreakQueue::create(75, false, vec![], vec![]).is_none());
+    fn breaks_must_not_be_empty() {
+        assert!(Breaks::new(vec![], vec![]).is_none());
     }
 }

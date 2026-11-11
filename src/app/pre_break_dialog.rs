@@ -71,7 +71,7 @@ impl PreBreakDialog {
         _name: &str,
         allow_skip: bool,
         allow_postpone: bool,
-        seconds_until_break: i64,
+        seconds_until_break: u64,
         skip_key: &str,
         postpone_key: &str,
         target: &AnyObject,
@@ -142,7 +142,7 @@ impl PreBreakDialog {
 
         let primary_title = if allow_skip { "Skip" } else { "Dismiss" };
         let primary_action = if allow_skip {
-            sel!(skipWarning:)
+            sel!(skip:)
         } else {
             sel!(dismissWarning:)
         };
@@ -169,7 +169,7 @@ impl PreBreakDialog {
                 "Postpone",
                 postpone_key,
                 target,
-                sel!(postponeWarning:),
+                sel!(postpone:),
                 GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
             );
             postpone.setFrame(NSRect::new(
@@ -203,7 +203,11 @@ impl PreBreakDialog {
         self.countdown_label = Some(countdown);
     }
 
-    pub fn update_countdown(&mut self, seconds_until_break: i64) {
+    pub fn is_visible(&self) -> bool {
+        self.window.is_some()
+    }
+
+    pub fn update_countdown(&mut self, seconds_until_break: u64) {
         if let Some(label) = &self.countdown_label {
             label.setStringValue(&NSString::from_str(&fmt_seconds(seconds_until_break)));
         }
@@ -320,8 +324,8 @@ fn make_label(
     label
 }
 
-fn fmt_seconds(seconds: i64) -> String {
-    format!("{}s", seconds.max(0))
+fn fmt_seconds(seconds: u64) -> String {
+    format!("{seconds}s")
 }
 
 fn apply_fill(anim: &CABasicAnimation, hold: bool) {

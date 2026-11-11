@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::queue::{Break, BreakQueue, BreakType};
+use crate::queue::{Break, BreakType, Breaks};
+use crate::scheduler::Settings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -241,33 +243,44 @@ impl Config {
         }
     }
 
-    pub fn build_queue(&self) -> anyhow::Result<BreakQueue> {
+    /// validates, then converts to the scheduler's settings
+    pub fn settings(&self) -> anyhow::Result<Settings> {
         self.validate()?;
 
-        let shorts = self
-            .short_breaks
-            .iter()
-            .map(|b| Break {
-                kind: BreakType::Short,
-                name: b.name.clone(),
-                interval: self.short_break_interval,
-                duration: b.duration.unwrap_or(self.short_break_duration),
-                image: b.image.clone(),
-            })
-            .collect();
-        let longs = self
-            .long_breaks
-            .iter()
-            .map(|b| Break {
-                kind: BreakType::Long,
-                name: b.name.clone(),
-                interval: self.long_break_interval,
-                duration: b.duration.unwrap_or(self.long_break_duration),
-                image: b.image.clone(),
-            })
-            .collect();
-        BreakQueue::create(self.long_break_interval, self.random_order, shorts, longs)
-            .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))
+        let breaks = |cfgs: &[BreakCfg], kind, default_duration| {
+            cfgs.iter()
+                .map(|b| Break {
+                    kind,
+                    name: b.name.clone(),
+                    duration: secs(b.duration.unwrap_or(default_duration)),
+                    image: b.image.clone(),
+                })
+                .collect()
+        };
+        let breaks = Breaks::new(
+            breaks(
+                &self.short_breaks,
+                BreakType::Short,
+                self.short_break_duration,
+            ),
+            breaks(&self.long_breaks, BreakType::Long, self.long_break_duration),
+        )
+        .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))?;
+
+        Ok(Settings {
+            short_interval: secs(self.short_break_interval),
+            long_interval: secs(self.long_break_interval),
+            pre_break_warning: secs(self.pre_break_warning),
+            postpone: secs(self.postpone_duration),
+            allow_postpone: self.allow_postpone,
+            strict: self.strict_break,
+            idle_threshold: self
+                .smart_pause
+                .enabled
+                .then(|| secs(self.smart_pause.idle_seconds)),
+            random_order: self.random_order,
+            breaks,
+        })
     }
 
     pub fn default_toml() -> anyhow::Result<String> {
@@ -335,6 +348,11 @@ fn validate_breaks(section: &str, breaks: &[BreakCfg], errors: &mut Vec<String>)
     }
 }
 
+/// `value` has been validated as non-negative
+fn secs(value: i64) -> Duration {
+    Duration::from_secs(value.try_into().unwrap_or(0))
+}
+
 fn write_default(path: &PathBuf, cfg: &Config) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -368,7 +386,20 @@ mod tests {
         assert!(!parsed.do_not_disturb.skip_when_fullscreen);
         assert_eq!(parsed.keybindings.skip, "escape");
         assert_eq!(parsed.keybindings.postpone, "space");
-        assert!(parsed.build_queue().is_ok());
+        assert!(parsed.settings().is_ok());
+    }
+
+    #[test]
+    fn settings_convert_seconds_and_turn_smart_pause_off() {
+        let mut cfg = Config::default();
+        let settings = cfg.settings().unwrap();
+        assert_eq!(settings.short_interval, Duration::from_secs(900));
+        assert_eq!(settings.long_interval, Duration::from_secs(4500));
+        assert_eq!(settings.pre_break_warning, Duration::from_secs(10));
+        assert_eq!(settings.idle_threshold, Some(Duration::from_secs(60)));
+
+        cfg.smart_pause.enabled = false;
+        assert_eq!(cfg.settings().unwrap().idle_threshold, None);
     }
 
     #[test]
