@@ -399,13 +399,11 @@ impl App {
         let enabled = self.core.is_enabled();
         if self.shown.enabled != Some(enabled) {
             if let Some(item) = &self.enable_item {
-                let (title, state) = if enabled {
-                    ("Enabled", NSControlStateValueOn)
+                item.setState(if enabled {
+                    NSControlStateValueOn
                 } else {
-                    ("Disabled", NSControlStateValueOff)
-                };
-                item.setTitle(&NSString::from_str(title));
-                item.setState(state);
+                    NSControlStateValueOff
+                });
             }
             self.shown.enabled = Some(enabled);
         }
