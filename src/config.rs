@@ -32,8 +32,6 @@ pub struct Config {
 pub struct BreakCfg {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interval: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -172,7 +170,6 @@ fn names_to_breaks(names: &[&str]) -> Vec<BreakCfg> {
         .iter()
         .map(|n| BreakCfg {
             name: (*n).to_string(),
-            interval: None,
             duration: None,
             image: None,
         })
@@ -253,7 +250,7 @@ impl Config {
             .map(|b| Break {
                 kind: BreakType::Short,
                 name: b.name.clone(),
-                interval: b.interval.unwrap_or(self.short_break_interval),
+                interval: self.short_break_interval,
                 duration: b.duration.unwrap_or(self.short_break_duration),
                 image: b.image.clone(),
             })
@@ -264,7 +261,7 @@ impl Config {
             .map(|b| Break {
                 kind: BreakType::Long,
                 name: b.name.clone(),
-                interval: b.interval.unwrap_or(self.long_break_interval),
+                interval: self.long_break_interval,
                 duration: b.duration.unwrap_or(self.long_break_duration),
                 image: b.image.clone(),
             })
@@ -331,9 +328,6 @@ fn validate_breaks(section: &str, breaks: &[BreakCfg], errors: &mut Vec<String>)
         let prefix = format!("{section}[{idx}]");
         if b.name.trim().is_empty() {
             errors.push(format!("{prefix}.name must not be empty"));
-        }
-        if let Some(interval) = b.interval {
-            require_positive(&format!("{prefix}.interval"), interval, errors);
         }
         if let Some(duration) = b.duration {
             require_positive(&format!("{prefix}.duration"), duration, errors);
