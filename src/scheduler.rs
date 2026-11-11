@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use crate::model::{BreakQueue, BreakType};
+use crate::queue::{BreakQueue, BreakType};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
@@ -353,7 +353,7 @@ fn duration_secs_ceil(from: SystemTime, to: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Break;
+    use crate::queue::Break;
 
     fn brk(kind: BreakType, name: &str, interval: i64, duration: i64) -> Break {
         Break {

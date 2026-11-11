@@ -23,7 +23,7 @@ use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString, NSTimer};
 
 use crate::config::{self, Config, DndAction};
 use crate::ipc::{self, Command, Server};
-use crate::model::BreakType;
+use crate::queue::BreakType;
 use crate::scheduler::{Core, CoreEvent, State};
 use activity::DndChecker;
 use break_screen::BreakScreen;

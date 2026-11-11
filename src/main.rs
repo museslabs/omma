@@ -5,7 +5,7 @@ mod app;
 mod cli;
 mod config;
 mod ipc;
-mod model;
+mod queue;
 mod scheduler;
 
 use clap::Parser;

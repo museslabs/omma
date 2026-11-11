@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Break, BreakQueue, BreakType};
+use crate::queue::{Break, BreakQueue, BreakType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
