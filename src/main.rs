@@ -1,10 +1,9 @@
 #[cfg(not(target_os = "macos"))]
 compile_error!("omma supports macOS only");
 
-mod backend;
+mod app;
 mod cli;
 mod config;
-mod controller;
 mod ipc;
 mod model;
 mod scheduler;
@@ -38,5 +37,5 @@ fn main() -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("could not start omma: {e}"),
     };
 
-    backend::macos::MacosBackend.run(cfg, server)
+    app::run(cfg, server)
 }
