@@ -307,9 +307,9 @@ impl App {
             .status();
     }
 
-    fn quit(&mut self) {
-        self.pre_break_dialog.hide();
-        self.break_screen.hide();
+    /// removes the socket itself: `terminate:` with no app delegate ends in `exit()`, which
+    /// runs no destructors or pending timers
+    fn quit(&self) {
         let _ = std::fs::remove_file(ipc::socket_path());
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
