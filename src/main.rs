@@ -57,6 +57,7 @@ fn send(command: Command) -> anyhow::Result<ExitCode> {
 /// takes the instance lock before reading the config, so a second instance neither writes
 /// a default config nor reports a config error
 fn run() -> anyhow::Result<ExitCode> {
+    app::check_system()?;
     let dir = runtime_dir()?;
     let Some(server) =
         ipc::bind(&dir).with_context(|| format!("can't start in {}", dir.display()))?

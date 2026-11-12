@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
@@ -88,6 +88,14 @@ impl Fallback {
             Fallback::LastGood => "kept the last good config",
         }
     }
+}
+
+/// the warning and the break screen are made of NSGlassEffectView, new in macOS 26
+pub fn check_system() -> anyhow::Result<()> {
+    if AnyClass::get(c"NSGlassEffectView").is_none() {
+        anyhow::bail!("requires macOS 26 or later");
+    }
+    Ok(())
 }
 
 /// `config_error` is why the file at `config_path` didn't load, with the defaults in its place
