@@ -9,9 +9,10 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use anyhow::{Context, bail};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -62,6 +63,9 @@ impl FromStr for Command {
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnknownCommand;
 
+/// what a command did, or why the running instance refused it
+pub type Reply = Result<String, String>;
+
 /// `~/Library/Application Support/omma`, where the running instance keeps its lock file and
 /// socket. None when the home directory isn't an absolute path.
 pub fn runtime_dir() -> Option<PathBuf> {
@@ -72,10 +76,13 @@ pub fn runtime_dir() -> Option<PathBuf> {
 
 const LOCK_FILE: &str = "omma.lock";
 const SOCKET: &str = "omma.sock";
+/// the main thread writes replies, and mustn't wait on a client
+const WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+/// covers the main thread's next tick, up to a second away
+const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct Server {
-    rx: Receiver<Command>,
-    status: Arc<Mutex<String>>,
+    rx: Receiver<Request>,
     /// locked for as long as the process lives. the kernel releases it however the
     /// process ends, so a crash leaves nothing to clean up.
     _lock: File,
@@ -102,81 +109,117 @@ pub fn bind(dir: &Path) -> io::Result<Option<Server>> {
     let listener = UnixListener::bind(&path)?;
 
     let (tx, rx) = mpsc::channel();
-    let status = Arc::new(Mutex::new(String::from("starting")));
-    let status_for_thread = Arc::clone(&status);
-
     thread::Builder::new()
         .name("omma-ipc".into())
-        .spawn(move || accept_loop(listener, tx, status_for_thread))?;
+        .spawn(move || accept_loop(listener, tx))?;
 
-    Ok(Some(Server {
-        rx,
-        status,
-        _lock: lock,
-    }))
+    Ok(Some(Server { rx, _lock: lock }))
 }
 
 impl Server {
-    pub fn drain(&self) -> Vec<Command> {
+    pub fn drain(&self) -> Vec<Request> {
         self.rx.try_iter().collect()
     }
+}
 
-    pub fn set_status(&self, s: String) {
-        if let Ok(mut g) = self.status.lock() {
-            *g = s;
-        }
+/// a client's command, waiting for its reply. the connection closes when the request is
+/// dropped, and the client waits for that.
+pub struct Request {
+    pub command: Command,
+    stream: UnixStream,
+}
+
+impl Request {
+    pub fn reply(&self, reply: &Reply) {
+        // a client that hung up has nothing to read it
+        let _ = write!(&self.stream, "{}", encode(reply));
     }
 }
 
-fn accept_loop(listener: UnixListener, tx: Sender<Command>, status: Arc<Mutex<String>>) {
+fn accept_loop(listener: UnixListener, tx: Sender<Request>) {
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-
-        let mut reader = BufReader::new(match stream.try_clone() {
-            Ok(s) => s,
-            Err(_) => continue,
-        });
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
-            continue;
+        let Ok(stream) = stream else { continue };
+        if let Some(request) = read_request(stream)
+            && tx.send(request).is_err()
+        {
+            return;
         }
-
-        let reply = match line.trim().parse() {
-            Ok(Command::Status) => status
-                .lock()
-                .map(|g| g.clone())
-                .unwrap_or_else(|_| "unknown".into()),
-            Ok(cmd) => {
-                let _ = tx.send(cmd);
-                "ok".into()
-            }
-            Err(UnknownCommand) => "error: unknown command".into(),
-        };
-        let _ = writeln!(stream, "{reply}");
     }
 }
 
-/// returns Ok(false) if no app is running
-pub fn send(dir: &Path, cmd: Command) -> io::Result<bool> {
-    let mut stream = match UnixStream::connect(dir.join(SOCKET)) {
-        Ok(s) => s,
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
-            return Ok(false);
+/// None when the client sent no command in time, or one this instance doesn't know, which
+/// is answered here
+fn read_request(stream: UnixStream) -> Option<Request> {
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT)).ok()?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).ok()?;
+    let line = line.trim();
+    match line.parse() {
+        Ok(command) => Some(Request { command, stream }),
+        Err(UnknownCommand) => {
+            let reply = Err(format!(
+                "unknown command '{line}' (is the running omma older than this CLI?)"
+            ));
+            let _ = write!(&stream, "{}", encode(&reply));
+            None
         }
-        Err(e) => return Err(e),
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    writeln!(stream, "{cmd}")?;
-    stream.flush()?;
-
-    let mut resp = String::new();
-    stream.read_to_string(&mut resp)?;
-    let resp = resp.trim();
-    if !resp.is_empty() {
-        println!("{resp}");
     }
-    Ok(true)
+}
+
+/// sends `command` to the running instance and waits for its reply. None when no instance
+/// is running.
+pub fn send(dir: &Path, command: Command) -> anyhow::Result<Option<Reply>> {
+    let stream = match UnixStream::connect(dir.join(SOCKET)) {
+        Ok(stream) => stream,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e).context("talking to the running omma"),
+    };
+    exchange(&stream, command)
+        .context("talking to the running omma")
+        .map(Some)
+}
+
+fn exchange(mut stream: &UnixStream, command: Command) -> anyhow::Result<Reply> {
+    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    writeln!(stream, "{command}")?;
+    // the reply counts once the connection closes. after quit that's when the process exits.
+    let mut response = String::new();
+    if let Err(e) = stream.read_to_string(&mut response) {
+        if !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+            return Err(e.into());
+        }
+        let secs = REPLY_TIMEOUT.as_secs();
+        if command == Command::Quit && decode(&response).is_some() {
+            bail!("omma is quitting but still running after {secs} s");
+        }
+        bail!("no reply within {secs} s");
+    }
+    match decode(&response) {
+        Some(reply) => Ok(reply),
+        None if response.is_empty() => bail!("omma closed the connection without replying"),
+        None => bail!("unexpected reply {response:?}"),
+    }
+}
+
+/// `ok <text>` or `err <text>`, then a newline. the text may span lines.
+fn encode(reply: &Reply) -> String {
+    match reply {
+        Ok(text) => format!("ok {text}\n"),
+        Err(text) => format!("err {text}\n"),
+    }
+}
+
+/// None unless `response` is one reply ending in a newline
+fn decode(response: &str) -> Option<Reply> {
+    let (status, text) = response.strip_suffix('\n')?.split_once(' ')?;
+    match status {
+        "ok" => Some(Ok(text.into())),
+        "err" => Some(Err(text.into())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -235,12 +278,91 @@ mod tests {
     #[test]
     fn send_finds_nothing_running() {
         let scratch = Scratch::new();
-        assert!(!send(&scratch.0, Command::Status).unwrap(), "no directory");
+        assert!(
+            send(&scratch.0, Command::Status).unwrap().is_none(),
+            "no directory"
+        );
         fs::create_dir(&scratch.0).unwrap();
         drop(UnixListener::bind(scratch.0.join(SOCKET)).unwrap());
         assert!(
-            !send(&scratch.0, Command::Status).unwrap(),
+            send(&scratch.0, Command::Status).unwrap().is_none(),
             "a stale socket"
+        );
+    }
+
+    /// sends `command` to the server in `dir` from another thread, answers it with `reply`,
+    /// and returns what the client got
+    fn round_trip(dir: &Path, server: &Server, command: Command, reply: Reply) -> Option<Reply> {
+        let client = {
+            let dir = dir.to_path_buf();
+            thread::spawn(move || send(&dir, command).unwrap())
+        };
+        let request = server.rx.recv_timeout(REPLY_TIMEOUT).unwrap();
+        assert_eq!(request.command, command);
+        request.reply(&reply);
+        drop(request);
+        client.join().unwrap()
+    }
+
+    #[test]
+    fn the_client_gets_the_reply() {
+        let scratch = Scratch::new();
+        let server = bind(&scratch.0).unwrap().unwrap();
+        let ok = Ok("Next break in 5m - Look away".to_string());
+        assert_eq!(
+            round_trip(&scratch.0, &server, Command::Status, ok.clone()),
+            Some(ok)
+        );
+        let err = Err("omma is disabled".to_string());
+        assert_eq!(
+            round_trip(&scratch.0, &server, Command::TakeBreak, err.clone()),
+            Some(err)
+        );
+    }
+
+    #[test]
+    fn the_client_waits_for_the_connection_to_close() {
+        let scratch = Scratch::new();
+        let server = bind(&scratch.0).unwrap().unwrap();
+        let dir = scratch.0.clone();
+        let client = thread::spawn(move || send(&dir, Command::Quit).unwrap());
+        let request = server.rx.recv_timeout(REPLY_TIMEOUT).unwrap();
+        request.reply(&Ok("quitting".into()));
+        thread::sleep(Duration::from_millis(300));
+        assert!(!client.is_finished());
+        drop(request);
+        assert_eq!(client.join().unwrap(), Some(Ok("quitting".into())));
+    }
+
+    #[test]
+    fn replies_survive_the_wire() {
+        for reply in [
+            Ok(String::new()),
+            Ok("enabled".into()),
+            Ok("Disabled\nconfig.toml: line 3: oops; kept the last good config".into()),
+            Err("a break is already running".into()),
+        ] {
+            assert_eq!(decode(&encode(&reply)), Some(reply));
+        }
+        assert_eq!(decode("ok\n"), None, "no separator");
+        assert_eq!(decode("ok fine"), None, "cut short");
+        assert_eq!(decode("Next break in 5m\n"), None);
+    }
+
+    #[test]
+    fn an_unknown_command_is_refused() {
+        let scratch = Scratch::new();
+        let _server = bind(&scratch.0).unwrap().unwrap();
+        let mut stream = UnixStream::connect(scratch.0.join(SOCKET)).unwrap();
+        stream.set_read_timeout(Some(REPLY_TIMEOUT)).unwrap();
+        writeln!(stream, "snooze").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert_eq!(
+            decode(&response),
+            Some(Err(
+                "unknown command 'snooze' (is the running omma older than this CLI?)".into()
+            ))
         );
     }
 

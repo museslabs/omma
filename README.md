@@ -53,7 +53,15 @@ omma --reload              re-read the config of the running instance now
 omma --print-default-config   print the default config as TOML
 ```
 
-Flags can't be combined.
+Flags can't be combined. Each command waits for the running instance to act on
+it, then prints what it did or why it refused. `--status` also prints the
+config file's error, if it has one. The exit code is:
+
+- 0 when the command worked;
+- 1 when omma isn't running, or, when starting it, is already running;
+- 2 when the running instance refused the command (a break while omma is
+  disabled, say, or `--reload` with a broken config), or the flags are invalid;
+- 3 when anything else went wrong.
 
 The agent also watches the config file and reloads automatically within ~1s of
 a save, so `--reload` is only needed for an instant, explicit refresh.

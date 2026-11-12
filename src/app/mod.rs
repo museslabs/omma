@@ -25,7 +25,7 @@ use objc2_foundation::{
 };
 
 use crate::config::{Config, ConfigError};
-use crate::ipc::{Command, Server};
+use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
 use activity::DndChecker;
@@ -304,8 +304,8 @@ impl App {
     }
 
     fn on_tick(&mut self, now: SystemTime, target: &AnyObject) {
-        for cmd in self.ipc.drain() {
-            let event = self.handle_command(now, cmd);
+        for request in self.ipc.drain() {
+            let event = self.handle_request(now, request);
             self.react(now, event, target);
         }
 
@@ -316,24 +316,67 @@ impl App {
         self.react(now, event, target);
     }
 
-    fn handle_command(&mut self, now: SystemTime, cmd: Command) -> Option<Event> {
-        match cmd {
-            Command::TakeBreak => self.core.take_break(now, None),
-            Command::TakeShortBreak => self.core.take_break(now, Some(BreakType::Short)),
-            Command::TakeLongBreak => self.core.take_break(now, Some(BreakType::Long)),
-            Command::Enable => self.core.set_enabled(now, true),
-            Command::Disable => self.core.set_enabled(now, false),
-            Command::Quit => {
-                self.quit();
-                None
+    /// runs a client's command, then replies with what it did
+    fn handle_request(&mut self, now: SystemTime, request: Request) -> Option<Event> {
+        let (event, reply) = self.run_command(now, request.command);
+        request.reply(&reply);
+        if request.command == Command::Quit {
+            // `terminate:` ends in `exit()` with `request` still open, so the client's
+            // connection closes with the process: `omma --quit` returns once omma is gone
+            self.quit();
+        }
+        event
+    }
+
+    fn run_command(&mut self, now: SystemTime, command: Command) -> (Option<Event>, Reply) {
+        match command {
+            Command::TakeBreak => self.cli_take_break(now, None),
+            Command::TakeShortBreak => self.cli_take_break(now, Some(BreakType::Short)),
+            Command::TakeLongBreak => self.cli_take_break(now, Some(BreakType::Long)),
+            Command::Enable => self.cli_set_enabled(now, true),
+            Command::Disable => self.cli_set_enabled(now, false),
+            Command::Status => (None, Ok(self.status_report(now))),
+            Command::Reload => (None, self.reload_config()),
+            Command::Quit => (None, Ok("quitting".into())),
+        }
+    }
+
+    fn cli_take_break(
+        &mut self,
+        now: SystemTime,
+        kind: Option<BreakType>,
+    ) -> (Option<Event>, Reply) {
+        let event = self.core.take_break(now, kind);
+        let reply = if event.is_some() {
+            Ok(format!("break started: {}", self.core.current().name))
+        } else if self.core.is_enabled() {
+            Err("a break is already running".into())
+        } else {
+            Err("omma is disabled".into())
+        };
+        (event, reply)
+    }
+
+    fn cli_set_enabled(&mut self, now: SystemTime, on: bool) -> (Option<Event>, Reply) {
+        let unchanged = self.core.is_enabled() == on;
+        let event = self.core.set_enabled(now, on);
+        let state = if on { "enabled" } else { "disabled" };
+        let text = if unchanged {
+            format!("already {state}")
+        } else {
+            state.into()
+        };
+        (event, Ok(text))
+    }
+
+    /// the status line, then the config file's error if it has one
+    fn status_report(&self, now: SystemTime) -> String {
+        let status = self.core.status_text(now);
+        match &self.config_error {
+            Some((e, fallback)) => {
+                format!("{status}\n{}", self.describe_config_error(e, *fallback))
             }
-            // answered on the IPC thread
-            Command::Status => None,
-            Command::Reload => {
-                self.config_mtime = None;
-                self.config_checked = None;
-                None
-            }
+            None => status,
         }
     }
 
@@ -463,7 +506,6 @@ impl App {
             if let Some(item) = &self.status_item_label {
                 item.setTitle(&NSString::from_str(&status));
             }
-            self.ipc.set_status(status.clone());
             self.shown.status = status;
         }
 
@@ -537,13 +579,8 @@ impl App {
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
 
+    /// reloads the config file when it changed, looking at most once per `CONFIG_POLL`
     fn maybe_reload_config(&mut self, now: SystemTime) {
-        if matches!(
-            self.core.phase(),
-            Phase::Warning { .. } | Phase::Break { .. }
-        ) {
-            return;
-        }
         if self
             .config_checked
             .is_some_and(|t| now.duration_since(t).is_ok_and(|d| d < CONFIG_POLL))
@@ -551,41 +588,40 @@ impl App {
             return;
         }
         self.config_checked = Some(now);
-
-        let mtime = file_mtime(&self.config_path);
-        if mtime == self.config_mtime {
-            return;
-        }
-        self.config_mtime = mtime;
-
-        match self.reload_config() {
-            Ok(()) => eprintln!("omma: reloaded the config"),
-            Err((e, fallback)) => eprintln!(
-                "omma: {}: {e}; {}",
-                self.config_path.display(),
-                fallback.describe()
-            ),
+        if file_mtime(&self.config_path) != self.config_mtime {
+            let (Ok(text) | Err(text)) = self.reload_config();
+            eprintln!("omma: {text}");
         }
     }
 
     /// rereads the config file. after an error the config in effect stays, and the menu
     /// shows the error until the file loads.
-    fn reload_config(&mut self) -> Result<(), (ConfigError, Fallback)> {
+    fn reload_config(&mut self) -> Reply {
+        self.config_mtime = file_mtime(&self.config_path);
         match Config::from_file(&self.config_path) {
             Ok(new) => {
                 self.apply_config(new);
                 self.config_error = None;
-                Ok(())
+                Ok("reloaded the config".into())
             }
             Err(e) => {
                 let fallback = match self.config_error {
                     Some((_, Fallback::Defaults)) => Fallback::Defaults,
                     _ => Fallback::LastGood,
                 };
-                self.config_error = Some((e.clone(), fallback));
-                Err((e, fallback))
+                let text = self.describe_config_error(&e, fallback);
+                self.config_error = Some((e, fallback));
+                Err(text)
             }
         }
+    }
+
+    fn describe_config_error(&self, error: &ConfigError, fallback: Fallback) -> String {
+        format!(
+            "{}: {error}; {}",
+            self.config_path.display(),
+            fallback.describe()
+        )
     }
 
     /// rebuilds do-not-disturb only when its checks changed: building it can prompt for
