@@ -923,8 +923,7 @@ fn shorten(text: &str, chars: usize) -> String {
 
 fn tray_icon_blink_on(now: SystemTime) -> bool {
     now.duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
-        .unwrap_or(false)
+        .is_ok_and(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
 }
 
 /// time since the last keyboard, mouse or trackpad input to any app. needs no permission.

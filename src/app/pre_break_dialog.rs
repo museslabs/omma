@@ -221,7 +221,7 @@ impl PreBreakDialog {
         }
 
         after(self.mtm, HIDE_DURATION + 0.03, move || {
-            window.orderOut(None)
+            window.orderOut(None);
         });
     }
 }

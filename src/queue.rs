@@ -115,8 +115,7 @@ impl Rng {
     fn new(seed: SystemTime) -> Self {
         let seed = seed
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+            .map_or(0x9e37_79b9_7f4a_7c15, |d| d.as_nanos() as u64)
             | 1;
         Rng(seed)
     }

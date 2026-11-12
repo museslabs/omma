@@ -71,7 +71,7 @@ impl Hotkeys {
                     id,
                     GetApplicationEventTarget(),
                     0,
-                    &mut hotkey,
+                    &raw mut hotkey,
                 )
             };
             if status == NO_ERR {
@@ -117,7 +117,7 @@ impl Hotkeys {
                 GetApplicationEventTarget(),
                 on_hotkey,
                 1,
-                &pressed,
+                &raw const pressed,
                 user_data,
                 ptr::null_mut(),
             )
@@ -220,9 +220,9 @@ fn layout_key_code(c: char) -> Option<u32> {
                     0,
                     keyboard,
                     UC_KEY_TRANSLATE_NO_DEAD_KEYS,
-                    &mut dead_keys,
+                    &raw mut dead_keys,
                     chars.len(),
-                    &mut len,
+                    &raw mut len,
                     chars.as_mut_ptr(),
                 )
             };
