@@ -153,7 +153,7 @@ fn key_equivalent(spec: KeySpec) -> KeyBind {
         Key::Space => (" ".into(), "Space".into()),
         Key::Enter => ("\r".into(), "↩".into()),
         Key::Tab => ("\t".into(), "⇥".into()),
-        // NSDeleteCharacter: the delete key sends DEL, not backspace
+        // the delete key sends DEL (NSDeleteCharacter), not backspace
         Key::Delete => ("\u{7f}".into(), "⌫".into()),
         // AppKit compares the key equivalent with the typed character, shift applied
         Key::Char(c) => {

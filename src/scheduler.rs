@@ -1,14 +1,14 @@
-//! the break schedule as a pure state machine: no platform code and no clock reads. every
-//! call makes at most one transition and returns the event it caused, if any. the ui
-//! follows `phase()` and uses events only for side effects such as sounds.
+//! the break schedule as a pure state machine, with no platform code and no clock reads.
+//! each call returns the event it caused, if any. the ui follows `phase()` and uses events
+//! only for side effects such as sounds.
 
 use std::time::{Duration, SystemTime};
 
 use crate::config::DndAction;
 use crate::queue::{Break, BreakQueue, BreakType, Breaks};
 
-/// a jump of at least this much between ticks is rest whatever the smart pause setting: the
-/// mac slept, or the clock moved forward
+/// a jump of at least this much between ticks means the mac slept or the clock moved
+/// forward. it counts as rest whatever the smart pause setting.
 const SLEEP_GAP: Duration = Duration::from_secs(60);
 
 /// time arithmetic caps durations here so it can't overflow; anything longer means never
@@ -88,8 +88,8 @@ impl Core {
 
     /// applies new settings without restarting the schedule. each wait keeps its start, so a
     /// changed interval counts from when the wait began, and a deadline that has already
-    /// passed fires on the next tick. a postponed break stays unless the break lists changed;
-    /// a warning or break under way keeps its break and deadline.
+    /// passed fires on the next tick. a postponed break stays unless the break lists or
+    /// `random_order` changed. a warning or break under way keeps its break and deadline.
     pub fn reconfigure(&mut self, settings: Settings) {
         if settings == self.settings {
             return;
@@ -109,10 +109,11 @@ impl Core {
 
     /// advances the schedule to `now`; `idle` is the time since the last user input.
     ///
-    /// rest is time away from the screen: idle time past the smart pause threshold, which
-    /// pauses the schedule, or a jump of `SLEEP_GAP` or more between ticks. once the user is
-    /// back, the next break waits at least a full short interval, and rest as long as the
-    /// next long break stands in for it. a clock moved back moves every deadline back with it.
+    /// rest is time away from the screen. it's idle time past the smart pause threshold,
+    /// which pauses the schedule, or a jump of `SLEEP_GAP` or more between ticks. once the
+    /// user is back, the next break waits at least a full short interval. rest at least as
+    /// long as the next long break counts as that break. a clock moved back moves every
+    /// deadline back with it.
     #[must_use]
     pub fn tick(&mut self, now: SystemTime, idle: Duration) -> Option<Event> {
         self.follow_clock(now);
@@ -277,10 +278,10 @@ impl Core {
     }
 
     /// starts the running break's countdown at `at`, when its screen has come into focus,
-    /// so that every second of it is on screen: the break ends one length after `at`.
+    /// so every second of it is on screen. the break then ends one length after `at`.
     /// `now` is when the screen was asked for. ignored outside a break, and when the
-    /// countdown had moved past its first second by `now`. call it once per break: each
-    /// call in the first second moves the end again.
+    /// countdown had moved past its first second by `now`. call it once per break, since
+    /// each call in the first second moves the end again.
     pub fn start_countdown_at(&mut self, now: SystemTime, at: SystemTime) {
         self.follow_clock(now);
         let length = self.current.duration;
@@ -339,7 +340,7 @@ impl Core {
         Event::BreakStarted
     }
 
-    /// the current break is over, taken or skipped: wait for the next one
+    /// the current break is over, taken or skipped. waits for the next one.
     fn finish_current(&mut self, now: SystemTime) {
         self.queue.advance(self.current.kind);
         if self.current.kind == BreakType::Long {
@@ -376,7 +377,7 @@ impl Core {
         self.schedule(now);
     }
 
-    /// rest as long as the next long break stands in for it
+    /// rest at least as long as the next long break counts as that break
     fn credit(&mut self, now: SystemTime, rest: Duration) {
         if self.queue.has(BreakType::Long) && rest >= self.queue.peek(BreakType::Long).duration {
             self.long_since = now;
@@ -400,8 +401,9 @@ impl Core {
     }
 }
 
-/// the break to wait for from `since`: a long one when it falls due before the next short one
-/// would be over, so the long takes that short's place instead of following right after it.
+/// the break to wait for from `since`. it's a long one when it falls due before the next
+/// short one would be over, so the long takes that short's place instead of following right
+/// after it.
 /// a wait that starts the long cycle afresh always ends in a short, so shorts can't starve
 /// however long they take.
 fn pick(

@@ -35,7 +35,7 @@ pub struct PreBreakDialog {
 }
 
 struct Showing {
-    /// see `animations_on`
+    /// `animations_on()` at `show`, so `hide` animates only if the entrance did
     animate: bool,
     window: Retained<Panel>,
     glass: Retained<NSGlassEffectView>,
@@ -49,8 +49,8 @@ impl PreBreakDialog {
         PreBreakDialog { mtm, shown: None }
     }
 
-    /// a skip key or a postpone key is a global shortcut: the button shows its hint and the
-    /// shortcut is held elsewhere. without skip, the warning offers Dismiss.
+    /// a skip or postpone key is a global shortcut, held by `Hotkeys`. the button only
+    /// shows its hint. without skip, the warning offers Dismiss.
     pub fn show(&mut self, seconds_until_break: u64, buttons: Buttons, target: &AnyObject) {
         self.hide();
 
@@ -66,7 +66,7 @@ impl PreBreakDialog {
             NSSize::new(PANEL_W, PANEL_H),
         );
 
-        // never key: the warning takes no focus from the app the user is in
+        // never key, so the warning takes no focus from the app the user is in
         let window = make_panel(self.mtm, frame, false);
         let Some(content) = window.contentView() else {
             return;
@@ -205,7 +205,7 @@ impl PreBreakDialog {
             window.orderOut(None);
             return;
         }
-        // inert while it fades: a disabled button takes no clicks
+        // inert while it fades, since a disabled button takes no clicks
         for button in &buttons {
             button.setEnabled(false);
         }

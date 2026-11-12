@@ -108,9 +108,9 @@ pub struct DoNotDisturb {
     pub skip_when_app_running: Vec<AppName>,
     /// the same, for the frontmost app only
     pub skip_when_app_active: Vec<AppName>,
-    /// needs accessibility permission
+    /// needs Accessibility permission
     pub skip_when_fullscreen: bool,
-    /// matched against on-screen window titles. needs accessibility permission
+    /// matched against on-screen window titles. needs Accessibility permission
     pub window_title_matches: Vec<TitlePattern>,
     /// `skip` advances to the next break, `postpone` retries after the postpone delay
     pub action: DndAction,

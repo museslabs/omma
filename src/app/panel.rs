@@ -111,8 +111,8 @@ pub fn make_label(
     label
 }
 
-/// false when the user has asked macOS to reduce motion: then windows appear and go at once,
-/// with no blur, slide or fade
+/// false when the user has asked macOS to reduce motion. windows then appear and go at
+/// once, with no blur, slide or fade.
 pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }

@@ -29,11 +29,11 @@ use crate::queue::Break;
 /// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
 const SCRIM_ALPHA: f64 = 0.25;
 const BUTTON_HEIGHT: f64 = 46.0;
-/// foreground entry/exit blur radius, the "materialise from blur" look
+/// the foreground's blur radius as it enters and leaves
 const BLUR_RADIUS: f64 = 16.0;
 /// resting blur on a custom background image, eyeballed to match the FullScreenUI desktop blur
 const IMAGE_BLUR_RADIUS_RESTING: f64 = 16.0;
-/// image enters from this radius and animates down to resting, sharpening with the foreground
+/// the image enters at this radius and sharpens to the resting one with the foreground
 const IMAGE_BLUR_RADIUS_START: f64 = 60.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
@@ -71,7 +71,8 @@ pub struct BreakScreen {
     mtm: MainThreadMarker,
     /// one per display while the break shows; empty from the moment `hide` starts
     overlays: Vec<Overlay>,
-    /// see `animations_on`
+    /// `animations_on()` at the latest `show`, so the countdown and `hide` animate only if
+    /// the entrance did
     animate: bool,
     /// true from the latest `show` until `hide` starts or the overlays are torn down. a
     /// timer from that `show` checks it, since `hide` may have run first.
@@ -150,7 +151,6 @@ impl BreakScreen {
             };
             content.setWantsLayer(true);
 
-            // backdrop: blur + scrim in one container so they fade as a group
             let backdrop = NSView::initWithFrame(NSView::alloc(mtm), full);
             backdrop.setWantsLayer(true);
             content.addSubview(&backdrop);
@@ -178,13 +178,12 @@ impl BreakScreen {
             scrim.setFillColor(&NSColor::colorWithWhite_alpha(0.0, SCRIM_ALPHA));
             backdrop.addSubview(&scrim);
 
-            // foreground: message, countdown, buttons. one gaussian blur on this layer lets
-            // the group materialise from blur on the way in and dissolve back on the way out.
+            // one gaussian blur on this layer lets the message, countdown and buttons
+            // materialise from blur on the way in and dissolve back on the way out.
             let foreground = NSView::initWithFrame(NSView::alloc(mtm), full);
             foreground.setWantsLayer(true);
             content.addSubview(&foreground);
 
-            // wraps to two lines
             let msg_w = (w - 160.0).min(1000.0);
             let title_font = NSFont::systemFontOfSize_weight(28.0, weight_regular);
             let msg_color = NSColor::colorWithWhite_alpha(1.0, 0.92);
@@ -370,7 +369,6 @@ impl BreakScreen {
             return;
         }
         self.up.set(false);
-        // reduce motion: tear down immediately
         if !self.animate {
             self.teardown_now();
             return;
@@ -381,7 +379,7 @@ impl BreakScreen {
         let now = CACurrentMediaTime();
         let overlays = std::mem::take(&mut self.overlays);
         for overlay in &overlays {
-            // inert while it fades: a disabled button takes neither clicks nor its shortcut,
+            // inert while it fades. a disabled button takes neither clicks nor its shortcut,
             // and the overlay still catches clicks, so none reach the app behind it
             for button in &overlay.buttons {
                 button.setEnabled(false);
@@ -403,8 +401,8 @@ impl BreakScreen {
         });
     }
 
-    /// no exit animation: order every window out and forget the views. used when reopening
-    /// and when reduce motion is on.
+    /// orders every window out and forgets the views, with no exit animation. used when
+    /// reopening and when reduce motion is on.
     fn teardown_now(&mut self) {
         self.up.set(false);
         for overlay in self.overlays.drain(..) {

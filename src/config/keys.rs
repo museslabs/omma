@@ -57,8 +57,9 @@ fn key(name: &str) -> Option<Key> {
     })
 }
 
-/// AppKit matches a shortcut against the character typed with shift applied. shift turns a
-/// letter into its capital, and leaves only escape, space, enter and delete alone.
+/// whether a shortcut with shift and `key` can fire. AppKit matches a shortcut against the
+/// character typed with shift applied. shift turns a letter into its capital and leaves
+/// escape, space, enter and delete alone.
 fn takes_shift(key: Key) -> bool {
     match key {
         Key::Char(c) => {
@@ -162,8 +163,8 @@ pub(super) fn optional<'de, D: Deserializer<'de>>(de: D) -> Result<Option<KeySpe
     spec.parse().map(Some).map_err(serde::de::Error::custom)
 }
 
-/// a shortcut that works from any app, or None for `""`. it needs cmd or ctrl: a plain or
-/// shifted key would be taken from whatever the user is typing in. its key is found on the
+/// a shortcut that works from any app, or None for `""`. it needs cmd or ctrl, since a key
+/// without them would be taken from whatever the user is typing in. its key is found on the
 /// ASCII-capable keyboard layout, so a character key has to be ASCII.
 pub(super) fn optional_global<'de, D: Deserializer<'de>>(
     de: D,

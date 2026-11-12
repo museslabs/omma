@@ -41,7 +41,7 @@ impl Hotkeys {
 
     /// holds each of `keys` that Carbon accepts until `release`, and returns why it refused
     /// the others. a press sends `warningSkip:` or `warningPostpone:` to `target`, which must
-    /// live as long as the app: it's the delegate.
+    /// live as long as the app, as the delegate does.
     pub fn hold(&mut self, target: &AnyObject, keys: &[(Action, KeySpec)]) -> Vec<String> {
         self.release();
         if keys.is_empty() {
@@ -261,7 +261,6 @@ struct EventHotKeyID {
 
 const NO_ERR: OSStatus = 0;
 const EVENT_NOT_HANDLED: OSStatus = -9874;
-/// 'omma'
 const SIGNATURE: u32 = u32::from_be_bytes(*b"omma");
 const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const EVENT_HOT_KEY_PRESSED: u32 = 5;

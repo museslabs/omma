@@ -122,9 +122,9 @@ fn running_app_matches(app: &NSRunningApplication, rules: &[AppName]) -> bool {
     app_matches(rules, &name, &bundle_id)
 }
 
-/// caps every Accessibility call's wait: the system-wide element's timeout is the global
-/// one. set before each round of calls, since Apple doesn't document whether setting it
-/// before permission is granted holds.
+/// caps every Accessibility call's wait. the timeout set on the system-wide element applies
+/// to every element. it's set before each round of calls, since Apple doesn't document
+/// whether a timeout set before the permission is granted holds.
 fn limit_ax_wait() {
     // SAFETY: no arguments
     let system = unsafe { AXUIElement::new_system_wide() };

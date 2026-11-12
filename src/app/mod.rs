@@ -1,5 +1,5 @@
-//! all main-thread. Delegate is the obj-c target for menu items, buttons and the timer,
-//! and owns the App state in a RefCell ivar.
+//! all main-thread. Delegate is the obj-c target for menu items, buttons, global shortcuts
+//! and the timer, and owns the App state in a RefCell ivar.
 
 mod activity;
 mod break_screen;
@@ -45,8 +45,8 @@ const TRAY_ICON_INCOMING_SVG: &[u8] = include_bytes!(concat!(
 const TRAY_ICON_SIZE: f64 = 18.0;
 /// the tray icon blinks, and the timer ticks fast, this many seconds before the warning
 const INCOMING_WINDOW_SECS: u64 = 60;
-/// while something counts down on screen. sub-second so a tick landing near a deadline
-/// doesn't make digits linger or jump; the core is deadline-based either way.
+/// while a countdown is on screen or the tray icon blinks. sub-second so a tick landing
+/// near a deadline doesn't make digits linger or jump. the core is deadline-based either way.
 const FAST_TICK_SECS: f64 = 0.2;
 const SLOW_TICK_SECS: f64 = 1.0;
 /// the config file is checked for changes at most this often
@@ -60,7 +60,7 @@ const NEEDS_ACCESSIBILITY: &str =
 const ACCESSIBILITY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
-/// None if the bytes fail to decode, caller falls back to a text glyph
+/// None if the bytes fail to decode. the status item then shows a text glyph.
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
     let data = NSData::with_bytes(bytes);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
@@ -241,8 +241,8 @@ define_class!(
             });
         }
 
-        /// opens the file with the state unborrowed: if Launch Services ran a nested event
-        /// loop, a tick inside it would borrow the state again
+        /// opens the file with the state unborrowed. if Launch Services ran a nested event
+        /// loop, a tick inside it would borrow the state again and panic.
         #[unsafe(method(openConfig:))]
         fn open_config(&self, _sender: *mut AnyObject) {
             let path = self.with_app(|app| app.config_path.clone());
@@ -391,7 +391,7 @@ impl App {
         request.reply(&reply);
         if request.command == Command::Quit {
             // `terminate:` ends in `exit()` with `request` still open, so the client's
-            // connection closes with the process: `omma --quit` returns once omma is gone
+            // connection closes with the process. `omma --quit` returns once omma is gone.
             self.quit();
         }
         event
@@ -567,9 +567,9 @@ impl App {
                     buttons,
                     target,
                 );
-                // once per break: show runs again only while no screen was built. building
-                // takes time, so the start counts from the clock after it, while `now` is
-                // still when the screen was asked for.
+                // a break gets one screen, so this runs once per break, as start_countdown_at
+                // requires. building takes time, so the countdown starts from the clock after
+                // it, and `now` stays when the screen was asked for.
                 if let Some(built) = built {
                     let built_at = SystemTime::now();
                     self.core.start_countdown_at(now, built_at + built.settling);
@@ -675,8 +675,8 @@ impl App {
 
     /// ticks fast while a countdown is on screen or the warning is near, slowly otherwise.
     /// the timer runs in the common run-loop modes so ticks keep coming while the status
-    /// menu is open. that's re-entrancy-safe: menu tracking starts from event dispatch,
-    /// never while the delegate's RefCell is borrowed.
+    /// menu is open. that's re-entrancy-safe, because menu tracking starts from event
+    /// dispatch, never while the delegate's RefCell is borrowed.
     fn sync_timer(&mut self, fast: bool, target: &AnyObject) {
         if self.timer.is_some() && self.shown.fast_ticks == fast {
             return;
@@ -874,7 +874,8 @@ impl App {
                 button.setTitle(&NSString::from_str(""));
                 button.setImage(Some(image));
             }
-            None => button.setTitle(&NSString::from_str("\u{1F441}")), // fallback glyph
+            // an eye, when no svg for this state decoded
+            None => button.setTitle(&NSString::from_str("\u{1F441}")),
         }
     }
 }

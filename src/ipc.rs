@@ -165,8 +165,8 @@ fn accept_loop(listener: UnixListener, tx: Sender<Request>) {
     }
 }
 
-/// None when the client sent no command in time, or one this instance doesn't know, which
-/// is answered here
+/// None when the client sent no command in time, or an unknown one. an unknown command gets
+/// its refusal here.
 fn read_request(stream: UnixStream) -> Option<Request> {
     stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT)).ok()?;
