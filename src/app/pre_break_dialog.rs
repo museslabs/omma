@@ -2,7 +2,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
+    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
     NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
@@ -39,6 +39,7 @@ struct Showing {
     glass: Retained<NSGlassEffectView>,
     body: Retained<NSView>,
     countdown: Retained<NSTextField>,
+    buttons: Vec<Retained<NSButton>>,
 }
 
 impl PreBreakDialog {
@@ -135,11 +136,12 @@ impl PreBreakDialog {
             primary_action,
             &BUTTON_STYLE,
         );
-        primary.setFrame(NSRect::new(
+        primary.capsule.setFrame(NSRect::new(
             NSPoint::new(button_x, primary_y),
             NSSize::new(BUTTON_W, BUTTON_H),
         ));
-        body.addSubview(&primary);
+        body.addSubview(&primary.capsule);
+        let mut shown_buttons = vec![primary.button];
 
         if let Some(postpone) = buttons.postpone {
             let postpone = make_glass_button(
@@ -150,11 +152,12 @@ impl PreBreakDialog {
                 sel!(postpone:),
                 &BUTTON_STYLE,
             );
-            postpone.setFrame(NSRect::new(
+            postpone.capsule.setFrame(NSRect::new(
                 NSPoint::new(button_x, 58.0),
                 NSSize::new(BUTTON_W, BUTTON_H),
             ));
-            body.addSubview(&postpone);
+            body.addSubview(&postpone.capsule);
+            shown_buttons.push(postpone.button);
         }
 
         if let Some(layer) = glass.layer() {
@@ -179,6 +182,7 @@ impl PreBreakDialog {
             glass,
             body,
             countdown,
+            buttons: shown_buttons,
         });
     }
 
@@ -198,11 +202,16 @@ impl PreBreakDialog {
             window,
             glass,
             body,
+            buttons,
             ..
         }) = self.shown.take()
         else {
             return;
         };
+        // inert while it fades: a disabled button takes no clicks
+        for button in &buttons {
+            button.setEnabled(false);
+        }
         if let Some(layer) = glass.layer() {
             let now = CACurrentMediaTime();
             attach_blur(&layer, 0.0);

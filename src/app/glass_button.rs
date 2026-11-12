@@ -54,6 +54,13 @@ pub struct GlassButtonStyle {
     pub hint_font_size: f64,
 }
 
+/// a borderless button in a glass capsule
+pub struct GlassButton {
+    /// what goes in the view hierarchy
+    pub capsule: Retained<NSGlassEffectView>,
+    pub button: Retained<NSButton>,
+}
+
 pub fn make_glass_button(
     mtm: MainThreadMarker,
     title: &str,
@@ -61,7 +68,7 @@ pub fn make_glass_button(
     target: &AnyObject,
     action: Sel,
     style: &GlassButtonStyle,
-) -> Retained<NSGlassEffectView> {
+) -> GlassButton {
     let keybind = shortcut.map(|shortcut| key_equivalent(shortcut.spec()));
     let title_ns = NSString::from_str(title);
     let full = match &keybind {
@@ -125,7 +132,7 @@ pub fn make_glass_button(
     capsule.setCornerRadius(style.height / 2.0);
     capsule.setStyle(NSGlassEffectViewStyle::Regular);
     capsule.setContentView(Some(&button));
-    capsule
+    GlassButton { capsule, button }
 }
 
 struct KeyBind {

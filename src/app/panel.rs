@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSColor,
@@ -35,6 +35,10 @@ define_class!(
         fn can_become_key_window(&self) -> bool {
             *self.ivars()
         }
+
+        /// a key nothing handles is dropped instead of beeping
+        #[unsafe(method(noResponderFor:))]
+        fn no_responder_for(&self, _selector: Sel) {}
     }
 );
 
@@ -64,6 +68,9 @@ pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Ret
     // clear, so the glass and the behind-window blur sample the desktop. the dark
     // appearance keeps the glass and its text legible.
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    // a see-through window lets clicks through where it's transparent unless told
+    // otherwise; this one takes them over its whole frame, faded out or not
+    panel.setIgnoresMouseEvents(false);
     // SAFETY: an immutable AppKit constant
     if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
         panel.setAppearance(Some(&appearance));

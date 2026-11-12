@@ -7,16 +7,15 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView,
-    NSImage, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWorkspace,
+    NSBox, NSBoxType, NSButton, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSImage,
+    NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
 use super::glass_button::{
-    Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+    Buttons, GlassButton, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
     Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
@@ -61,6 +60,7 @@ struct Overlay {
     /// message, countdown and buttons, blurred and faded as one on exit
     foreground: Retained<NSView>,
     countdown: Retained<NSTextField>,
+    buttons: Vec<Retained<NSButton>>,
 }
 
 impl BreakScreen {
@@ -176,7 +176,7 @@ impl BreakScreen {
             foreground.addSubview(&count_label);
 
             let gap = 16.0;
-            let buttons: Vec<Retained<NSGlassEffectView>> = [
+            let buttons: Vec<GlassButton> = [
                 (buttons.skip, "Skip", sel!(skip:)),
                 (buttons.postpone, "Postpone", sel!(postpone:)),
             ]
@@ -194,16 +194,19 @@ impl BreakScreen {
             })
             .collect();
             if !buttons.is_empty() {
-                let widths: Vec<f64> = buttons.iter().map(|b| b.frame().size.width).collect();
+                let widths: Vec<f64> = buttons
+                    .iter()
+                    .map(|b| b.capsule.frame().size.width)
+                    .collect();
                 let total: f64 = widths.iter().sum::<f64>() + gap * (buttons.len() as f64 - 1.0);
                 let by = 150.0;
                 let mut x = cx - total / 2.0;
                 for (button, bw) in buttons.iter().zip(widths.iter()) {
-                    button.setFrame(NSRect::new(
+                    button.capsule.setFrame(NSRect::new(
                         NSPoint::new(x, by),
                         NSSize::new(*bw, BUTTON_HEIGHT),
                     ));
-                    foreground.addSubview(button);
+                    foreground.addSubview(&button.capsule);
                     x += bw + gap;
                 }
             }
@@ -245,7 +248,7 @@ impl BreakScreen {
                     animate_delayed_entrance(mtm, layer, 28.0, label_begin, now);
                 }
                 for button in &buttons {
-                    if let Some(layer) = button.layer() {
+                    if let Some(layer) = button.capsule.layer() {
                         animate_delayed_entrance(mtm, layer, -28.0, buttons_begin, now);
                     }
                 }
@@ -257,6 +260,7 @@ impl BreakScreen {
                 backdrop,
                 foreground,
                 countdown: count_label,
+                buttons: buttons.into_iter().map(|b| b.button).collect(),
             });
         }
 
@@ -300,6 +304,11 @@ impl BreakScreen {
         let now = CACurrentMediaTime();
         let overlays = std::mem::take(&mut self.overlays);
         for overlay in &overlays {
+            // inert while it fades: a disabled button takes neither clicks nor its shortcut,
+            // and the overlay still catches clicks, so none reach the app behind it
+            for button in &overlay.buttons {
+                button.setEnabled(false);
+            }
             if let Some(layer) = overlay.backdrop.layer() {
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
             }
