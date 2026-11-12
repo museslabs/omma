@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
@@ -99,16 +100,81 @@ pub struct Keybindings {
 #[serde(default, deny_unknown_fields)]
 pub struct DoNotDisturb {
     pub enabled: bool,
-    /// case-insensitive substring match against app name or bundle id
-    pub skip_when_app_running: Vec<String>,
-    pub skip_when_app_active: Vec<String>,
+    pub skip_when_app_running: Vec<AppName>,
+    /// the same, for the frontmost app only
+    pub skip_when_app_active: Vec<AppName>,
     /// needs accessibility permission
     pub skip_when_fullscreen: bool,
-    /// regex match against on-screen window titles. needs accessibility permission
-    pub window_title_matches: Vec<String>,
+    /// matched against on-screen window titles. needs accessibility permission
+    pub window_title_matches: Vec<TitlePattern>,
     /// `skip` advances to the next break, `postpone` retries after the postpone delay
     pub action: DndAction,
 }
+
+/// part of an app's name or bundle id, lowercase
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct AppName(String);
+
+impl AppName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for AppName {
+    type Error = &'static str;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        let name = name.trim().to_lowercase();
+        if name.is_empty() {
+            Err("an empty app name would match every app")
+        } else {
+            Ok(AppName(name))
+        }
+    }
+}
+
+/// a case-insensitive regex. a plain word matches anywhere in a title.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
+pub struct TitlePattern(Regex);
+
+impl TitlePattern {
+    pub fn is_match(&self, title: &str) -> bool {
+        self.0.is_match(title)
+    }
+}
+
+impl TryFrom<String> for TitlePattern {
+    type Error = String;
+
+    fn try_from(pattern: String) -> Result<Self, String> {
+        if pattern.is_empty() {
+            return Err("an empty pattern would match every window".into());
+        }
+        RegexBuilder::new(&pattern)
+            .case_insensitive(true)
+            .build()
+            .map(TitlePattern)
+            .map_err(|e| {
+                // the reason is the last line, under a picture of the pattern
+                let text = e.to_string();
+                let reason = text.lines().last().unwrap_or_default();
+                let reason = reason.strip_prefix("error: ").unwrap_or(reason);
+                format!("`{pattern}` isn't a valid regex: {reason}")
+            })
+    }
+}
+
+/// patterns are equal when their source is
+impl PartialEq for TitlePattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for TitlePattern {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -283,14 +349,14 @@ impl Default for DoNotDisturb {
 impl Default for Config {
     fn default() -> Self {
         ConfigFile::default()
-            .check()
+            .check(None)
             .expect("the built-in defaults pass the checks")
     }
 }
 
 impl ConfigFile {
-    /// the rules that span keys
-    fn check(self) -> Result<Config, String> {
+    /// the rules that span keys, and the images' paths. `~/` in a path stands for `home`.
+    fn check(self, home: Option<&Path>) -> Result<Config, String> {
         let has_both = !self.short_breaks.is_empty() && !self.long_breaks.is_empty();
         if has_both && self.short_break_interval.0 >= self.long_break_interval.0 {
             return Err(format!(
@@ -314,21 +380,28 @@ impl ConfigFile {
         let breaks = |entries: Vec<BreakEntry>, kind, default: BreakLength| {
             entries
                 .into_iter()
-                .map(|entry| Break {
-                    kind,
-                    name: entry.name.0,
-                    duration: entry.duration.unwrap_or(default).duration(),
-                    image: entry.image,
+                .map(|entry| {
+                    let image = entry
+                        .image
+                        .map(|path| image_path(&path, home))
+                        .transpose()
+                        .map_err(|e| format!("image for \"{}\": {e}", entry.name.0))?;
+                    Ok(Break {
+                        kind,
+                        name: entry.name.0,
+                        duration: entry.duration.unwrap_or(default).duration(),
+                        image,
+                    })
                 })
-                .collect()
+                .collect::<Result<_, String>>()
         };
         let breaks = Breaks::new(
             breaks(
                 self.short_breaks,
                 BreakType::Short,
                 self.short_break_duration,
-            ),
-            breaks(self.long_breaks, BreakType::Long, self.long_break_duration),
+            )?,
+            breaks(self.long_breaks, BreakType::Long, self.long_break_duration)?,
         )
         .ok_or("add at least one [[short_breaks]] or [[long_breaks]] entry")?;
 
@@ -355,18 +428,37 @@ impl ConfigFile {
     }
 }
 
+/// an existing file at an absolute path, or one under `home` written `~/...`
+fn image_path(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    let resolved = match path.strip_prefix("~/") {
+        Some(rest) => home
+            .ok_or("~ needs a home directory, and there's none")?
+            .join(rest),
+        None => PathBuf::from(path),
+    };
+    if !resolved.is_absolute() {
+        return Err(format!(
+            "`{path}` must be an absolute path or start with ~/"
+        ));
+    }
+    if !resolved.is_file() {
+        return Err(format!("no file at {}", resolved.display()));
+    }
+    Ok(resolved)
+}
+
 impl Config {
     /// reads and checks the config at `path`. never writes.
     pub fn from_file(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::new(format!("can't read the file: {e}")))?;
-        Config::parse(&text)
+        Config::parse(&text, std::env::home_dir().as_deref())
     }
 
-    fn parse(text: &str) -> Result<Config, ConfigError> {
+    fn parse(text: &str, home: Option<&Path>) -> Result<Config, ConfigError> {
         let file: ConfigFile =
             toml::from_str(text).map_err(|e| ConfigError::from_toml(&e, text))?;
-        file.check().map_err(ConfigError::new)
+        file.check(home).map_err(ConfigError::new)
     }
 }
 
@@ -532,8 +624,13 @@ mod tests {
     use super::*;
     use crate::scheduler::Core;
 
+    /// the repo stands in for the home directory
+    fn home() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+    }
+
     fn parse(text: &str) -> Result<Config, ConfigError> {
-        Config::parse(text)
+        Config::parse(text, Some(home()))
     }
 
     #[track_caller]
@@ -772,6 +869,83 @@ mod tests {
             })
             .collect();
         assert_eq!(durations, [20, 40]);
+    }
+
+    #[test]
+    fn title_patterns_compile_at_load_and_ignore_case() {
+        let dnd =
+            parse("[do_not_disturb]\nwindow_title_matches = [\"zoom meeting\", \"^πλάνο\"]\n")
+                .unwrap()
+                .do_not_disturb;
+        let [zoom, greek] = &dnd.window_title_matches[..] else {
+            panic!("{dnd:?}");
+        };
+        assert!(zoom.is_match("Zoom Meeting - 3 people"));
+        assert!(greek.is_match("ΠΛΆΝΟ ταξιδιού"));
+        assert!(!greek.is_match("Το πλάνο"));
+
+        assert_eq!(
+            rejects("[do_not_disturb]\nwindow_title_matches = [\"(foo\"]\n"),
+            "line 2: do_not_disturb.window_title_matches: `(foo` isn't a valid regex: unclosed group"
+        );
+        assert_eq!(
+            rejects("[do_not_disturb]\nwindow_title_matches = [\"\"]\n"),
+            "line 2: do_not_disturb.window_title_matches: an empty pattern would match every window"
+        );
+    }
+
+    #[test]
+    fn app_names_are_trimmed_and_lowercased_and_must_not_be_empty() {
+        let dnd =
+            parse("[do_not_disturb]\nskip_when_app_active = [\"Zoom\", \" com.Tinyspeck \"]\n")
+                .unwrap()
+                .do_not_disturb;
+        let names: Vec<_> = dnd
+            .skip_when_app_active
+            .iter()
+            .map(AppName::as_str)
+            .collect();
+        assert_eq!(names, ["zoom", "com.tinyspeck"]);
+
+        assert_eq!(
+            rejects("[do_not_disturb]\nskip_when_app_running = [\" \"]\n"),
+            "line 2: do_not_disturb.skip_when_app_running: an empty app name would match every app"
+        );
+    }
+
+    #[test]
+    fn images_resolve_at_load_and_must_exist() {
+        let image = |path: &str, home: Option<&Path>| {
+            let text = format!("[[short_breaks]]\nname = \"Blink\"\nimage = \"{path}\"\n");
+            Config::parse(&text, home).map(|cfg| {
+                let queue = crate::queue::BreakQueue::new(&cfg.schedule.breaks, false, UNIX_EPOCH);
+                queue.peek(BreakType::Short).image.clone()
+            })
+        };
+        let icon = home().join("tray-icon.svg");
+
+        assert_eq!(
+            image("~/tray-icon.svg", Some(home())),
+            Ok(Some(icon.clone()))
+        );
+        assert_eq!(image(icon.to_str().unwrap(), None), Ok(Some(icon)));
+
+        let err = |path, home| image(path, home).unwrap_err().to_string();
+        let missing = home().join("missing.png");
+        assert_eq!(
+            err("~/missing.png", Some(home())),
+            format!("image for \"Blink\": no file at {}", missing.display())
+        );
+        assert_eq!(
+            err("~/tray-icon.svg", None),
+            "image for \"Blink\": ~ needs a home directory, and there's none"
+        );
+        assert_eq!(
+            err("tray-icon.svg", Some(home())),
+            "image for \"Blink\": `tray-icon.svg` must be an absolute path or start with ~/"
+        );
+        // a directory isn't an image
+        assert!(err("~/src", Some(home())).ends_with("/src"));
     }
 
     #[test]

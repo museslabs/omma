@@ -1,6 +1,7 @@
 //! the configured breaks and the order each kind comes in. which kind is due when is the
 //! scheduler's call.
 
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -23,7 +24,7 @@ pub struct Break {
     pub kind: BreakType,
     pub name: String,
     pub duration: Duration,
-    pub image: Option<String>,
+    pub image: Option<PathBuf>,
 }
 
 /// the configured breaks, never both lists empty

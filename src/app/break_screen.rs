@@ -2,6 +2,7 @@
 //! NSGlassEffectView capsules wrapping a borderless NSButton.
 
 use core::ptr::NonNull;
+use std::path::Path;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -94,7 +95,7 @@ impl BreakScreen {
         allow_postpone: bool,
         skip_key: Option<KeySpec>,
         postpone_key: Option<KeySpec>,
-        image_path: Option<&str>,
+        image_path: Option<&Path>,
         target: &AnyObject,
     ) {
         self.teardown_now();
@@ -137,7 +138,7 @@ impl BreakScreen {
             blur.setState(NSVisualEffectState::Active);
             backdrop.addSubview(&blur);
 
-            // optional custom image, between blur and scrim. silently ignored if loading fails.
+            // optional custom image, between blur and scrim. a file that isn't an image is skipped.
             // a permanent gaussian blur keeps it a soft backdrop instead of a sharp photo.
             let image_view =
                 image_path.and_then(|p| make_image_view(mtm, p, full, screen.backingScaleFactor()));
@@ -425,12 +426,11 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<BreakWindow> {
 
 fn make_image_view(
     mtm: MainThreadMarker,
-    path: &str,
+    path: &Path,
     frame: NSRect,
     backing_scale: f64,
 ) -> Option<Retained<NSView>> {
-    let expanded = expand_tilde(path);
-    let ns_path = NSString::from_str(&expanded);
+    let ns_path = NSString::from_str(path.to_str()?);
     let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &ns_path)?;
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
     view.setWantsLayer(true);
@@ -444,15 +444,6 @@ fn make_image_view(
     layer.setOpacity(IMAGE_OPACITY);
     attach_blur(&layer, IMAGE_BLUR_RADIUS_RESTING);
     Some(view)
-}
-
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{home}/{rest}");
-    }
-    path.to_string()
 }
 
 fn make_label(

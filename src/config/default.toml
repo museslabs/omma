@@ -73,7 +73,7 @@ skip_when_fullscreen = false  # while the frontmost window is fullscreen
 window_title_matches = []     # case-insensitive regexes, e.g. ["Zoom Meeting"]
 
 # The breaks. Each has a name, and can set its own duration and a background
-# image:
+# image: an existing file at an absolute path, or at one starting with ~/.
 #
 #   [[long_breaks]]
 #   name     = "Take a walk"

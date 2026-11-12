@@ -4,38 +4,23 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
-use regex::{Regex, RegexBuilder};
 
-use crate::config::DoNotDisturb;
+use crate::config::{AppName, DoNotDisturb, TitlePattern};
 
 pub struct DndChecker {
     enabled: bool,
-    apps_running: Vec<String>,
-    apps_active: Vec<String>,
+    apps_running: Vec<AppName>,
+    apps_active: Vec<AppName>,
     check_fullscreen: bool,
-    title_regexes: Vec<Regex>,
+    title_patterns: Vec<TitlePattern>,
     needs_ax: bool,
     ax_trusted: bool,
 }
 
 impl DndChecker {
     pub fn from_config(dnd: &DoNotDisturb) -> DndChecker {
-        // case-insensitive by default. a plain word is a substring match, full regex still works.
-        let title_regexes = dnd
-            .window_title_matches
-            .iter()
-            .filter_map(
-                |p| match RegexBuilder::new(p).case_insensitive(true).build() {
-                    Ok(re) => Some(re),
-                    Err(e) => {
-                        eprintln!("omma: ignoring invalid window_title_matches pattern {p:?}: {e}");
-                        None
-                    }
-                },
-            )
-            .collect::<Vec<_>>();
-
-        let needs_ax = dnd.enabled && (dnd.skip_when_fullscreen || !title_regexes.is_empty());
+        let needs_ax =
+            dnd.enabled && (dnd.skip_when_fullscreen || !dnd.window_title_matches.is_empty());
         let ax_trusted = if needs_ax {
             prompt_accessibility()
         } else {
@@ -52,10 +37,10 @@ impl DndChecker {
 
         DndChecker {
             enabled: dnd.enabled,
-            apps_running: lower(&dnd.skip_when_app_running),
-            apps_active: lower(&dnd.skip_when_app_active),
+            apps_running: dnd.skip_when_app_running.clone(),
+            apps_active: dnd.skip_when_app_active.clone(),
             check_fullscreen: dnd.skip_when_fullscreen,
-            title_regexes,
+            title_patterns: dnd.window_title_matches.clone(),
             needs_ax,
             ax_trusted,
         }
@@ -92,8 +77,8 @@ impl DndChecker {
             if self.check_fullscreen && frontmost_is_fullscreen(&workspace) {
                 return true;
             }
-            if !self.title_regexes.is_empty()
-                && any_window_title_matches(&workspace, &self.title_regexes)
+            if !self.title_patterns.is_empty()
+                && any_window_title_matches(&workspace, &self.title_patterns)
             {
                 return true;
             }
@@ -103,11 +88,7 @@ impl DndChecker {
     }
 }
 
-fn lower(v: &[String]) -> Vec<String> {
-    v.iter().map(|s| s.to_lowercase()).collect()
-}
-
-fn app_matches(app: &objc2_app_kit::NSRunningApplication, patterns: &[String]) -> bool {
+fn app_matches(app: &objc2_app_kit::NSRunningApplication, patterns: &[AppName]) -> bool {
     let name = app
         .localizedName()
         .map(|s| s.to_string().to_lowercase())
@@ -116,7 +97,7 @@ fn app_matches(app: &objc2_app_kit::NSRunningApplication, patterns: &[String]) -
         .bundleIdentifier()
         .map(|s| s.to_string().to_lowercase())
         .unwrap_or_default();
-    patterns.iter().any(|p| {
+    patterns.iter().map(AppName::as_str).any(|p| {
         (!name.is_empty() && name.contains(p)) || (!bundle.is_empty() && bundle.contains(p))
     })
 }
@@ -268,7 +249,7 @@ fn frontmost_is_fullscreen(workspace: &NSWorkspace) -> bool {
     }
 }
 
-fn any_window_title_matches(workspace: &NSWorkspace, regexes: &[Regex]) -> bool {
+fn any_window_title_matches(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> bool {
     let running = workspace.runningApplications();
     unsafe {
         let windows_attr = cfstr("AXWindows");
@@ -298,7 +279,7 @@ fn any_window_title_matches(workspace: &NSWorkspace, regexes: &[Regex]) -> bool 
                     let title_ref = ax_copy(window, title_attr);
                     if !title_ref.is_null() {
                         if let Some(title) = cfstring_to_string(title_ref)
-                            && regexes.iter().any(|re| re.is_match(&title))
+                            && patterns.iter().any(|p| p.is_match(&title))
                         {
                             matched = true;
                         }
