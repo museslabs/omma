@@ -284,9 +284,6 @@ impl BreakScreen {
         // activate so the panel becomes key, hide() drops us back to accessory.
         let app = NSApplication::sharedApplication(mtm);
         let Some(first) = self.windows.first() else {
-            // no display to cover. the warning hands over without restoring accessory, so
-            // restore it here rather than leave the app regular
-            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
             return;
         };
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);

@@ -50,11 +50,12 @@ post_break_sound = "Glass"
 enabled = true
 
 [keybindings]
-# Shortcuts for the Skip and Postpone buttons. A shortcut is one key, either a
-# single character or escape, space, enter, tab or delete, after any of the
-# modifiers cmd, shift, alt (or option) and ctrl, joined by +. For example "s"
-# or "cmd+shift+s". Shift goes only with a letter, escape, space, enter or
-# delete. "" turns a shortcut off. With allow_postpone on, the two must differ.
+# Shortcuts for the Skip and Postpone buttons on the break screen. A shortcut is
+# one key, either a single character or escape, space, enter, tab or delete,
+# after any of the modifiers cmd, shift, alt (or option) and ctrl, joined by +.
+# For example "s" or "cmd+shift+s". Shift goes only with a letter, escape,
+# space, enter or delete. "" turns a shortcut off. With allow_postpone on, the
+# two must differ.
 skip     = "escape"
 postpone = "space"
 

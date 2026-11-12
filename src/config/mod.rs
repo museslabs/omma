@@ -86,7 +86,7 @@ pub struct Notification {
     pub enabled: bool,
 }
 
-/// shortcuts for the Skip and Postpone buttons; None turns one off
+/// shortcuts for the break screen's Skip and Postpone buttons; None turns one off
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keybindings {

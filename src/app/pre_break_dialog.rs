@@ -3,12 +3,12 @@ use core::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadOnly, define_class, msg_send, sel};
+use objc2::{MainThreadOnly, msg_send, sel};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSFontWeightMedium,
-    NSFontWeightSemibold, NSGlassEffectView, NSGlassEffectViewStyle, NSPanel, NSScreen,
-    NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSColor,
+    NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSPanel, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -30,23 +30,9 @@ const BUTTON_W: f64 = 140.0;
 const BUTTON_H: f64 = 36.0;
 const HIDE_DURATION: f64 = 0.24;
 
-define_class!(
-    #[unsafe(super(NSPanel))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "OmmaPreBreakWindow"]
-    struct PreBreakWindow;
-
-    impl PreBreakWindow {
-        #[unsafe(method(canBecomeKeyWindow))]
-        fn can_become_key_window(&self) -> bool {
-            true
-        }
-    }
-);
-
 pub struct PreBreakDialog {
     mtm: MainThreadMarker,
-    window: Option<Retained<PreBreakWindow>>,
+    window: Option<Retained<NSPanel>>,
     glass: Option<Retained<NSGlassEffectView>>,
     body: Option<Retained<NSView>>,
     countdown_label: Option<Retained<NSTextField>>,
@@ -193,11 +179,7 @@ impl PreBreakDialog {
             detach_blur_after(layer, 0.36);
         }
 
-        let app = NSApplication::sharedApplication(self.mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        force_activate(&app);
         window.orderFrontRegardless();
-        window.makeKeyAndOrderFront(None);
         self.window = Some(window);
         self.glass = Some(glass);
         self.body = Some(body);
@@ -215,14 +197,6 @@ impl PreBreakDialog {
     }
 
     pub fn hide(&mut self) {
-        self.hide_inner(true);
-    }
-
-    pub fn hide_for_break(&mut self) {
-        self.hide_inner(false);
-    }
-
-    fn hide_inner(&mut self, restore_accessory: bool) {
         let Some(window) = self.window.take() else {
             return;
         };
@@ -245,13 +219,8 @@ impl PreBreakDialog {
         }
         self.countdown_label = None;
 
-        let mtm = self.mtm;
         let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
             window.orderOut(None);
-            if restore_accessory {
-                NSApplication::sharedApplication(mtm)
-                    .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-            }
         });
         unsafe {
             NSTimer::scheduledTimerWithTimeInterval_repeats_block(
@@ -263,13 +232,15 @@ impl PreBreakDialog {
     }
 }
 
-fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<PreBreakWindow> {
-    let window: Retained<PreBreakWindow> = unsafe {
-        let alloc = PreBreakWindow::alloc(mtm);
+/// a borderless panel never becomes key, and a non-activating one takes clicks without
+/// activating omma, so the warning never takes focus from the app the user is in
+fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSPanel> {
+    let window: Retained<NSPanel> = unsafe {
+        let alloc = NSPanel::alloc(mtm);
         msg_send![
             alloc,
             initWithContentRect: frame,
-            styleMask: NSWindowStyleMask::Borderless,
+            styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
             backing: NSBackingStoreType::Buffered,
             defer: false,
         ]
@@ -278,7 +249,7 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<PreBreakWindow>
     window.setOpaque(false);
     // native shadows follow the panel rect, not the rounded glass, so they leak a jagged outline
     window.setHasShadow(false);
-    // accessory apps stay inactive, so NSPanel stays hidden until the break activates the app
+    // a panel hides when its app isn't active, and omma never is while the warning shows
     window.setHidesOnDeactivate(false);
     window.setBackgroundColor(Some(&NSColor::clearColor()));
     if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
@@ -292,14 +263,6 @@ fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<PreBreakWindow>
     );
     unsafe { window.setReleasedWhenClosed(false) };
     window
-}
-
-#[expect(
-    deprecated,
-    reason = "cooperative activate() is throttled for a background app woken by a timer, so the panel never becomes key"
-)]
-fn force_activate(app: &NSApplication) {
-    app.activateIgnoringOtherApps(true);
 }
 
 #[expect(

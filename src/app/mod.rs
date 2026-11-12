@@ -364,13 +364,12 @@ impl App {
                     self.core.can_skip(),
                     self.core.can_postpone(),
                     remaining.unwrap_or(0),
-                    self.config.keybindings.skip,
-                    self.config.keybindings.postpone,
+                    // the warning never takes focus, so key equivalents can't reach it
+                    None,
+                    None,
                     target,
                 );
                 self.shown.countdown = remaining;
-            } else if in_break {
-                self.pre_break_dialog.hide_for_break();
             } else {
                 self.pre_break_dialog.hide();
             }
