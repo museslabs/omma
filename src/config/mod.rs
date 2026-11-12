@@ -117,29 +117,9 @@ pub struct DoNotDisturb {
 }
 
 impl DoNotDisturb {
-    /// whether `other` looks for the same things; `action` only says what to do once found
-    pub fn same_checks(&self, other: &DoNotDisturb) -> bool {
-        let DoNotDisturb {
-            enabled,
-            skip_when_app_running,
-            skip_when_app_active,
-            skip_when_fullscreen,
-            window_title_matches,
-            action: _,
-        } = self;
-        (
-            enabled,
-            skip_when_app_running,
-            skip_when_app_active,
-            skip_when_fullscreen,
-            window_title_matches,
-        ) == (
-            &other.enabled,
-            &other.skip_when_app_running,
-            &other.skip_when_app_active,
-            &other.skip_when_fullscreen,
-            &other.window_title_matches,
-        )
+    /// whether a rule reads other apps' windows, which needs Accessibility permission
+    pub fn needs_accessibility(&self) -> bool {
+        self.enabled && (self.skip_when_fullscreen || !self.window_title_matches.is_empty())
     }
 }
 
@@ -989,18 +969,17 @@ mod tests {
     }
 
     #[test]
-    fn the_action_alone_doesnt_change_the_checks() {
+    fn only_the_window_rules_need_accessibility() {
         let dnd = |text: &str| {
             parse(&format!("[do_not_disturb]\n{text}\n"))
                 .unwrap()
                 .do_not_disturb
         };
-        let base = dnd("window_title_matches = [\"Zoom\"]");
-        assert!(base.same_checks(&dnd(
-            "window_title_matches = [\"Zoom\"]\naction = \"postpone\""
-        )));
-        assert!(!base.same_checks(&dnd("window_title_matches = [\"zoom\"]")));
-        assert!(!base.same_checks(&dnd("window_title_matches = [\"Zoom\"]\nenabled = false")));
+        assert!(!DoNotDisturb::default().needs_accessibility());
+        assert!(!dnd("skip_when_app_running = [\"zoom\"]").needs_accessibility());
+        assert!(dnd("skip_when_fullscreen = true").needs_accessibility());
+        assert!(dnd("window_title_matches = [\"Zoom\"]").needs_accessibility());
+        assert!(!dnd("window_title_matches = [\"Zoom\"]\nenabled = false").needs_accessibility());
     }
 
     #[test]

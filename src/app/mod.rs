@@ -29,7 +29,6 @@ use crate::config::{Config, ConfigError, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
-use activity::DndChecker;
 use break_screen::BreakScreen;
 use glass_button::{Button, Buttons};
 use hotkey::{Action, Hotkeys};
@@ -147,7 +146,6 @@ struct App {
     pre_break_dialog: PreBreakDialog,
     /// the warning's global shortcuts, held while it shows
     hotkeys: Hotkeys,
-    dnd: DndChecker,
     /// the user closed the warning without skipping or postponing; cleared when it ends
     warning_dismissed: bool,
     shown: Shown,
@@ -278,7 +276,9 @@ impl App {
         ipc: Server,
         now: SystemTime,
     ) -> App {
-        let dnd = DndChecker::from_config(&config.do_not_disturb);
+        if config.do_not_disturb.needs_accessibility() {
+            activity::request_accessibility();
+        }
         let tray_icon = tray_icon_image(TRAY_ICON_SVG);
         let tray_icon_incoming = tray_icon_image(TRAY_ICON_INCOMING_SVG);
         let break_screen = BreakScreen::new(mtm);
@@ -306,7 +306,6 @@ impl App {
             break_screen,
             pre_break_dialog,
             hotkeys: Hotkeys::new(),
-            dnd,
             warning_dismissed: false,
             shown: Shown::default(),
             timer: None,
@@ -401,7 +400,7 @@ impl App {
         let alert = &self.config.audible_alert;
         match event {
             Event::Warn => {
-                if self.dnd.should_suppress() {
+                if activity::should_suppress(&self.config.do_not_disturb) {
                     self.core.suppress(now, self.config.do_not_disturb.action);
                 } else if alert.enabled && alert.pre_break {
                     sound::play(&alert.pre_break_sound);
@@ -642,12 +641,13 @@ impl App {
         )
     }
 
-    /// rebuilds do-not-disturb only when its checks changed: building it can prompt for
-    /// Accessibility
+    /// asks for Accessibility when `new` needs it and the config it replaces didn't
     fn apply_config(&mut self, new: Config) {
         self.core.reconfigure(new.schedule.clone());
-        if !new.do_not_disturb.same_checks(&self.config.do_not_disturb) {
-            self.dnd = DndChecker::from_config(&new.do_not_disturb);
+        if new.do_not_disturb.needs_accessibility()
+            && !self.config.do_not_disturb.needs_accessibility()
+        {
+            activity::request_accessibility();
         }
         self.config = new;
     }

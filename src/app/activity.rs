@@ -1,11 +1,13 @@
-//! do-not-disturb. tier 1 checks running/frontmost apps via NSWorkspace, no permission.
-//! tier 2 checks fullscreen or window titles via the accessibility api, which the user grants.
+//! do-not-disturb. the app rules look at running and frontmost apps through NSWorkspace and
+//! need no permission. the fullscreen and window-title rules read other apps' windows through
+//! the Accessibility API, which the user grants.
 
 use std::ptr::{self, NonNull};
 
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 use objc2_application_services::{
-    AXError, AXIsProcessTrustedWithOptions, AXUIElement, kAXTrustedCheckOptionPrompt,
+    AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement,
+    kAXTrustedCheckOptionPrompt,
 };
 use objc2_core_foundation::{
     CFArray, CFBoolean, CFDictionary, CFRetained, CFString, CFType, ConcreteType,
@@ -13,83 +15,50 @@ use objc2_core_foundation::{
 
 use crate::config::{AppName, DoNotDisturb, TitlePattern};
 
-pub struct DndChecker {
-    enabled: bool,
-    apps_running: Vec<AppName>,
-    apps_active: Vec<AppName>,
-    check_fullscreen: bool,
-    title_patterns: Vec<TitlePattern>,
-    needs_ax: bool,
-    ax_trusted: bool,
-}
+/// whether a rule holds now. permission for the window rules is checked each time, so a
+/// grant while omma runs counts at once.
+pub fn should_suppress(dnd: &DoNotDisturb) -> bool {
+    if !dnd.enabled {
+        return false;
+    }
+    let workspace = NSWorkspace::sharedWorkspace();
 
-impl DndChecker {
-    pub fn from_config(dnd: &DoNotDisturb) -> DndChecker {
-        let needs_ax =
-            dnd.enabled && (dnd.skip_when_fullscreen || !dnd.window_title_matches.is_empty());
-        let ax_trusted = if needs_ax {
-            prompt_accessibility()
-        } else {
-            false
-        };
-
-        if needs_ax && !ax_trusted {
-            eprintln!(
-                "omma: do-not-disturb fullscreen/window-title rules need Accessibility \
-                 permission.\n      Grant it in System Settings → Privacy & Security → \
-                 Accessibility, then restart omma."
-            );
-        }
-
-        DndChecker {
-            enabled: dnd.enabled,
-            apps_running: dnd.skip_when_app_running.clone(),
-            apps_active: dnd.skip_when_app_active.clone(),
-            check_fullscreen: dnd.skip_when_fullscreen,
-            title_patterns: dnd.window_title_matches.clone(),
-            needs_ax,
-            ax_trusted,
-        }
+    if !dnd.skip_when_app_active.is_empty()
+        && let Some(front) = workspace.frontmostApplication()
+        && running_app_matches(&front, &dnd.skip_when_app_active)
+    {
+        return true;
+    }
+    if !dnd.skip_when_app_running.is_empty()
+        && workspace
+            .runningApplications()
+            .iter()
+            .any(|app| running_app_matches(&app, &dnd.skip_when_app_running))
+    {
+        return true;
     }
 
-    pub fn should_suppress(&self) -> bool {
-        if !self.enabled {
-            return false;
-        }
+    // SAFETY: no arguments
+    if !dnd.needs_accessibility() || !unsafe { AXIsProcessTrusted() } {
+        return false;
+    }
+    (dnd.skip_when_fullscreen && frontmost_is_fullscreen(&workspace))
+        || (!dnd.window_title_matches.is_empty()
+            && any_window_title_matches(&workspace, &dnd.window_title_matches))
+}
 
-        let workspace = NSWorkspace::sharedWorkspace();
-
-        // tier 1: frontmost app
-        if !self.apps_active.is_empty()
-            && let Some(front) = workspace.frontmostApplication()
-            && running_app_matches(&front, &self.apps_active)
-        {
-            return true;
-        }
-
-        // tier 1: any running app
-        if !self.apps_running.is_empty()
-            && workspace
-                .runningApplications()
-                .iter()
-                .any(|app| running_app_matches(&app, &self.apps_running))
-        {
-            return true;
-        }
-
-        // tier 2: accessibility-based checks
-        if self.needs_ax && self.ax_trusted {
-            if self.check_fullscreen && frontmost_is_fullscreen(&workspace) {
-                return true;
-            }
-            if !self.title_patterns.is_empty()
-                && any_window_title_matches(&workspace, &self.title_patterns)
-            {
-                return true;
-            }
-        }
-
-        false
+/// asks for Accessibility permission unless omma has it. the system's prompt doesn't block.
+pub fn request_accessibility() {
+    // SAFETY: an immutable CFString that the framework exports
+    let prompt = unsafe { kAXTrustedCheckOptionPrompt };
+    let options =
+        CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[CFBoolean::new(true)]);
+    // SAFETY: the options map CFString keys to CFBoolean values, as the call expects
+    if !unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) } {
+        eprintln!(
+            "omma: the fullscreen and window-title rules need Accessibility permission.\n      \
+             Grant it in System Settings → Privacy & Security → Accessibility."
+        );
     }
 }
 
@@ -113,16 +82,6 @@ fn running_app_matches(app: &NSRunningApplication, rules: &[AppName]) -> bool {
         .map(|s| s.to_string())
         .unwrap_or_default();
     app_matches(rules, &name, &bundle_id)
-}
-
-/// check and, on first run, prompt for accessibility permission
-fn prompt_accessibility() -> bool {
-    // SAFETY: an immutable CFString that the framework exports
-    let prompt = unsafe { kAXTrustedCheckOptionPrompt };
-    let options =
-        CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[CFBoolean::new(true)]);
-    // SAFETY: the options map CFString keys to CFBoolean values, as the call expects
-    unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) }
 }
 
 /// the app's top-level accessibility element
