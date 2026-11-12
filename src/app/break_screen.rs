@@ -1,7 +1,9 @@
 //! one fullscreen overlay per display in liquid glass style. buttons are
 //! NSGlassEffectView capsules wrapping a borderless NSButton.
 
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 
 use objc2::rc::Retained;
@@ -41,6 +43,10 @@ const FOREGROUND_DELAY: f64 = 0.06;
 const FOREGROUND_ENTRANCE: f64 = 0.55;
 /// when the foreground is in focus, from the moment the screen appears
 const FOREGROUND_SETTLED: f64 = FOREGROUND_DELAY + FOREGROUND_ENTRANCE;
+/// the message starts its entrance this long after the screen appears
+const LABEL_BEGINS: f64 = FOREGROUND_SETTLED + 0.07;
+/// and the buttons this long
+const BUTTONS_BEGIN: f64 = LABEL_BEGINS + 0.28;
 const EXIT_DURATION: f64 = 0.32;
 const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     height: BUTTON_HEIGHT,
@@ -58,6 +64,9 @@ pub struct BreakScreen {
     overlays: Vec<Overlay>,
     /// see `animations_on`
     animate: bool,
+    /// true from the latest `show` until `hide` starts or the overlays are torn down. a
+    /// timer from that `show` checks it, since `hide` may have run first.
+    up: Rc<Cell<bool>>,
 }
 
 struct Overlay {
@@ -76,6 +85,7 @@ impl BreakScreen {
             mtm,
             overlays: Vec::new(),
             animate: true,
+            up: Rc::new(Cell::new(false)),
         }
     }
 
@@ -270,14 +280,15 @@ impl BreakScreen {
                         None,
                     );
                 }
-                let label_begin = now + FOREGROUND_SETTLED + 0.07;
-                let buttons_begin = label_begin + 0.28;
                 if let Some(layer) = name_label.layer() {
-                    animate_delayed_entrance(mtm, layer, 28.0, label_begin, now);
+                    animate_delayed_entrance(mtm, layer, 28.0, now + LABEL_BEGINS, now);
                 }
                 for button in &buttons {
+                    // takes neither clicks nor its shortcut until it shows, so keys typed as
+                    // the break starts don't skip it
+                    button.button.setEnabled(false);
                     if let Some(layer) = button.capsule.layer() {
-                        animate_delayed_entrance(mtm, layer, -28.0, buttons_begin, now);
+                        animate_delayed_entrance(mtm, layer, -28.0, now + BUTTONS_BEGIN, now);
                     }
                 }
             }
@@ -295,6 +306,23 @@ impl BreakScreen {
         // the skip and postpone keys go to the key window
         let first = self.overlays.first()?;
         first.window.makeKeyWindow();
+        self.up = Rc::new(Cell::new(true));
+        if animate {
+            let up = Rc::clone(&self.up);
+            let buttons: Vec<_> = self
+                .overlays
+                .iter()
+                .flat_map(|overlay| overlay.buttons.clone())
+                .collect();
+            let delay = (now + BUTTONS_BEGIN - CACurrentMediaTime()).max(0.0);
+            after(mtm, delay, move || {
+                if up.get() {
+                    for button in &buttons {
+                        button.setEnabled(true);
+                    }
+                }
+            });
+        }
         Some(if animate {
             let left = now + FOREGROUND_SETTLED - CACurrentMediaTime();
             Duration::from_secs_f64(left.max(0.0))
@@ -326,6 +354,7 @@ impl BreakScreen {
         if self.overlays.is_empty() {
             return;
         }
+        self.up.set(false);
         // reduce motion: tear down immediately
         if !self.animate {
             self.teardown_now();
@@ -362,6 +391,7 @@ impl BreakScreen {
     /// no exit animation: order every window out and forget the views. used when reopening
     /// and when reduce motion is on.
     fn teardown_now(&mut self) {
+        self.up.set(false);
         for overlay in self.overlays.drain(..) {
             overlay.window.orderOut(None);
         }
