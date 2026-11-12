@@ -495,9 +495,13 @@ impl App {
         }
     }
 
+    /// rebuilds do-not-disturb only when its checks changed: building it can prompt for
+    /// Accessibility
     fn apply_config(&mut self, new: Config) {
         self.core.reconfigure(new.schedule.clone());
-        self.dnd = DndChecker::from_config(&new.do_not_disturb);
+        if !new.do_not_disturb.same_checks(&self.config.do_not_disturb) {
+            self.dnd = DndChecker::from_config(&new.do_not_disturb);
+        }
         self.config = new;
     }
 

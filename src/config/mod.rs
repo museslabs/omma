@@ -111,6 +111,33 @@ pub struct DoNotDisturb {
     pub action: DndAction,
 }
 
+impl DoNotDisturb {
+    /// whether `other` looks for the same things; `action` only says what to do once found
+    pub fn same_checks(&self, other: &DoNotDisturb) -> bool {
+        let DoNotDisturb {
+            enabled,
+            skip_when_app_running,
+            skip_when_app_active,
+            skip_when_fullscreen,
+            window_title_matches,
+            action: _,
+        } = self;
+        (
+            enabled,
+            skip_when_app_running,
+            skip_when_app_active,
+            skip_when_fullscreen,
+            window_title_matches,
+        ) == (
+            &other.enabled,
+            &other.skip_when_app_running,
+            &other.skip_when_app_active,
+            &other.skip_when_fullscreen,
+            &other.window_title_matches,
+        )
+    }
+}
+
 /// part of an app's name or bundle id, lowercase
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
@@ -911,6 +938,21 @@ mod tests {
             rejects("[do_not_disturb]\nskip_when_app_running = [\" \"]\n"),
             "line 2: do_not_disturb.skip_when_app_running: an empty app name would match every app"
         );
+    }
+
+    #[test]
+    fn the_action_alone_doesnt_change_the_checks() {
+        let dnd = |text: &str| {
+            parse(&format!("[do_not_disturb]\n{text}\n"))
+                .unwrap()
+                .do_not_disturb
+        };
+        let base = dnd("window_title_matches = [\"Zoom\"]");
+        assert!(base.same_checks(&dnd(
+            "window_title_matches = [\"Zoom\"]\naction = \"postpone\""
+        )));
+        assert!(!base.same_checks(&dnd("window_title_matches = [\"zoom\"]")));
+        assert!(!base.same_checks(&dnd("window_title_matches = [\"Zoom\"]\nenabled = false")));
     }
 
     #[test]
