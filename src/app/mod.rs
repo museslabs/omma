@@ -202,6 +202,8 @@ struct Shown {
 }
 
 define_class!(
+    // SAFETY: NSObject can be subclassed. the delegate adds its RefCell ivar and its own
+    // methods, and overrides none of NSObject's
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaDelegate"]
@@ -296,6 +298,7 @@ define_class!(
 impl Delegate {
     fn new(mtm: MainThreadMarker, app: App) -> Retained<Delegate> {
         let this = Delegate::alloc(mtm).set_ivars(RefCell::new(app));
+        // SAFETY: NSObject's init takes no arguments and returns the object it was sent to
         unsafe { msg_send![super(this), init] }
     }
 
@@ -688,6 +691,7 @@ impl App {
         };
         // the timer retains its target, and the run loop the timer, which keeps the
         // delegate and all state alive
+        // SAFETY: `target` is the delegate, whose `onTimer:` takes the timer
         let timer = unsafe {
             NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
                 interval,
@@ -698,6 +702,7 @@ impl App {
             )
         };
         timer.setTolerance(tolerance);
+        // SAFETY: the mode is an immutable Foundation constant
         unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
         self.timer = Some(timer);
         self.shown.fast_ticks = fast;
@@ -819,6 +824,7 @@ impl App {
     ) -> Retained<NSMenuItem> {
         let title = NSString::from_str(title);
         let key = NSString::from_str("");
+        // SAFETY: `action` is a delegate method that takes the sender
         let item = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(self.mtm),
@@ -827,6 +833,8 @@ impl App {
                 &key,
             )
         };
+        // SAFETY: the item doesn't retain its target, and the delegate lives as long as the
+        // app
         unsafe { item.setTarget(Some(target)) };
         menu.addItem(&item);
         item
@@ -835,6 +843,7 @@ impl App {
     fn add_disabled_item(&self, menu: &NSMenu, title: &str) -> Retained<NSMenuItem> {
         let title = NSString::from_str(title);
         let key = NSString::from_str("");
+        // SAFETY: with no action, the item never sends anything
         let item = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(self.mtm),
