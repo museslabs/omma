@@ -1,0 +1,49 @@
+name: Release
+
+# a version tag runs the tests, builds the Apple silicon binary and attaches it to a draft
+# release, with that version's CHANGELOG section as the notes. the tag must match
+# Cargo.toml's version and that section must have a date. publish the draft by hand.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" = "$version"
+          grep -Eq "^## \[$version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          file target/release/omma | grep -q arm64
+          name="omma-${GITHUB_REF_NAME}-aarch64-apple-darwin"
+          mkdir "$name"
+          cp target/release/omma README.md CHANGELOG.md LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v head="## [$version]" '
+            index($0, head) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found && /^\[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" omma-*.tar.gz omma-*.tar.gz.sha256
+          --draft --verify-tag --title "omma $GITHUB_REF_NAME" --notes-file notes.md
