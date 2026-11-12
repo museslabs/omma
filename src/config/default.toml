@@ -1,10 +1,10 @@
-# omma config. omma rereads this file within a second of every save.
+# omma config. omma rereads this file a second or two after every save.
 #
 # Times are in whole seconds. A key you leave out keeps its default. A key omma
-# doesn't know, or a value out of range, is an error: the menu shows it with its
-# line, and omma keeps its last good config, or the defaults at startup. The
-# keys at the top must come before the first [table] header, because TOML puts
-# every key below a header into that table.
+# doesn't know, or a value out of range, is an error. The menu shows it, with
+# its line when it has one, and omma keeps its last good config, or the defaults
+# at startup. The keys at the top must come before the first [table] header,
+# because TOML puts every key below a header into that table.
 
 # Time between breaks, 1 to 86400 (24 h). The short interval must be less than
 # the long one.

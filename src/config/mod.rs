@@ -1032,6 +1032,25 @@ mod tests {
         assert_eq!(core.remaining(now), remaining);
     }
 
+    #[test]
+    fn the_readme_examples_parse() {
+        let home = TempDir::new("readme");
+        std::fs::create_dir_all(home.0.join("Pictures")).unwrap();
+        std::fs::write(home.0.join("Pictures/trail.jpg"), b"").unwrap();
+        let readme = include_str!("../../README.md");
+        let examples: Vec<&str> = readme
+            .split("```toml\n")
+            .skip(1)
+            .filter_map(|block| block.split("```").next())
+            .collect();
+        assert_eq!(examples.len(), 4);
+        for example in examples {
+            if let Err(e) = Config::parse(example, Some(&home.0)) {
+                panic!("{e}\n{example}");
+            }
+        }
+    }
+
     /// a fresh directory under the system temp dir, removed on drop
     struct TempDir(PathBuf);
 
