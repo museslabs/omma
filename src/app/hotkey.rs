@@ -3,10 +3,11 @@
 //! only on the warning.
 
 use std::ffi::c_void;
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
+use objc2_core_foundation::{CFData, CFRetained, CFString, CFType};
 
 use crate::config::{Key, KeySpec};
 
@@ -186,23 +187,21 @@ fn key_code(key: Key) -> Option<u32> {
 
 fn layout_key_code(c: char) -> Option<u32> {
     let want = c.to_string();
-    // SAFETY: the copied source is released below; the layout data belongs to it and isn't
-    // used after the release
-    unsafe {
-        let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
-        if source.is_null() {
-            return None;
-        }
-        let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
-        let code = if data.is_null() {
-            None
-        } else {
-            let layout = CFDataGetBytePtr(data).cast::<c_void>();
-            let keyboard = u32::from(LMGetKbdType());
-            (0..128u16).find(|&code| {
-                let mut dead_keys = 0;
-                let mut chars = [0u16; 4];
-                let mut len = 0;
+    // SAFETY: no arguments
+    let source = unsafe { TISCopyCurrentASCIICapableKeyboardLayoutInputSource() };
+    // SAFETY: a Copy function's result is ours to release, and CFRetained releases it
+    let source = NonNull::new(source).map(|source| unsafe { CFRetained::from_raw(source) })?;
+    let layout = layout_data(&source)?.byte_ptr().cast::<c_void>();
+    // SAFETY: no arguments
+    let keyboard = u32::from(unsafe { LMGetKbdType() });
+    (0..128u16)
+        .find(|&code| {
+            let mut dead_keys = 0;
+            let mut chars = [0u16; 4];
+            let mut len = 0;
+            // SAFETY: `layout` is the layout data, alive with `source`. `chars` has room for
+            // the `chars.len()` units the call may write, and `len` says how many it did.
+            let status = unsafe {
                 UCKeyTranslate(
                     layout,
                     code,
@@ -214,13 +213,19 @@ fn layout_key_code(c: char) -> Option<u32> {
                     chars.len(),
                     &mut len,
                     chars.as_mut_ptr(),
-                ) == NO_ERR
-                    && String::from_utf16(&chars[..len]).is_ok_and(|typed| typed == want)
-            })
-        };
-        CFRelease(source);
-        code.map(u32::from)
-    }
+                )
+            };
+            status == NO_ERR && String::from_utf16(&chars[..len]).is_ok_and(|typed| typed == want)
+        })
+        .map(u32::from)
+}
+
+/// the source's keyboard layout data, which the source owns
+fn layout_data(source: &CFType) -> Option<&CFData> {
+    // SAFETY: an input source and the framework's property key
+    let data = unsafe { TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) };
+    // SAFETY: null or a CF object that `source` owns, so it lives as long as this borrow
+    unsafe { data.as_ref() }?.downcast_ref()
 }
 
 type OSStatus = i32;
@@ -287,9 +292,9 @@ unsafe extern "C" {
         actual_size: *mut usize,
         data: *mut c_void,
     ) -> OSStatus;
-    fn TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> *mut c_void;
-    fn TISGetInputSourceProperty(source: *mut c_void, key: *const c_void) -> *const c_void;
-    static kTISPropertyUnicodeKeyLayoutData: *const c_void;
+    fn TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> *mut CFType;
+    fn TISGetInputSourceProperty(source: &CFType, key: &CFString) -> *const CFType;
+    static kTISPropertyUnicodeKeyLayoutData: &'static CFString;
     fn LMGetKbdType() -> u8;
 }
 
@@ -307,12 +312,6 @@ unsafe extern "C" {
         actual_len: *mut usize,
         chars: *mut u16,
     ) -> OSStatus;
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
-    fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
 }
 
 #[cfg(test)]
