@@ -1,21 +1,24 @@
 # omma config. omma rereads this file within a second of every save.
 #
-# Times are in seconds. A key you leave out keeps its default. The keys at the
-# top must come before the first [table] header, because TOML puts every key
-# below a header into that table.
+# Times are in whole seconds. A key you leave out keeps its default. A key omma
+# doesn't know, or a value out of range, is an error that names its line. The
+# keys at the top must come before the first [table] header, because TOML puts
+# every key below a header into that table.
 
-# Time between breaks.
+# Time between breaks, 1 to 86400 (24 h). The short interval must be less than
+# the long one.
 short_break_interval = 900   # 15 min
 long_break_interval  = 4500  # 75 min
 
-# How long a break lasts. Each break in the lists at the end can set its own.
+# How long a break lasts, 1 to 3600 (1 h). Each break in the lists at the end
+# can set its own.
 short_break_duration = 15
 long_break_duration  = 60
 
-# The warning shows up this long before a break.
+# The warning shows up this long before a break, 0 to 600 (10 min).
 pre_break_warning = 10
 
-# Postpone pushes a break back by postpone_duration.
+# Postpone pushes a break back by postpone_duration, 1 to 86400 (24 h).
 allow_postpone    = false
 postpone_duration = 300  # 5 min
 
@@ -26,9 +29,9 @@ strict_break = false
 random_order = true
 
 [smart_pause]
-# After idle_seconds without keyboard or mouse input the schedule pauses. Once
-# you're back the next break is a full interval away, and time away at least as
-# long as a long break counts as one.
+# After idle_seconds (10 to 86400) without keyboard or mouse input the schedule
+# pauses. Once you're back the next break is a full interval away, and time away
+# at least as long as a long break counts as one.
 enabled      = true
 idle_seconds = 60
 

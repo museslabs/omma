@@ -1032,7 +1032,7 @@ mod tests {
 
     #[test]
     fn the_defaults_give_four_shorts_then_a_long() {
-        let mut core = Core::new(Config::default().settings().unwrap(), at(0));
+        let mut core = Core::new(Config::default().schedule, at(0));
         let breaks = breaks_between(&mut core, 1, 9100);
         assert_eq!(
             kinds(&breaks),
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn after_idle_credit_the_defaults_give_four_shorts_then_a_long() {
-        let mut core = Core::new(Config::default().settings().unwrap(), at(0));
+        let mut core = Core::new(Config::default().schedule, at(0));
         assert_eq!(kinds(&breaks_between(&mut core, 1, 1000)), [Short]);
         // idle from 1000 s, paused at 1060, back at 1200
         for s in 1000..1200 {

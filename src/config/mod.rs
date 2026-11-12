@@ -1,8 +1,15 @@
+//! the config file, parsed once into checked, typed settings. an unknown key, a value out of
+//! range or a broken rule rejects the whole file, with an error that says where.
+
 use std::ffi::OsString;
+use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use toml::Spanned;
+use toml::de::{DeTable, DeValue};
 
 use crate::queue::{Break, BreakType, Breaks};
 use crate::scheduler::Settings;
@@ -10,48 +17,55 @@ use crate::scheduler::Settings;
 /// commented, and equal to `Config::default()`; written on first run
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+/// a config that passed every check
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    pub short_break_interval: i64,
-    pub long_break_interval: i64,
-    pub short_break_duration: i64,
-    pub long_break_duration: i64,
-    pub pre_break_warning: i64,
-    pub postpone_duration: i64,
-    pub allow_postpone: bool,
-    /// if true, breaks cannot be skipped or postponed
-    pub strict_break: bool,
-    pub random_order: bool,
-
-    pub short_breaks: Vec<BreakCfg>,
-    pub long_breaks: Vec<BreakCfg>,
-
-    pub smart_pause: SmartPause,
+    pub schedule: Settings,
     pub audible_alert: AudibleAlert,
-    pub notification: NotificationCfg,
+    pub notification: Notification,
     pub keybindings: Keybindings,
     pub do_not_disturb: DoNotDisturb,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct BreakCfg {
-    pub name: String,
-    #[serde(default)]
-    pub duration: Option<i64>,
-    #[serde(default)]
-    pub image: Option<String>,
+/// the file as written. `Default` fills in what it leaves out.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ConfigFile {
+    short_break_interval: Interval,
+    long_break_interval: Interval,
+    short_break_duration: BreakLength,
+    long_break_duration: BreakLength,
+    pre_break_warning: WarningTime,
+    postpone_duration: Interval,
+    allow_postpone: bool,
+    strict_break: bool,
+    random_order: bool,
+    short_breaks: Vec<BreakEntry>,
+    long_breaks: Vec<BreakEntry>,
+    smart_pause: SmartPause,
+    audible_alert: AudibleAlert,
+    notification: Notification,
+    keybindings: Keybindings,
+    do_not_disturb: DoNotDisturb,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct SmartPause {
-    pub enabled: bool,
-    pub idle_seconds: i64,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BreakEntry {
+    name: BreakName,
+    duration: Option<BreakLength>,
+    image: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SmartPause {
+    enabled: bool,
+    idle_seconds: IdleTime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudibleAlert {
     pub enabled: bool,
     pub pre_break: bool,
@@ -61,24 +75,24 @@ pub struct AudibleAlert {
     pub post_break_sound: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct NotificationCfg {
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Notification {
     pub enabled: bool,
 }
 
 /// key spec accepts `escape`, `space`, a letter like `s`, or combos like `cmd+s`.
 /// modifiers: cmd, shift, alt/option, ctrl. named keys: escape/esc, space,
 /// enter/return, tab, delete/backspace. empty string disables the bind.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Keybindings {
     pub skip: String,
     pub postpone: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DoNotDisturb {
     pub enabled: bool,
     /// case-insensitive substring match against app name or bundle id
@@ -92,50 +106,132 @@ pub struct DoNotDisturb {
     pub action: DndAction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DndAction {
     Skip,
     Postpone,
 }
 
-impl Default for Config {
+const MINUTE: u64 = 60;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
+
+/// time between breaks, and the postpone delay
+type Interval = Secs<1, DAY>;
+type BreakLength = Secs<1, HOUR>;
+type WarningTime = Secs<0, { 10 * MINUTE }>;
+/// below 10 s, any pause to read or think would pause the schedule
+type IdleTime = Secs<10, DAY>;
+
+/// whole seconds in `MIN..=MAX`. the bounds keep deadlines far from overflowing.
+#[derive(Clone, Copy)]
+struct Secs<const MIN: u64, const MAX: u64>(u64);
+
+impl<const MIN: u64, const MAX: u64> Secs<MIN, MAX> {
+    fn duration(self) -> Duration {
+        Duration::from_secs(self.0)
+    }
+}
+
+impl<'de, const MIN: u64, const MAX: u64> Deserialize<'de> for Secs<MIN, MAX> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct Visitor<const MIN: u64, const MAX: u64>;
+
+        impl<const MIN: u64, const MAX: u64> serde::de::Visitor<'_> for Visitor<MIN, MAX> {
+            type Value = Secs<MIN, MAX>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a whole number of seconds")
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, secs: i64) -> Result<Self::Value, E> {
+                u64::try_from(secs)
+                    .ok()
+                    .filter(|s| (MIN..=MAX).contains(s))
+                    .map(Secs)
+                    .ok_or_else(|| E::custom(format!("must be {MIN} to {MAX} seconds, got {secs}")))
+            }
+        }
+
+        de.deserialize_i64(Visitor)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(try_from = "String")]
+struct BreakName(String);
+
+impl TryFrom<String> for BreakName {
+    type Error = &'static str;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        if name.trim().is_empty() {
+            Err("a break needs a name")
+        } else {
+            Ok(BreakName(name))
+        }
+    }
+}
+
+impl Default for ConfigFile {
     fn default() -> Self {
-        Config {
-            short_break_interval: 900,
-            long_break_interval: 4500,
-            short_break_duration: 15,
-            long_break_duration: 60,
-            pre_break_warning: 10,
-            postpone_duration: 300,
+        ConfigFile {
+            short_break_interval: Secs(15 * MINUTE),
+            long_break_interval: Secs(75 * MINUTE),
+            short_break_duration: Secs(15),
+            long_break_duration: Secs(MINUTE),
+            pre_break_warning: Secs(10),
+            postpone_duration: Secs(5 * MINUTE),
             allow_postpone: false,
             strict_break: false,
             random_order: true,
-            short_breaks: default_short_breaks(),
-            long_breaks: default_long_breaks(),
+            short_breaks: entries(&[
+                "Gently close your eyes",
+                "Roll your eyes a few times to each side",
+                "Rotate your eyes in clockwise direction",
+                "Rotate your eyes in counterclockwise direction",
+                "Blink your eyes",
+                "Focus on a point in the far distance",
+                "Have some water",
+                "Relax your shoulders and drop them away from your ears",
+                "Stretch your neck gently from side to side",
+                "Check your posture and sit back comfortably",
+                "Unclench your jaw and relax your face",
+                "Stretch your wrists and fingers",
+            ]),
+            long_breaks: entries(&[
+                "Stand up and stretch your back and legs",
+                "Walk around for a while",
+                "Lean back at your seat and relax",
+                "Step away from the screen and look out a window",
+                "Walk over and refill your water",
+            ]),
             smart_pause: SmartPause::default(),
             audible_alert: AudibleAlert::default(),
-            notification: NotificationCfg::default(),
+            notification: Notification::default(),
             keybindings: Keybindings::default(),
             do_not_disturb: DoNotDisturb::default(),
         }
     }
 }
 
-impl Default for Keybindings {
-    fn default() -> Self {
-        Keybindings {
-            skip: "escape".into(),
-            postpone: "space".into(),
-        }
-    }
+fn entries(names: &[&str]) -> Vec<BreakEntry> {
+    names
+        .iter()
+        .map(|name| BreakEntry {
+            name: BreakName((*name).to_owned()),
+            duration: None,
+            image: None,
+        })
+        .collect()
 }
 
 impl Default for SmartPause {
     fn default() -> Self {
         SmartPause {
             enabled: true,
-            idle_seconds: 60,
+            idle_seconds: Secs(MINUTE),
         }
     }
 }
@@ -152,9 +248,18 @@ impl Default for AudibleAlert {
     }
 }
 
-impl Default for NotificationCfg {
+impl Default for Notification {
     fn default() -> Self {
-        NotificationCfg { enabled: true }
+        Notification { enabled: true }
+    }
+}
+
+impl Default for Keybindings {
+    fn default() -> Self {
+        Keybindings {
+            skip: "escape".into(),
+            postpone: "space".into(),
+        }
     }
 }
 
@@ -171,193 +276,223 @@ impl Default for DoNotDisturb {
     }
 }
 
-fn names_to_breaks(names: &[&str]) -> Vec<BreakCfg> {
-    names
-        .iter()
-        .map(|n| BreakCfg {
-            name: (*n).to_string(),
-            duration: None,
-            image: None,
-        })
-        .collect()
-}
-
-fn default_short_breaks() -> Vec<BreakCfg> {
-    names_to_breaks(&[
-        "Gently close your eyes",
-        "Roll your eyes a few times to each side",
-        "Rotate your eyes in clockwise direction",
-        "Rotate your eyes in counterclockwise direction",
-        "Blink your eyes",
-        "Focus on a point in the far distance",
-        "Have some water",
-        "Relax your shoulders and drop them away from your ears",
-        "Stretch your neck gently from side to side",
-        "Check your posture and sit back comfortably",
-        "Unclench your jaw and relax your face",
-        "Stretch your wrists and fingers",
-    ])
-}
-
-fn default_long_breaks() -> Vec<BreakCfg> {
-    names_to_breaks(&[
-        "Stand up and stretch your back and legs",
-        "Walk around for a while",
-        "Lean back at your seat and relax",
-        "Step away from the screen and look out a window",
-        "Walk over and refill your water",
-    ])
-}
-
-impl Config {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        let mut errors = Vec::new();
-
-        require_positive(
-            "short_break_interval",
-            self.short_break_interval,
-            &mut errors,
-        );
-        require_positive("long_break_interval", self.long_break_interval, &mut errors);
-        require_positive(
-            "short_break_duration",
-            self.short_break_duration,
-            &mut errors,
-        );
-        require_positive("long_break_duration", self.long_break_duration, &mut errors);
-        require_non_negative("pre_break_warning", self.pre_break_warning, &mut errors);
-        require_positive("postpone_duration", self.postpone_duration, &mut errors);
-        require_positive(
-            "smart_pause.idle_seconds",
-            self.smart_pause.idle_seconds,
-            &mut errors,
-        );
-
-        validate_breaks("short_breaks", &self.short_breaks, &mut errors);
-        validate_breaks("long_breaks", &self.long_breaks, &mut errors);
-
-        if self.short_breaks.is_empty() && self.long_breaks.is_empty() {
-            errors.push("at least one short_breaks or long_breaks entry is required".to_string());
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            anyhow::bail!("{}", errors.join("\n"))
-        }
+impl Default for Config {
+    fn default() -> Self {
+        ConfigFile::default()
+            .check()
+            .expect("the built-in defaults pass the checks")
     }
+}
 
-    /// validates, then converts to the scheduler's settings
-    pub fn settings(&self) -> anyhow::Result<Settings> {
-        self.validate()?;
+impl ConfigFile {
+    /// the rules that span keys
+    fn check(self) -> Result<Config, String> {
+        let has_both = !self.short_breaks.is_empty() && !self.long_breaks.is_empty();
+        if has_both && self.short_break_interval.0 >= self.long_break_interval.0 {
+            return Err(format!(
+                "short_break_interval ({} s) must be less than long_break_interval ({} s)",
+                self.short_break_interval.0, self.long_break_interval.0
+            ));
+        }
 
-        let breaks = |cfgs: &[BreakCfg], kind, default_duration| {
-            cfgs.iter()
-                .map(|b| Break {
+        let breaks = |entries: Vec<BreakEntry>, kind, default: BreakLength| {
+            entries
+                .into_iter()
+                .map(|entry| Break {
                     kind,
-                    name: b.name.clone(),
-                    duration: secs(b.duration.unwrap_or(default_duration)),
-                    image: b.image.clone(),
+                    name: entry.name.0,
+                    duration: entry.duration.unwrap_or(default).duration(),
+                    image: entry.image,
                 })
                 .collect()
         };
         let breaks = Breaks::new(
             breaks(
-                &self.short_breaks,
+                self.short_breaks,
                 BreakType::Short,
                 self.short_break_duration,
             ),
-            breaks(&self.long_breaks, BreakType::Long, self.long_break_duration),
+            breaks(self.long_breaks, BreakType::Long, self.long_break_duration),
         )
-        .ok_or_else(|| anyhow::anyhow!("at least one break must be configured"))?;
+        .ok_or("add at least one [[short_breaks]] or [[long_breaks]] entry")?;
 
-        Ok(Settings {
-            short_interval: secs(self.short_break_interval),
-            long_interval: secs(self.long_break_interval),
-            pre_break_warning: secs(self.pre_break_warning),
-            postpone: secs(self.postpone_duration),
-            allow_postpone: self.allow_postpone,
-            strict: self.strict_break,
-            idle_threshold: self
-                .smart_pause
-                .enabled
-                .then(|| secs(self.smart_pause.idle_seconds)),
-            random_order: self.random_order,
-            breaks,
+        Ok(Config {
+            schedule: Settings {
+                short_interval: self.short_break_interval.duration(),
+                long_interval: self.long_break_interval.duration(),
+                pre_break_warning: self.pre_break_warning.duration(),
+                postpone: self.postpone_duration.duration(),
+                allow_postpone: self.allow_postpone,
+                strict: self.strict_break,
+                idle_threshold: self
+                    .smart_pause
+                    .enabled
+                    .then(|| self.smart_pause.idle_seconds.duration()),
+                random_order: self.random_order,
+                breaks,
+            },
+            audible_alert: self.audible_alert,
+            notification: self.notification,
+            keybindings: self.keybindings,
+            do_not_disturb: self.do_not_disturb,
         })
     }
+}
 
-    /// write a default file if none exists
-    pub fn load(path: &Path) -> Config {
-        match std::fs::read_to_string(path) {
-            Ok(data) => match toml::from_str::<Config>(&data) {
-                Ok(cfg) => match cfg.validate() {
-                    Ok(()) => cfg,
-                    Err(e) => {
-                        eprintln!("omma: invalid config at {}: {e}", path.display());
-                        eprintln!("omma: falling back to defaults");
-                        Config::default()
-                    }
-                },
-                Err(e) => {
-                    eprintln!("omma: invalid config at {}: {e}", path.display());
-                    eprintln!("omma: falling back to defaults");
-                    Config::default()
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let cfg = Config::default();
-                if let Err(e) = write_default(path) {
-                    eprintln!(
-                        "omma: could not write default config to {}: {e}",
-                        path.display()
-                    );
-                }
-                cfg
-            }
-            Err(e) => {
-                eprintln!("omma: could not read config at {}: {e}", path.display());
-                Config::default()
-            }
-        }
+impl Config {
+    /// reads and checks the config at `path`. never writes.
+    pub fn from_file(path: &Path) -> Result<Config, ConfigError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| ConfigError::new(format!("can't read the file: {e}")))?;
+        Config::parse(&text)
+    }
+
+    fn parse(text: &str) -> Result<Config, ConfigError> {
+        let file: ConfigFile =
+            toml::from_str(text).map_err(|e| ConfigError::from_toml(&e, text))?;
+        file.check().map_err(ConfigError::new)
     }
 }
 
-fn require_positive(name: &str, value: i64, errors: &mut Vec<String>) {
-    if value <= 0 {
-        errors.push(format!("{name} must be greater than 0, got {value}"));
+/// the config at startup: the file at `path`, created from the defaults when it's missing.
+/// when the file can't be read or fails a check, the defaults stand in and the error says why.
+pub fn load_or_create(path: &Path) -> (Config, Option<ConfigError>) {
+    let loaded = match path.try_exists() {
+        Ok(false) => write_default(path)
+            .map(|()| Config::default())
+            .map_err(|e| ConfigError::new(format!("can't create the file: {e}"))),
+        _ => Config::from_file(path),
+    };
+    match loaded {
+        Ok(config) => (config, None),
+        Err(e) => (Config::default(), Some(e)),
     }
 }
 
-fn require_non_negative(name: &str, value: i64, errors: &mut Vec<String>) {
-    if value < 0 {
-        errors.push(format!("{name} must be 0 or greater, got {value}"));
-    }
-}
-
-fn validate_breaks(section: &str, breaks: &[BreakCfg], errors: &mut Vec<String>) {
-    for (idx, b) in breaks.iter().enumerate() {
-        let prefix = format!("{section}[{idx}]");
-        if b.name.trim().is_empty() {
-            errors.push(format!("{prefix}.name must not be empty"));
-        }
-        if let Some(duration) = b.duration {
-            require_positive(&format!("{prefix}.duration"), duration, errors);
-        }
-    }
-}
-
-/// `value` has been validated as non-negative
-fn secs(value: i64) -> Duration {
-    Duration::from_secs(value.try_into().unwrap_or(0))
-}
-
+/// never replaces an existing file
 fn write_default(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, DEFAULT_CONFIG)
+    std::fs::File::create_new(path)?.write_all(DEFAULT_CONFIG.as_bytes())
 }
+
+/// why a config was rejected
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigError {
+    /// 1-based, when the problem is on one line
+    line: Option<usize>,
+    message: String,
+}
+
+impl ConfigError {
+    fn new(message: impl Into<String>) -> ConfigError {
+        ConfigError {
+            line: None,
+            message: message.into(),
+        }
+    }
+
+    /// names the key when toml's message doesn't, and says where a misplaced key belongs
+    fn from_toml(err: &toml::de::Error, text: &str) -> ConfigError {
+        let Some(span) = err.span() else {
+            return ConfigError::new(err.message());
+        };
+        let line = text[..span.start].matches('\n').count() + 1;
+        let at = &text[span.clone()];
+        let key = key_at(text, span.start).or_else(|| {
+            // a repeated key is missing from the parsed tree, but the error points at it
+            text[span.end..]
+                .trim_start_matches([' ', '\t'])
+                .starts_with('=')
+                .then(|| at.to_owned())
+        });
+
+        let message = err.message();
+        let unknown = message.starts_with("unknown field");
+        // toml quotes a key it doesn't know; then name only the table it's in
+        let shown = key.as_deref().map(|key| {
+            if unknown {
+                key.rsplit_once('.').map_or("", |(table, _)| table)
+            } else {
+                key
+            }
+        });
+        let message = if unknown && let Some(place) = place_of(at) {
+            format!("{at} can't go here; it belongs {place}")
+        } else {
+            match shown {
+                Some(shown) if !shown.is_empty() => format!("{shown}: {message}"),
+                _ => message.to_owned(),
+            }
+        };
+        ConfigError {
+            line: Some(line),
+            message,
+        }
+    }
+}
+
+/// the dotted key whose key or value covers byte `at` of `text`
+fn key_at(text: &str, at: usize) -> Option<String> {
+    let (root, _) = DeTable::parse_recoverable(text);
+    let mut path = Vec::new();
+    table_has(root.get_ref(), at, &mut path).then(|| path.join("."))
+}
+
+/// pushes the keys down to `at` onto `path`
+fn table_has(table: &DeTable<'_>, at: usize, path: &mut Vec<String>) -> bool {
+    table.iter().any(|(key, value)| {
+        path.push(key.get_ref().to_string());
+        let found = key.span().contains(&at) || value_has(value, at, path);
+        if !found {
+            path.pop();
+        }
+        found
+    })
+}
+
+fn value_has(value: &Spanned<DeValue<'_>>, at: usize, path: &mut Vec<String>) -> bool {
+    let inside = match value.get_ref() {
+        DeValue::Table(table) => table_has(table, at, path),
+        DeValue::Array(items) => items.iter().any(|item| value_has(item, at, path)),
+        _ => false,
+    };
+    inside || value.span().contains(&at)
+}
+
+/// the keys of a break entry. the default file has only names, so `place_of` needs these.
+const BREAK_KEYS: [&str; 3] = ["name", "duration", "image"];
+
+/// where the default config has `key`, if in just one place
+fn place_of(key: &str) -> Option<String> {
+    let defaults: toml::Table = DEFAULT_CONFIG.parse().ok()?;
+    let mut places = Vec::new();
+    if defaults.get(key).is_some_and(|v| !v.is_table()) {
+        places.push("at the top, above the first [table]".to_owned());
+    }
+    if BREAK_KEYS.contains(&key) {
+        places.push("in a [[short_breaks]] or [[long_breaks]] entry".to_owned());
+    }
+    for (name, value) in &defaults {
+        if value.as_table().is_some_and(|t| t.contains_key(key)) {
+            places.push(format!("in [{name}]"));
+        }
+    }
+    let [place]: [String; 1] = places.try_into().ok()?;
+    Some(place)
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "line {line}: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 /// `$XDG_CONFIG_HOME/omma/config.toml`, else `~/.config/omma/config.toml`. None when neither
 /// is an absolute path.
@@ -376,55 +511,282 @@ fn config_path_from(xdg_config_home: Option<OsString>, home: Option<PathBuf>) ->
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+    use crate::scheduler::Core;
+
+    fn parse(text: &str) -> Result<Config, ConfigError> {
+        Config::parse(text)
+    }
+
+    #[track_caller]
+    fn rejects(text: &str) -> String {
+        match parse(text) {
+            Ok(_) => panic!("accepted {text:?}"),
+            Err(e) => e.to_string(),
+        }
+    }
 
     #[test]
     fn the_default_file_is_the_default_config() {
-        let parsed: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
-        assert_eq!(parsed, Config::default());
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap(), Config::default());
     }
 
     #[test]
-    fn settings_convert_seconds_and_turn_smart_pause_off() {
-        let mut cfg = Config::default();
-        let settings = cfg.settings().unwrap();
-        assert_eq!(settings.short_interval, Duration::from_secs(900));
-        assert_eq!(settings.long_interval, Duration::from_secs(4500));
-        assert_eq!(settings.pre_break_warning, Duration::from_secs(10));
-        assert_eq!(settings.idle_threshold, Some(Duration::from_secs(60)));
+    fn the_schedule_comes_in_seconds_and_smart_pause_can_turn_off() {
+        let schedule = Config::default().schedule;
+        assert_eq!(schedule.short_interval, Duration::from_secs(900));
+        assert_eq!(schedule.long_interval, Duration::from_secs(4500));
+        assert_eq!(schedule.pre_break_warning, Duration::from_secs(10));
+        assert_eq!(schedule.idle_threshold, Some(Duration::from_secs(60)));
 
-        cfg.smart_pause.enabled = false;
-        assert_eq!(cfg.settings().unwrap().idle_threshold, None);
+        let off = parse("[smart_pause]\nenabled = false\n").unwrap();
+        assert_eq!(off.schedule.idle_threshold, None);
     }
 
     #[test]
-    fn partial_config_uses_defaults() {
-        let cfg: Config = toml::from_str("short_break_interval = 20\n").unwrap();
-        assert_eq!(cfg.short_break_interval, 20);
-        assert_eq!(cfg.long_break_interval, 4500);
-        assert!(cfg.smart_pause.enabled);
+    fn keys_left_out_keep_their_defaults() {
+        let cfg = parse("short_break_interval = 20\n").unwrap();
+        assert_eq!(cfg.schedule.short_interval, Duration::from_secs(20));
+        assert_eq!(cfg.schedule.long_interval, Duration::from_secs(4500));
+        assert_eq!(cfg.do_not_disturb, DoNotDisturb::default());
     }
 
     #[test]
-    fn validation_rejects_non_positive_schedule_values() {
-        let mut cfg = Config {
-            short_break_interval: 0,
-            ..Config::default()
-        };
-        cfg.long_breaks[0].duration = Some(-1);
-
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("short_break_interval must be greater than 0"));
-        assert!(err.contains("long_breaks[0].duration must be greater than 0"));
+    fn a_misspelt_key_is_an_error_on_its_line() {
+        let err = rejects("random_order = false\nshort_break_intervall = 60\n");
+        assert!(
+            err.starts_with("line 2: unknown field `short_break_intervall`, expected one of"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn validation_rejects_empty_break_names() {
-        let mut cfg = Config::default();
-        cfg.short_breaks[0].name = " \t ".into();
+    fn a_key_in_the_wrong_table_says_where_it_belongs() {
+        // TOML puts a key appended to the default file into its last table
+        let text = format!("{DEFAULT_CONFIG}\nstrict_break = true\n");
+        let line = text.lines().count();
+        assert_eq!(
+            rejects(&text),
+            format!(
+                "line {line}: strict_break can't go here; it belongs at the top, above the \
+                 first [table]"
+            )
+        );
+        assert_eq!(
+            rejects("idle_seconds = 30\n"),
+            "line 1: idle_seconds can't go here; it belongs in [smart_pause]"
+        );
+        assert_eq!(
+            rejects("[smart_pause]\nimage = \"~/forest.jpg\"\n"),
+            "line 2: image can't go here; it belongs in a [[short_breaks]] or [[long_breaks]] \
+             entry"
+        );
+        // in several tables, so no hint
+        assert!(rejects("enabled = true\n").starts_with("line 1: unknown field `enabled`"));
+    }
 
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("short_breaks[0].name must not be empty"));
+    #[test]
+    fn break_keys_are_the_keys_of_a_break() {
+        let err = rejects("[[short_breaks]]\nname = \"Blink\"\nnope = 1\n");
+        let keys = BREAK_KEYS.map(|key| format!("`{key}`")).join(", ");
+        assert!(err.ends_with(&format!("expected one of {keys}")), "{err}");
+    }
+
+    #[test]
+    fn the_dropped_per_break_interval_is_an_error() {
+        let err = rejects("[[short_breaks]]\nname = \"Blink\"\ninterval = 60\n");
+        assert!(
+            err.starts_with("line 3: short_breaks: unknown field `interval`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn every_time_has_bounds() {
+        // (table, key, min, max, a line that keeps the short < long rule out of the way)
+        let cases = [
+            ("", "short_break_interval", 1, DAY, "long_breaks = []"),
+            ("", "long_break_interval", 1, DAY, "short_breaks = []"),
+            ("", "postpone_duration", 1, DAY, ""),
+            ("", "short_break_duration", 1, HOUR, ""),
+            ("", "long_break_duration", 1, HOUR, ""),
+            ("", "pre_break_warning", 0, 600, ""),
+            ("smart_pause", "idle_seconds", 10, DAY, ""),
+            ("short_breaks", "duration", 1, HOUR, ""),
+        ];
+        for (table, key, min, max, aside) in cases {
+            let (header, path) = match table {
+                "" => (String::new(), key.to_owned()),
+                "short_breaks" => (
+                    "[[short_breaks]]\nname = \"Blink\"".to_owned(),
+                    format!("{table}.{key}"),
+                ),
+                _ => (format!("[{table}]"), format!("{table}.{key}")),
+            };
+            let text = |value: i64| format!("{aside}\n{header}\n{key} = {value}\n");
+            let line = text(0).lines().count();
+            let (min, max) = (min as i64, max as i64);
+            parse(&text(min)).unwrap();
+            parse(&text(max)).unwrap();
+            for bad in [min - 1, max + 1, i64::MIN] {
+                assert_eq!(
+                    rejects(&text(bad)),
+                    format!("line {line}: {path}: must be {min} to {max} seconds, got {bad}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn errors_name_the_key() {
+        assert_eq!(
+            rejects("pre_break_warning = \"10\"\n"),
+            "line 1: pre_break_warning: invalid type: string \"10\", expected a whole number \
+             of seconds"
+        );
+        assert_eq!(
+            rejects("random_order = true\nrandom_order  = false\n"),
+            "line 2: random_order: duplicate key"
+        );
+        assert_eq!(
+            rejects("[do_not_disturb]\naction = \"action\"\n"),
+            "line 2: do_not_disturb.action: unknown variant `action`, expected `skip` or \
+             `postpone`"
+        );
+        assert_eq!(
+            rejects("[smart_pause]\nenabled = true\n[smart_pause]\n"),
+            "line 3: smart_pause: duplicate key"
+        );
+        assert_eq!(
+            rejects("smart_pause = { idle_seconds = 3 }\n"),
+            "line 1: smart_pause.idle_seconds: must be 10 to 86400 seconds, got 3"
+        );
+        assert_eq!(
+            rejects("short_breaks = [{ name = \"a\", duration = 0 }]\n"),
+            "line 1: short_breaks.duration: must be 1 to 3600 seconds, got 0"
+        );
+        assert_eq!(
+            rejects("[do_not_disturb]\nskip_when_app_active = [\n  \"a\",\n  3,\n]\n"),
+            "line 4: do_not_disturb.skip_when_app_active: invalid type: integer `3`, expected a \
+             string"
+        );
+        assert_eq!(
+            rejects("[smart_pause]\nidle = 30\n"),
+            "line 2: smart_pause: unknown field `idle`, expected `enabled` or `idle_seconds`"
+        );
+    }
+
+    #[test]
+    fn the_short_interval_must_be_less_than_the_long_one() {
+        let err = "short_break_interval (600 s) must be less than long_break_interval (600 s)";
+        assert_eq!(
+            rejects("short_break_interval = 600\nlong_break_interval = 600\n"),
+            err
+        );
+        assert!(
+            rejects("short_break_interval = 601\nlong_break_interval = 600\n").contains("601 s")
+        );
+        // with one kind of break the other interval doesn't matter
+        parse("short_break_interval = 900\nlong_break_interval = 60\nlong_breaks = []\n").unwrap();
+        parse("short_break_interval = 900\nlong_break_interval = 60\nshort_breaks = []\n").unwrap();
+    }
+
+    #[test]
+    fn breaks_need_a_name_and_at_least_one_must_exist() {
+        assert_eq!(
+            rejects("[[short_breaks]]\nname = \" \\t \"\n"),
+            "line 2: short_breaks.name: a break needs a name"
+        );
+        assert_eq!(
+            rejects("[[long_breaks]]\nduration = 5\n"),
+            "line 1: long_breaks: missing field `name`"
+        );
+        assert_eq!(
+            rejects("short_breaks = []\nlong_breaks = []\n"),
+            "add at least one [[short_breaks]] or [[long_breaks]] entry"
+        );
+    }
+
+    #[test]
+    fn a_break_can_set_its_own_duration() {
+        let cfg = parse(
+            "short_break_duration = 20\n\
+             [[short_breaks]]\nname = \"Blink\"\n\
+             [[short_breaks]]\nname = \"Look away\"\nduration = 40\n",
+        )
+        .unwrap();
+        let mut queue = crate::queue::BreakQueue::new(&cfg.schedule.breaks, false, UNIX_EPOCH);
+        let durations: Vec<_> = (0..2)
+            .map(|_| {
+                let secs = queue.peek(BreakType::Short).duration.as_secs();
+                queue.advance(BreakType::Short);
+                secs
+            })
+            .collect();
+        assert_eq!(durations, [20, 40]);
+    }
+
+    #[test]
+    fn a_change_outside_the_schedule_keeps_the_countdown() {
+        let before = Config::default();
+        let after = parse("[audible_alert]\npre_break_sound = \"Ping\"\n").unwrap();
+        assert_ne!(before, after);
+        assert_eq!(before.schedule, after.schedule);
+
+        let start = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let now = start + Duration::from_secs(100);
+        let mut core = Core::new(before.schedule, start);
+        let remaining = core.remaining(now);
+        core.reconfigure(after.schedule);
+        assert_eq!(core.remaining(now), remaining);
+    }
+
+    /// a fresh directory under the system temp dir, removed on drop
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir()
+                .join(format!("omma-test-{name}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn startup_creates_a_missing_file_and_falls_back_on_a_bad_one() {
+        let dir = TempDir::new("startup");
+        let path = dir.0.join("omma/config.toml");
+
+        assert!(Config::from_file(&path).is_err());
+        assert!(!path.exists(), "from_file must not write");
+
+        assert_eq!(load_or_create(&path), (Config::default(), None));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+
+        std::fs::write(&path, "short_break_interval = 20\n").unwrap();
+        let (cfg, err) = load_or_create(&path);
+        assert_eq!((cfg.schedule.short_interval.as_secs(), err), (20, None));
+
+        std::fs::write(&path, "short_break_interval = 0\n").unwrap();
+        let (cfg, err) = load_or_create(&path);
+        assert_eq!(cfg, Config::default());
+        assert_eq!(
+            err.unwrap().to_string(),
+            "line 1: short_break_interval: must be 1 to 86400 seconds, got 0"
+        );
     }
 
     #[test]

@@ -76,7 +76,7 @@ pub fn run(config: Config, config_path: PathBuf, ipc: Server) -> anyhow::Result<
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let now = SystemTime::now();
-    let app = App::new(mtm, config, config_path, ipc, now)?;
+    let app = App::new(mtm, config, config_path, ipc, now);
     let delegate = Delegate::new(mtm, app);
     let target: &AnyObject = &delegate;
     delegate.with_app(|app| {
@@ -218,18 +218,18 @@ impl App {
         config_path: PathBuf,
         ipc: Server,
         now: SystemTime,
-    ) -> anyhow::Result<App> {
+    ) -> App {
         let dnd = DndChecker::from_config(&config.do_not_disturb);
         let tray_icon = tray_icon_image(TRAY_ICON_SVG);
         let tray_icon_incoming = tray_icon_image(TRAY_ICON_INCOMING_SVG);
         let break_screen = BreakScreen::new(mtm);
         let pre_break_dialog = PreBreakDialog::new(mtm);
 
-        let core = Core::new(config.settings()?, now);
+        let core = Core::new(config.schedule.clone(), now);
 
         let config_mtime = file_mtime(&config_path);
 
-        Ok(App {
+        App {
             mtm,
             core,
             config,
@@ -248,7 +248,7 @@ impl App {
             warning_dismissed: false,
             shown: Shown::default(),
             timer: None,
-        })
+        }
     }
 
     fn on_tick(&mut self, now: SystemTime, target: &AnyObject) {
@@ -483,30 +483,22 @@ impl App {
         }
         self.config_mtime = mtime;
 
-        let data = match std::fs::read_to_string(&self.config_path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let new: Config = match toml::from_str(&data) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("omma: config not reloaded (parse error): {e}");
-                return;
+        match Config::from_file(&self.config_path) {
+            Ok(new) => {
+                self.apply_config(new);
+                eprintln!("omma: reloaded the config");
             }
-        };
-
-        if let Err(e) = self.apply_config(new) {
-            eprintln!("omma: config not reloaded: {e}");
-            return;
+            Err(e) => eprintln!(
+                "omma: {}: {e}; kept the previous config",
+                self.config_path.display()
+            ),
         }
-        eprintln!("omma: reloaded config");
     }
 
-    fn apply_config(&mut self, new: Config) -> anyhow::Result<()> {
-        self.core.reconfigure(new.settings()?);
+    fn apply_config(&mut self, new: Config) {
+        self.core.reconfigure(new.schedule.clone());
         self.dnd = DndChecker::from_config(&new.do_not_disturb);
         self.config = new;
-        Ok(())
     }
 
     fn build_status_item(&mut self, delegate: &Delegate) {

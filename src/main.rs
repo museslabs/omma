@@ -32,7 +32,10 @@ fn main() -> anyhow::Result<()> {
             "can't locate the config file: set HOME or XDG_CONFIG_HOME to an absolute path"
         )
     })?;
-    let cfg = config::Config::load(&config_path);
+    let (cfg, error) = config::load_or_create(&config_path);
+    if let Some(e) = error {
+        eprintln!("omma: {}: {e}; using the defaults", config_path.display());
+    }
     let server = match ipc::bind() {
         Ok(s) => s,
         Err(ipc::BindError::AlreadyRunning) => {
