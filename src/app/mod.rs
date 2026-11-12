@@ -19,13 +19,14 @@ use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
     NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSWorkspace,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
-use crate::config::{Config, ConfigError, KeySpec};
+use crate::config::{self, Config, ConfigError, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
@@ -204,9 +205,12 @@ define_class!(
             });
         }
 
+        /// opens the file with the state unborrowed: if Launch Services ran a nested event
+        /// loop, a tick inside it would borrow the state again
         #[unsafe(method(openConfig:))]
         fn open_config(&self, _sender: *mut AnyObject) {
-            self.with_app(|app| app.open_config_file());
+            let path = self.with_app(|app| app.config_path.clone());
+            open_config_file(&path);
         }
 
         #[unsafe(method(skip:))]
@@ -586,12 +590,6 @@ impl App {
         self.shown.fast_ticks = fast;
     }
 
-    fn open_config_file(&self) {
-        let _ = std::process::Command::new("open")
-            .arg(&self.config_path)
-            .status();
-    }
-
     fn quit(&self) {
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
@@ -774,6 +772,32 @@ fn idle_time() -> Duration {
         CGEventType(!0), // kCGAnyInputEventType
     );
     Duration::try_from_secs_f64(secs).unwrap_or_default()
+}
+
+/// opens the config file in the app set for it, or else in the default text editor. a
+/// missing file is created from the defaults first.
+fn open_config_file(path: &Path) {
+    if let Ok(false) = path.try_exists()
+        && let Err(e) = config::write_default(path)
+    {
+        eprintln!("omma: can't create {}: {e}", path.display());
+        return;
+    }
+    if NSURL::from_file_path(path).is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url)) {
+        return;
+    }
+    // `open` waits for Launch Services, so it runs off the main thread. it says why on stderr
+    // when it fails.
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let opened = std::process::Command::new("open")
+            .arg("-t")
+            .arg(&path)
+            .status();
+        if !opened.is_ok_and(|status| status.success()) {
+            eprintln!("omma: can't open {}", path.display());
+        }
+    });
 }
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {

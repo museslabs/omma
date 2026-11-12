@@ -495,7 +495,7 @@ pub fn load_or_create(path: &Path) -> (Config, Option<ConfigError>) {
 }
 
 /// never replaces an existing file
-fn write_default(path: &Path) -> std::io::Result<()> {
+pub fn write_default(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
