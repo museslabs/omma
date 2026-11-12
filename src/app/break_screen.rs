@@ -27,6 +27,7 @@ use objc2_quartz_core::{
 };
 
 use super::glass_button::{GlassButtonStyle, make_glass_button};
+use crate::config::KeySpec;
 
 /// above normal windows and fullscreen apps
 const SCREEN_SAVER_LEVEL: isize = 1000;
@@ -91,8 +92,8 @@ impl BreakScreen {
         remaining: u64,
         allow_skip: bool,
         allow_postpone: bool,
-        skip_key: &str,
-        postpone_key: &str,
+        skip_key: Option<KeySpec>,
+        postpone_key: Option<KeySpec>,
         image_path: Option<&str>,
         target: &AnyObject,
     ) {

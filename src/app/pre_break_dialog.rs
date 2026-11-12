@@ -21,6 +21,7 @@ use objc2_quartz_core::{
 };
 
 use super::glass_button::{GlassButtonStyle, make_glass_button};
+use crate::config::KeySpec;
 
 const PANEL_LEVEL: isize = 1000;
 const PANEL_W: f64 = 340.0;
@@ -72,8 +73,8 @@ impl PreBreakDialog {
         allow_skip: bool,
         allow_postpone: bool,
         seconds_until_break: u64,
-        skip_key: &str,
-        postpone_key: &str,
+        skip_key: Option<KeySpec>,
+        postpone_key: Option<KeySpec>,
         target: &AnyObject,
     ) {
         self.hide();
@@ -146,7 +147,7 @@ impl PreBreakDialog {
         } else {
             sel!(dismissWarning:)
         };
-        let primary_key = if allow_skip { skip_key } else { "" };
+        let primary_key = skip_key.filter(|_| allow_skip);
         let button_x = PANEL_W - BUTTON_W - 28.0;
         let primary_y = if allow_postpone { 18.0 } else { 38.0 };
         let primary = make_glass_button(

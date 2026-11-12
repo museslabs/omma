@@ -1,6 +1,8 @@
 //! the config file, parsed once into checked, typed settings. an unknown key, a value out of
 //! range or a broken rule rejects the whole file, with an error that says where.
 
+mod keys;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
@@ -10,6 +12,8 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
+
+pub use keys::{Key, KeySpec};
 
 use crate::queue::{Break, BreakType, Breaks};
 use crate::scheduler::Settings;
@@ -81,14 +85,14 @@ pub struct Notification {
     pub enabled: bool,
 }
 
-/// key spec accepts `escape`, `space`, a letter like `s`, or combos like `cmd+s`.
-/// modifiers: cmd, shift, alt/option, ctrl. named keys: escape/esc, space,
-/// enter/return, tab, delete/backspace. empty string disables the bind.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// shortcuts for the Skip and Postpone buttons; None turns one off
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keybindings {
-    pub skip: String,
-    pub postpone: String,
+    #[serde(deserialize_with = "keys::optional")]
+    pub skip: Option<KeySpec>,
+    #[serde(deserialize_with = "keys::optional")]
+    pub postpone: Option<KeySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -257,8 +261,8 @@ impl Default for Notification {
 impl Default for Keybindings {
     fn default() -> Self {
         Keybindings {
-            skip: "escape".into(),
-            postpone: "space".into(),
+            skip: Some(KeySpec::plain(Key::Escape)),
+            postpone: Some(KeySpec::plain(Key::Space)),
         }
     }
 }
@@ -292,6 +296,18 @@ impl ConfigFile {
             return Err(format!(
                 "short_break_interval ({} s) must be less than long_break_interval ({} s)",
                 self.short_break_interval.0, self.long_break_interval.0
+            ));
+        }
+        let postpone_shown = self.allow_postpone && !self.strict_break;
+        if let Keybindings {
+            skip: Some(skip),
+            postpone: Some(postpone),
+        } = self.keybindings
+            && skip == postpone
+            && postpone_shown
+        {
+            return Err(format!(
+                "keybindings.skip and keybindings.postpone are both `{skip}`"
             ));
         }
 
@@ -691,6 +707,36 @@ mod tests {
         // with one kind of break the other interval doesn't matter
         parse("short_break_interval = 900\nlong_break_interval = 60\nlong_breaks = []\n").unwrap();
         parse("short_break_interval = 900\nlong_break_interval = 60\nshort_breaks = []\n").unwrap();
+    }
+
+    #[test]
+    fn keybindings_parse_at_load_and_empty_turns_one_off() {
+        let keys = parse("[keybindings]\nskip = \"cmd+S\"\npostpone = \"\"\n")
+            .unwrap()
+            .keybindings;
+        assert_eq!(keys.skip, Some("cmd+s".parse().unwrap()));
+        assert_eq!(keys.postpone, None);
+
+        assert_eq!(
+            rejects("[keybindings]\nskip = \"escpae\"\n"),
+            "line 2: keybindings.skip: `escpae` isn't a key; use a single character, or escape, space, \
+             enter, tab or delete"
+        );
+    }
+
+    #[test]
+    fn skip_and_postpone_need_different_keys_while_postpone_is_on() {
+        let clash = "[keybindings]\nskip = \"esc\"\npostpone = \"escape\"\n";
+        parse(clash).unwrap();
+        assert_eq!(
+            rejects(&format!("allow_postpone = true\n{clash}")),
+            "keybindings.skip and keybindings.postpone are both `escape`"
+        );
+        parse(&format!(
+            "allow_postpone = true\nstrict_break = true\n{clash}"
+        ))
+        .unwrap();
+        parse("allow_postpone = true\n[keybindings]\nskip = \"\"\npostpone = \"\"\n").unwrap();
     }
 
     #[test]

@@ -9,6 +9,8 @@ use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
+use crate::config::{Key, KeySpec};
+
 pub enum GlassButtonWidth {
     Fixed(f64),
     Fit {
@@ -56,12 +58,12 @@ impl GlassButtonStyle {
 pub fn make_glass_button(
     mtm: MainThreadMarker,
     title: &str,
-    key: &str,
+    key: Option<KeySpec>,
     target: &AnyObject,
     action: Sel,
     style: GlassButtonStyle,
 ) -> Retained<NSGlassEffectView> {
-    let keybind = parse_keybind(key);
+    let keybind = key.map(key_equivalent);
     let title_ns = NSString::from_str(title);
     let full = match &keybind {
         Some(kb) => format!("{title}  {}", kb.label),
@@ -101,7 +103,7 @@ pub fn make_glass_button(
     button.setAttributedTitle(&attributed);
 
     if let Some(kb) = &keybind {
-        button.setKeyEquivalent(&kb.key_equivalent);
+        button.setKeyEquivalent(&NSString::from_str(&kb.key_equivalent));
         button.setKeyEquivalentModifierMask(kb.mods);
     }
 
@@ -128,55 +130,90 @@ pub fn make_glass_button(
 }
 
 struct KeyBind {
-    key_equivalent: Retained<NSString>,
+    key_equivalent: String,
     mods: NSEventModifierFlags,
+    /// the hint drawn on the button
     label: String,
 }
 
-fn parse_keybind(spec: &str) -> Option<KeyBind> {
+fn key_equivalent(spec: KeySpec) -> KeyBind {
+    let (key_equivalent, label) = match spec.key {
+        Key::Escape => ("\u{1b}".into(), "Esc".into()),
+        Key::Space => (" ".into(), "Space".into()),
+        Key::Enter => ("\r".into(), "↩".into()),
+        Key::Tab => ("\t".into(), "⇥".into()),
+        // NSDeleteCharacter: the delete key sends DEL, not backspace
+        Key::Delete => ("\u{7f}".into(), "⌫".into()),
+        // AppKit compares the key equivalent with the typed character, shift applied
+        Key::Char(c) => {
+            let upper: String = c.to_uppercase().collect();
+            let typed = if spec.mods.shift {
+                upper.clone()
+            } else {
+                c.to_string()
+            };
+            (typed, upper)
+        }
+    };
     let mut mods = NSEventModifierFlags::empty();
     let mut symbols = String::new();
-    let mut key: Option<(String, String)> = None;
-    for token in spec.split('+') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        match token.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "super" | "meta" => {
-                mods |= NSEventModifierFlags::Command;
-                symbols.push('⌘');
-            }
-            "shift" => {
-                mods |= NSEventModifierFlags::Shift;
-                symbols.push('⇧');
-            }
-            "alt" | "option" | "opt" => {
-                mods |= NSEventModifierFlags::Option;
-                symbols.push('⌥');
-            }
-            "ctrl" | "control" => {
-                mods |= NSEventModifierFlags::Control;
-                symbols.push('⌃');
-            }
-            _ => key = Some(key_equivalent_for(token)),
+    for (held, flag, symbol) in [
+        (spec.mods.ctrl, NSEventModifierFlags::Control, '⌃'),
+        (spec.mods.alt, NSEventModifierFlags::Option, '⌥'),
+        (spec.mods.shift, NSEventModifierFlags::Shift, '⇧'),
+        (spec.mods.cmd, NSEventModifierFlags::Command, '⌘'),
+    ] {
+        if held {
+            mods |= flag;
+            symbols.push(symbol);
         }
     }
-    let (equiv, label) = key?;
-    Some(KeyBind {
-        key_equivalent: NSString::from_str(&equiv),
+    KeyBind {
+        key_equivalent,
         mods,
         label: format!("{symbols}{label}"),
-    })
+    }
 }
 
-fn key_equivalent_for(token: &str) -> (String, String) {
-    match token.to_ascii_lowercase().as_str() {
-        "escape" | "esc" => ("\u{1b}".into(), "Esc".into()),
-        "space" => (" ".into(), "Space".into()),
-        "enter" | "return" => ("\r".into(), "↩".into()),
-        "tab" => ("\t".into(), "⇥".into()),
-        "delete" | "backspace" => ("\u{8}".into(), "⌫".into()),
-        other => (other.to_string(), other.to_uppercase()),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bind(spec: &str) -> (String, NSEventModifierFlags, String) {
+        let kb = key_equivalent(spec.parse().unwrap());
+        (kb.key_equivalent, kb.mods, kb.label)
+    }
+
+    #[test]
+    fn named_keys_send_what_appkit_receives() {
+        let none = NSEventModifierFlags::empty();
+        assert_eq!(bind("esc"), ("\u{1b}".into(), none, "Esc".into()));
+        assert_eq!(bind("space"), (" ".into(), none, "Space".into()));
+        assert_eq!(bind("return"), ("\r".into(), none, "↩".into()));
+        assert_eq!(bind("tab"), ("\t".into(), none, "⇥".into()));
+        assert_eq!(bind("backspace"), ("\u{7f}".into(), none, "⌫".into()));
+    }
+
+    #[test]
+    fn shift_turns_a_letter_uppercase_and_modifiers_show_in_apple_order() {
+        assert_eq!(
+            bind("s"),
+            ("s".into(), NSEventModifierFlags::empty(), "S".into())
+        );
+        assert_eq!(
+            bind("shift+s"),
+            ("S".into(), NSEventModifierFlags::Shift, "⇧S".into())
+        );
+        assert_eq!(
+            bind("cmd+shift+alt+ctrl+delete"),
+            (
+                "\u{7f}".into(),
+                NSEventModifierFlags::Control
+                    | NSEventModifierFlags::Option
+                    | NSEventModifierFlags::Shift
+                    | NSEventModifierFlags::Command,
+                "⌃⌥⇧⌘⌫".into()
+            )
+        );
     }
 }

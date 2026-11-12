@@ -331,8 +331,8 @@ impl App {
                     self.core.can_skip(),
                     self.core.can_postpone(),
                     remaining.unwrap_or(0),
-                    &self.config.keybindings.skip,
-                    &self.config.keybindings.postpone,
+                    self.config.keybindings.skip,
+                    self.config.keybindings.postpone,
                     target,
                 );
                 self.shown.countdown = remaining;
@@ -351,8 +351,8 @@ impl App {
                     remaining.unwrap_or(0),
                     self.core.can_skip(),
                     self.core.can_postpone(),
-                    &self.config.keybindings.skip,
-                    &self.config.keybindings.postpone,
+                    self.config.keybindings.skip,
+                    self.config.keybindings.postpone,
                     current.image.as_deref(),
                     target,
                 );
