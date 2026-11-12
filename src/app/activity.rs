@@ -87,8 +87,8 @@ pub fn request_accessibility() {
         CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[CFBoolean::new(true)]);
     // SAFETY: the options map CFString keys to CFBoolean values, as the call expects
     if !unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) } {
-        eprintln!(
-            "omma: the fullscreen and window-title rules need Accessibility permission.\n      \
+        log!(
+            "the fullscreen and window-title rules need Accessibility permission.\n      \
              Grant it in System Settings → Privacy & Security → Accessibility."
         );
     }

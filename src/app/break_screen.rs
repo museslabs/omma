@@ -109,7 +109,7 @@ impl BreakScreen {
         let image = brk.image.as_deref().and_then(|path| {
             let image = load_image(path);
             if image.is_none() {
-                eprintln!("omma: can't show {} as an image", path.display());
+                log!("can't show {} as an image", path.display());
             }
             image
         });

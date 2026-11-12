@@ -48,7 +48,7 @@ impl Hotkeys {
         }
         for &(action, spec) in keys {
             let Some(code) = key_code(spec.key) else {
-                eprintln!("omma: no key on the keyboard layout types `{spec}`");
+                log!("no key on the keyboard layout types `{spec}`");
                 continue;
             };
             let id = EventHotKeyID {
@@ -70,7 +70,7 @@ impl Hotkeys {
             if status == NO_ERR {
                 self.held.push((action, spec, hotkey));
             } else {
-                eprintln!("omma: can't take `{spec}` as a global shortcut (error {status})");
+                log!("can't take `{spec}` as a global shortcut (error {status})");
             }
         }
     }
@@ -114,7 +114,7 @@ impl Hotkeys {
         };
         self.handler_installed = status == NO_ERR;
         if !self.handler_installed {
-            eprintln!("omma: can't listen for global shortcuts (error {status})");
+            log!("can't listen for global shortcuts (error {status})");
         }
         self.handler_installed
     }

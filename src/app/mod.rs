@@ -425,7 +425,7 @@ impl App {
                     DndAction::Postpone => format!("Postponed the break: {reason}"),
                 });
                 if let Some(text) = &self.suppressed {
-                    eprintln!("omma: do-not-disturb: {text}");
+                    log!("do-not-disturb: {text}");
                     self.core.suppress(now, dnd.action);
                 } else if alert.enabled && alert.pre_break {
                     sound::play(&alert.pre_break_sound);
@@ -640,7 +640,7 @@ impl App {
         self.config_checked = Some(now);
         if file_mtime(&self.config_path) != self.config_mtime {
             let (Ok(text) | Err(text)) = self.reload_config();
-            eprintln!("omma: {text}");
+            log!("{text}");
         }
     }
 
@@ -822,7 +822,7 @@ fn open_config_file(path: &Path) {
     if let Ok(false) = path.try_exists()
         && let Err(e) = config::write_default(path)
     {
-        eprintln!("omma: can't create {}: {e}", path.display());
+        log!("can't create {}: {e}", path.display());
         return;
     }
     if NSURL::from_file_path(path).is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url)) {
@@ -837,7 +837,7 @@ fn open_config_file(path: &Path) {
             .arg(&path)
             .status();
         if !opened.is_ok_and(|status| status.success()) {
-            eprintln!("omma: can't open {}", path.display());
+            log!("can't open {}", path.display());
         }
     });
 }

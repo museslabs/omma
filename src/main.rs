@@ -1,6 +1,15 @@
 #[cfg(not(target_os = "macos"))]
 compile_error!("omma supports macOS only");
 
+/// writes `omma: <message>` to the running app's stderr and drops a failed write. eprintln!
+/// would panic once the terminal that started omma is closed.
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "omma: {}", format_args!($($arg)*));
+    }};
+}
+
 mod app;
 mod cli;
 mod config;
@@ -70,7 +79,7 @@ fn run() -> anyhow::Result<ExitCode> {
         .context("can't locate the config file: set HOME or XDG_CONFIG_HOME to an absolute path")?;
     let (cfg, config_error) = config::load_or_create(&config_path);
     if let Some(e) = &config_error {
-        eprintln!("omma: {}: {e}; using the defaults", config_path.display());
+        log!("{}: {e}; using the defaults", config_path.display());
     }
 
     app::run(cfg, config_path, config_error, server)?;
