@@ -135,17 +135,24 @@ fn frontmost_is_fullscreen(workspace: &NSWorkspace) -> bool {
     })
 }
 
+/// whether a pattern matches the title of a window on screen: one that isn't minimized, of
+/// an app that isn't hidden
 fn any_window_title_matches(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> bool {
     workspace
         .runningApplications()
         .iter()
-        // only regular apps have inspectable windows
-        .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+        // only regular apps have inspectable windows, and a hidden app shows none
+        .filter(|app| {
+            app.activationPolicy() == NSApplicationActivationPolicy::Regular && !app.isHidden()
+        })
         .flat_map(|app| windows(&app))
-        .filter_map(|window| attribute_as::<CFString>(&window, "AXTitle"))
-        .any(|title| {
-            let title = title.to_string();
-            patterns.iter().any(|p| p.is_match(&title))
+        .any(|window| {
+            attribute_as::<CFString>(&window, "AXTitle").is_some_and(|title| {
+                let title = title.to_string();
+                patterns.iter().any(|p| p.is_match(&title))
+            })
+            // asked only of a matching window, which keeps the calls few
+            && !attribute_as::<CFBoolean>(&window, "AXMinimized").is_some_and(|m| m.as_bool())
         })
 }
 
