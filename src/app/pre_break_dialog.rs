@@ -3,7 +3,7 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
     NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
-    NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindowStyleMask,
+    NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CACurrentMediaTime;
@@ -63,14 +63,8 @@ impl PreBreakDialog {
             NSSize::new(PANEL_W, PANEL_H),
         );
 
-        // never key, and a click doesn't activate omma: the warning takes no focus from the
-        // app the user is in
-        let window = make_panel(
-            self.mtm,
-            frame,
-            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-            false,
-        );
+        // never key: the warning takes no focus from the app the user is in
+        let window = make_panel(self.mtm, frame, false);
         let Some(content) = window.contentView() else {
             return;
         };

@@ -39,15 +39,12 @@ define_class!(
 );
 
 /// a borderless, see-through panel above every window, fullscreen apps included, and on
-/// every Space. `takes_keys` lets it become the key window, which a borderless window
-/// otherwise never does.
-pub fn make_panel(
-    mtm: MainThreadMarker,
-    frame: NSRect,
-    style: NSWindowStyleMask,
-    takes_keys: bool,
-) -> Retained<Panel> {
+/// every Space. it never activates omma, so the app the user is in stays active. with
+/// `takes_keys` it can still become the key window and get keystrokes, which a borderless
+/// window otherwise never does; focus goes back to the user's app when it goes away.
+pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Retained<Panel> {
     let this = Panel::alloc(mtm).set_ivars(takes_keys);
+    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     // SAFETY: NSWindow's designated initializer, with the argument types it declares
     let panel: Retained<Panel> = unsafe {
         msg_send![
@@ -62,7 +59,7 @@ pub fn make_panel(
     panel.setOpaque(false);
     // native shadows follow the panel's rectangle, not the glass drawn inside it
     panel.setHasShadow(false);
-    // a panel hides when its app isn't active, and omma, an accessory app, rarely is
+    // a panel hides when its app isn't active, and omma never activates
     panel.setHidesOnDeactivate(false);
     // clear, so the glass and the behind-window blur sample the desktop. the dark
     // appearance keeps the glass and its text legible.

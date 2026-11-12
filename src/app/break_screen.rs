@@ -7,10 +7,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBox, NSBoxType, NSColor, NSFont,
-    NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView, NSImage, NSScreen, NSTextAlignment,
-    NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindowStyleMask, NSWorkspace,
+    NSBox, NSBoxType, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView,
+    NSImage, NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
@@ -97,8 +97,7 @@ impl BreakScreen {
             let cx = w / 2.0;
             let cy = h / 2.0;
 
-            // keys reach a key window only in the active app: `show` activates omma
-            let window = make_panel(mtm, frame, NSWindowStyleMask::Borderless, true);
+            let window = make_panel(mtm, frame, true);
             let Some(content) = window.contentView() else {
                 continue;
             };
@@ -261,17 +260,10 @@ impl BreakScreen {
             });
         }
 
-        // only the active app can own a key window. cooperative activate() is throttled for a
-        // background app waking on a timer, so without forcing it the overlay never becomes key
-        // and skip/postpone keys are dead until the user clicks. promote to regular and force
-        // activate so the panel becomes key, hide() drops us back to accessory.
-        let app = NSApplication::sharedApplication(mtm);
-        let Some(first) = self.overlays.first() else {
-            return;
-        };
-        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        force_activate(&app);
-        first.window.makeKeyAndOrderFront(None);
+        // the skip and postpone keys go to the key window
+        if let Some(first) = self.overlays.first() {
+            first.window.makeKeyWindow();
+        }
     }
 
     pub fn is_visible(&self) -> bool {
@@ -321,39 +313,21 @@ impl BreakScreen {
             }
         }
 
-        // the overlays move into the timer so they stay on screen for the animation, then it
-        // orders them out and restores accessory mode
-        let mtm = self.mtm;
-        after(mtm, EXIT_DURATION + 0.05, move || {
+        // the overlays move into the timer so they stay on screen for the animation
+        after(self.mtm, EXIT_DURATION + 0.05, move || {
             for overlay in &overlays {
                 overlay.window.orderOut(None);
             }
-            NSApplication::sharedApplication(mtm)
-                .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         });
     }
 
-    /// no exit animation. order every window out, forget the views, drop back to accessory.
-    /// used when reopening and when reduce motion is on.
+    /// no exit animation: order every window out and forget the views. used when reopening
+    /// and when reduce motion is on.
     fn teardown_now(&mut self) {
-        let had_windows = !self.overlays.is_empty();
         for overlay in self.overlays.drain(..) {
             overlay.window.orderOut(None);
         }
-
-        if had_windows {
-            let app = NSApplication::sharedApplication(self.mtm);
-            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-        }
     }
-}
-
-#[expect(
-    deprecated,
-    reason = "cooperative activate() is throttled for a background app woken by a timer, so the panel never becomes key"
-)]
-fn force_activate(app: &NSApplication) {
-    app.activateIgnoringOtherApps(true);
 }
 
 fn make_image_view(
