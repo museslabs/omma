@@ -1,6 +1,8 @@
+use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,34 +19,42 @@ pub enum Command {
     Reload,
 }
 
-impl Command {
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Command::TakeBreak => "take-break",
-            Command::TakeShortBreak => "short-break",
-            Command::TakeLongBreak => "long-break",
-            Command::Enable => "enable",
-            Command::Disable => "disable",
-            Command::Quit => "quit",
-            Command::Status => "status",
-            Command::Reload => "reload",
-        }
-    }
+/// each command's name on the wire. renaming one breaks CLIs talking to an older instance.
+const COMMANDS: [(Command, &str); 8] = [
+    (Command::TakeBreak, "take-break"),
+    (Command::TakeShortBreak, "short-break"),
+    (Command::TakeLongBreak, "long-break"),
+    (Command::Enable, "enable"),
+    (Command::Disable, "disable"),
+    (Command::Quit, "quit"),
+    (Command::Status, "status"),
+    (Command::Reload, "reload"),
+];
 
-    pub fn from_wire(s: &str) -> Option<Command> {
-        Some(match s.trim() {
-            "take-break" => Command::TakeBreak,
-            "short-break" => Command::TakeShortBreak,
-            "long-break" => Command::TakeLongBreak,
-            "enable" => Command::Enable,
-            "disable" => Command::Disable,
-            "quit" => Command::Quit,
-            "status" => Command::Status,
-            "reload" => Command::Reload,
-            _ => return None,
-        })
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (_, name) = COMMANDS
+            .iter()
+            .find(|(command, _)| command == self)
+            .expect("COMMANDS names every command");
+        f.write_str(name)
     }
 }
+
+impl FromStr for Command {
+    type Err = UnknownCommand;
+
+    fn from_str(s: &str) -> Result<Command, UnknownCommand> {
+        COMMANDS
+            .iter()
+            .find(|(_, name)| *name == s)
+            .map(|(command, _)| *command)
+            .ok_or(UnknownCommand)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnknownCommand;
 
 #[derive(Debug)]
 pub enum BindError {
@@ -130,16 +140,16 @@ fn accept_loop(listener: UnixListener, tx: Sender<Command>, status: Arc<Mutex<St
             continue;
         }
 
-        let reply = match Command::from_wire(&line) {
-            Some(Command::Status) => status
+        let reply = match line.trim().parse() {
+            Ok(Command::Status) => status
                 .lock()
                 .map(|g| g.clone())
                 .unwrap_or_else(|_| "unknown".into()),
-            Some(cmd) => {
+            Ok(cmd) => {
                 let _ = tx.send(cmd);
                 "ok".into()
             }
-            None => "error: unknown command".into(),
+            Err(UnknownCommand) => "error: unknown command".into(),
         };
         let _ = writeln!(stream, "{reply}");
     }
@@ -155,7 +165,7 @@ pub fn send(cmd: Command) -> std::io::Result<bool> {
         Err(e) => return Err(e),
     };
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    writeln!(stream, "{}", cmd.as_wire())?;
+    writeln!(stream, "{cmd}")?;
     stream.flush()?;
 
     let mut resp = String::new();
@@ -165,4 +175,55 @@ pub fn send(cmd: Command) -> std::io::Result<bool> {
         println!("{resp}");
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_names_round_trip() {
+        for (command, name) in COMMANDS {
+            assert_eq!(command.to_string(), name);
+            assert_eq!(name.parse(), Ok(command));
+        }
+    }
+
+    #[test]
+    fn every_command_has_a_wire_name() {
+        use Command::*;
+        for command in [
+            TakeBreak,
+            TakeShortBreak,
+            TakeLongBreak,
+            Enable,
+            Disable,
+            Quit,
+            Status,
+            Reload,
+        ] {
+            // a new command stops this compiling: add it to the match and to the list above
+            match command {
+                TakeBreak | TakeShortBreak | TakeLongBreak | Enable | Disable | Quit | Status
+                | Reload => {}
+            }
+            assert!(COMMANDS.iter().any(|(c, _)| *c == command), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn wire_names_are_distinct() {
+        for (i, (a, name_a)) in COMMANDS.iter().enumerate() {
+            for (b, name_b) in &COMMANDS[i + 1..] {
+                assert_ne!(a, b);
+                assert_ne!(name_a, name_b);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_names_are_rejected() {
+        assert_eq!("".parse::<Command>(), Err(UnknownCommand));
+        assert_eq!("Status".parse::<Command>(), Err(UnknownCommand));
+    }
 }
