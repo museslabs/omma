@@ -261,15 +261,34 @@ impl Core {
     }
 
     /// whole seconds, rounded up, until the phase's deadline: the warning, the break or
-    /// the break's end
+    /// the break's end. a break counts down from its length at most, so a countdown that
+    /// `start_countdown_at` started late shows its first second for longer.
     pub fn remaining(&self, now: SystemTime) -> Option<u64> {
-        let deadline = match self.phase {
-            Phase::Waiting { since, postponed } => self.warn_at(since, postponed),
-            Phase::Warning { break_at } => break_at,
-            Phase::Break { ends_at } => ends_at,
-            Phase::Disabled | Phase::Paused { .. } => return None,
-        };
-        Some(ceil_secs(now, deadline))
+        match self.phase {
+            Phase::Waiting { since, postponed } => {
+                Some(ceil_secs(now, self.warn_at(since, postponed)))
+            }
+            Phase::Warning { break_at } => Some(ceil_secs(now, break_at)),
+            Phase::Break { ends_at } => {
+                Some(ceil_secs(now, ends_at).min(whole_secs(self.current.duration)))
+            }
+            Phase::Disabled | Phase::Paused { .. } => None,
+        }
+    }
+
+    /// starts the running break's countdown at `at`, when its screen has come into focus,
+    /// so that every second of it is on screen: the break ends one length after `at`.
+    /// `now` is when the screen was asked for. ignored outside a break, and when the
+    /// countdown had moved past its first second by `now`. call it once per break: each
+    /// call in the first second moves the end again.
+    pub fn start_countdown_at(&mut self, now: SystemTime, at: SystemTime) {
+        self.follow_clock(now);
+        let length = self.current.duration;
+        if let Phase::Break { ends_at } = &mut self.phase
+            && ceil_secs(now, *ends_at) >= whole_secs(length)
+        {
+            *ends_at = (*ends_at).max(later(at, length));
+        }
     }
 
     pub fn status_text(&self, now: SystemTime) -> String {
@@ -417,8 +436,12 @@ fn earlier(t: SystemTime, d: Duration) -> SystemTime {
 
 /// whole seconds from `now` to `t`, rounded up; 0 once `t` has passed
 fn ceil_secs(now: SystemTime, t: SystemTime) -> u64 {
-    t.duration_since(now)
-        .map_or(0, |d| d.as_secs() + u64::from(d.subsec_nanos() > 0))
+    t.duration_since(now).map_or(0, whole_secs)
+}
+
+/// rounded up
+fn whole_secs(d: Duration) -> u64 {
+    d.as_secs() + u64::from(d.subsec_nanos() > 0)
 }
 
 fn fmt_duration(secs: u64) -> String {
@@ -547,6 +570,47 @@ mod tests {
         assert_eq!(core.tick(at(64), Duration::ZERO), None);
         assert_eq!(core.remaining(at(64)), Some(1));
         assert_eq!(core.tick(at(65), Duration::ZERO), BREAK_ENDED);
+    }
+
+    #[test]
+    fn a_countdown_started_late_holds_its_first_second_and_ends_later() {
+        let mut core = in_break();
+        core.start_countdown_at(at_ms(62_050), at_ms(62_600));
+        assert_eq!(core.remaining(at(62)), Some(3));
+        assert_eq!(core.remaining(at_ms(63_500)), Some(3));
+        assert_eq!(core.remaining(at_ms(63_600)), Some(2));
+        assert_eq!(step(&mut core, at(65)), None);
+        assert_eq!(core.remaining(at(65)), Some(1));
+        assert_eq!(core.tick(at_ms(65_600), Duration::ZERO), BREAK_ENDED);
+    }
+
+    #[test]
+    fn a_screen_slow_to_build_still_gets_its_first_second() {
+        let mut core = in_break();
+        core.start_countdown_at(at(62), at_ms(63_800));
+        assert_eq!(core.remaining(at_ms(63_800)), Some(3));
+        assert_eq!(core.remaining(at_ms(64_800)), Some(2));
+        assert_eq!(step(&mut core, at(66)), None);
+        assert_eq!(core.tick(at_ms(66_800), Duration::ZERO), BREAK_ENDED);
+    }
+
+    #[test]
+    fn a_countdown_already_under_way_keeps_its_deadline() {
+        // a screen built mid-break, once a display appears, doesn't wind the count back up
+        let mut core = in_break();
+        core.start_countdown_at(at_ms(63_200), at_ms(63_800));
+        assert_eq!(core.remaining(at_ms(63_200)), Some(2));
+        assert_eq!(step(&mut core, at(65)), BREAK_ENDED);
+
+        // and there is no countdown to start outside a break
+        let mut core = Core::new(settings(), at(0));
+        core.start_countdown_at(at(0), at(5));
+        assert_eq!(core.remaining(at(0)), Some(60));
+        assert_eq!(step(&mut core, at(60)), Some(Event::Warn));
+        core.start_countdown_at(at(60), at(65));
+        assert_eq!(core.remaining(at(60)), Some(2));
+        assert_eq!(step(&mut core, at(62)), Some(Event::BreakStarted));
+        assert_eq!(step(&mut core, at(65)), BREAK_ENDED);
     }
 
     #[test]

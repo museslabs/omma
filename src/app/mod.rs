@@ -468,12 +468,19 @@ impl App {
             if in_break {
                 let keys = self.config.keybindings;
                 let buttons = self.buttons(keys.skip, keys.postpone);
-                self.break_screen.show(
+                let settling = self.break_screen.show(
                     self.core.current(),
                     remaining.unwrap_or(0),
                     buttons,
                     target,
                 );
+                // once per break: show runs again only while no screen was built. building
+                // takes time, so the start counts from the clock after it, while `now` is
+                // still when the screen was asked for.
+                if let Some(settling) = settling {
+                    let built = SystemTime::now();
+                    self.core.start_countdown_at(now, built + settling);
+                }
                 self.shown.countdown = remaining;
             } else {
                 self.break_screen.hide();

@@ -2,6 +2,7 @@
 //! NSGlassEffectView capsules wrapping a borderless NSButton.
 
 use std::path::Path;
+use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -34,6 +35,12 @@ const IMAGE_BLUR_RADIUS_RESTING: f64 = 16.0;
 const IMAGE_BLUR_RADIUS_START: f64 = 60.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
+/// the foreground starts to resolve from blur this long after the screen appears
+const FOREGROUND_DELAY: f64 = 0.06;
+/// and takes this long to come into focus
+const FOREGROUND_ENTRANCE: f64 = 0.55;
+/// when the foreground is in focus, from the moment the screen appears
+const FOREGROUND_SETTLED: f64 = FOREGROUND_DELAY + FOREGROUND_ENTRANCE;
 const EXIT_DURATION: f64 = 0.32;
 const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     height: BUTTON_HEIGHT,
@@ -72,8 +79,17 @@ impl BreakScreen {
         }
     }
 
-    /// covers every display with `brk`, counting down from `remaining`
-    pub fn show(&mut self, brk: &Break, remaining: u64, buttons: Buttons, target: &AnyObject) {
+    /// covers every display with `brk`, counting down from `remaining`. returns how long
+    /// after it returns the countdown comes into focus: zero with animations off, or when
+    /// building the screen took longer than its entrance. None when there was no display
+    /// to show it on.
+    pub fn show(
+        &mut self,
+        brk: &Break,
+        remaining: u64,
+        buttons: Buttons,
+        target: &AnyObject,
+    ) -> Option<Duration> {
         self.teardown_now();
         let mtm = self.mtm;
         let weight_regular = unsafe { NSFontWeightRegular };
@@ -88,7 +104,7 @@ impl BreakScreen {
         // with no display, sync tries again on its next tick
         let screens = NSScreen::screens(mtm);
         if screens.count() == 0 {
-            return;
+            return None;
         }
         let image = brk.image.as_deref().and_then(|path| {
             let image = load_image(path);
@@ -227,31 +243,34 @@ impl BreakScreen {
                     layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, Fill::Entrance), None);
                 }
                 if let Some(layer) = foreground.layer() {
-                    let begin = now + 0.06;
+                    let begin = now + FOREGROUND_DELAY;
                     attach_unclipped_blur(&layer, 0.0);
-                    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.55, Fill::Entrance), None);
                     layer.addAnimation_forKey(
-                        &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, Fill::Entrance),
+                        &fade(0.0, 1.0, begin, FOREGROUND_ENTRANCE, Fill::Entrance),
+                        None,
+                    );
+                    layer.addAnimation_forKey(
+                        &blur_radius(BLUR_RADIUS, 0.0, begin, FOREGROUND_ENTRANCE, Fill::Entrance),
                         None,
                     );
                     // drop the transition blur once the entrance settles so the break renders crisp
-                    detach_blur_after(mtm, layer, 0.75);
+                    detach_blur_after(mtm, layer, FOREGROUND_SETTLED + 0.14);
                 }
                 // image holds at its resting radius after the sharpen-in, no detach
                 if let Some(layer) = image_view.as_ref().and_then(|v| v.layer()) {
-                    let begin = now + 0.06;
+                    let begin = now + FOREGROUND_DELAY;
                     layer.addAnimation_forKey(
                         &blur_radius(
                             IMAGE_BLUR_RADIUS_START,
                             IMAGE_BLUR_RADIUS_RESTING,
                             begin,
-                            0.55,
+                            FOREGROUND_ENTRANCE,
                             Fill::Entrance,
                         ),
                         None,
                     );
                 }
-                let label_begin = now + 0.68;
+                let label_begin = now + FOREGROUND_SETTLED + 0.07;
                 let buttons_begin = label_begin + 0.28;
                 if let Some(layer) = name_label.layer() {
                     animate_delayed_entrance(mtm, layer, 28.0, label_begin, now);
@@ -274,9 +293,14 @@ impl BreakScreen {
         }
 
         // the skip and postpone keys go to the key window
-        if let Some(first) = self.overlays.first() {
-            first.window.makeKeyWindow();
-        }
+        let first = self.overlays.first()?;
+        first.window.makeKeyWindow();
+        Some(if animate {
+            let left = now + FOREGROUND_SETTLED - CACurrentMediaTime();
+            Duration::from_secs_f64(left.max(0.0))
+        } else {
+            Duration::ZERO
+        })
     }
 
     pub fn is_visible(&self) -> bool {
