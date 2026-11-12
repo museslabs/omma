@@ -92,8 +92,8 @@ impl BreakScreen {
     ) -> Option<Duration> {
         self.teardown_now();
         let mtm = self.mtm;
-        let weight_regular = unsafe { NSFontWeightRegular };
-        let weight_heavy = unsafe { NSFontWeightHeavy };
+        // SAFETY: immutable AppKit constants
+        let (weight_regular, weight_heavy) = unsafe { (NSFontWeightRegular, NSFontWeightHeavy) };
 
         self.animate = animations_on();
         let animate = self.animate;
@@ -384,6 +384,8 @@ fn make_image_view(
     view.setWantsLayer(true);
     let layer = view.layer()?;
     let image_obj: &AnyObject = image;
+    // SAFETY: a layer's contents can be an NSImage, and the gravity is an immutable Core
+    // Animation constant
     unsafe {
         layer.setContents(Some(image_obj));
         layer.setContentsGravity(kCAGravityResizeAspectFill);

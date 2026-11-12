@@ -76,6 +76,8 @@ pub fn make_glass_button(
         None => title.to_string(),
     };
     let full_ns = NSString::from_str(&full);
+    // SAFETY: `target` implements `action`, and outlives the button: it's the delegate, which
+    // lives until the process exits
     let button = unsafe {
         NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
     };
@@ -83,9 +85,12 @@ pub fn make_glass_button(
 
     let attributed =
         NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &full_ns);
-    let title_font =
-        NSFont::systemFontOfSize_weight(style.title_font_size, unsafe { NSFontWeightMedium });
+    // SAFETY: an immutable AppKit constant
+    let medium = unsafe { NSFontWeightMedium };
+    let title_font = NSFont::systemFontOfSize_weight(style.title_font_size, medium);
     let title_range = NSRange::new(0, title_ns.length());
+    // SAFETY: the attribute names are immutable AppKit constants, and each value has the type
+    // its attribute takes: an NSColor for the color, an NSFont for the font
     unsafe {
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
@@ -96,11 +101,11 @@ pub fn make_glass_button(
     }
 
     if keybind.is_some() {
-        let hint_font =
-            NSFont::systemFontOfSize_weight(style.hint_font_size, unsafe { NSFontWeightMedium });
+        let hint_font = NSFont::systemFontOfSize_weight(style.hint_font_size, medium);
         let dim = NSColor::colorWithWhite_alpha(1.0, 0.55);
         let start = title_ns.length();
         let hint_range = NSRange::new(start, full_ns.length() - start);
+        // SAFETY: as for the title
         unsafe {
             attributed.addAttribute_value_range(NSForegroundColorAttributeName, &dim, hint_range);
             attributed.addAttribute_value_range(NSFontAttributeName, &hint_font, hint_range);

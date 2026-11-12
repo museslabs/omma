@@ -24,6 +24,8 @@ use objc2_quartz_core::{
 
 define_class!(
     /// the ivar says whether the panel can become the key window
+    // SAFETY: NSPanel can be subclassed, and nothing here breaks its requirements. each
+    // override has the signature AppKit declares, which registering the class checks.
     #[unsafe(super(NSPanel))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaPanel"]
