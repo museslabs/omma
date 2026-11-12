@@ -1,7 +1,8 @@
 # omma config. omma rereads this file within a second of every save.
 #
 # Times are in whole seconds. A key you leave out keeps its default. A key omma
-# doesn't know, or a value out of range, is an error that names its line. The
+# doesn't know, or a value out of range, is an error: the menu shows it with its
+# line, and omma keeps its last good config, or the defaults at startup. The
 # keys at the top must come before the first [table] header, because TOML puts
 # every key below a header into that table.
 

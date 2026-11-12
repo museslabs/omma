@@ -23,7 +23,7 @@ use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::ipc::{self, Command, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
@@ -47,6 +47,8 @@ const FAST_TICK_SECS: f64 = 0.2;
 const SLOW_TICK_SECS: f64 = 1.0;
 /// the config file is checked for changes at most this often
 const CONFIG_POLL: Duration = Duration::from_secs(1);
+/// a config error's menu item is cut to this many characters; its tooltip has all of it
+const MENU_ERROR_CHARS: usize = 72;
 
 /// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
@@ -68,7 +70,29 @@ enum TrayIconState {
     Incoming,
 }
 
-pub fn run(config: Config, config_path: PathBuf, ipc: Server) -> anyhow::Result<()> {
+/// what stands in for a config file with an error
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fallback {
+    Defaults,
+    LastGood,
+}
+
+impl Fallback {
+    fn describe(self) -> &'static str {
+        match self {
+            Fallback::Defaults => "using the defaults",
+            Fallback::LastGood => "kept the last good config",
+        }
+    }
+}
+
+/// `config_error` is why the file at `config_path` didn't load, with the defaults in its place
+pub fn run(
+    config: Config,
+    config_path: PathBuf,
+    config_error: Option<ConfigError>,
+    ipc: Server,
+) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
@@ -76,7 +100,7 @@ pub fn run(config: Config, config_path: PathBuf, ipc: Server) -> anyhow::Result<
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let now = SystemTime::now();
-    let app = App::new(mtm, config, config_path, ipc, now);
+    let app = App::new(mtm, config, config_path, config_error, ipc, now);
     let delegate = Delegate::new(mtm, app);
     let target: &AnyObject = &delegate;
     delegate.with_app(|app| {
@@ -96,12 +120,17 @@ struct App {
     config_path: PathBuf,
     config_mtime: Option<SystemTime>,
     config_checked: Option<SystemTime>,
+    /// the file's last error, until it loads
+    config_error: Option<(ConfigError, Fallback)>,
     ipc: Server,
     status_item: Option<Retained<NSStatusItem>>,
     tray_icon: Option<Retained<NSImage>>,
     tray_icon_incoming: Option<Retained<NSImage>>,
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
+    /// a heading and the error itself, which opens the config file when clicked. hidden
+    /// while the config is fine
+    config_error_items: Option<[Retained<NSMenuItem>; 2]>,
     break_screen: BreakScreen,
     pre_break_dialog: PreBreakDialog,
     dnd: DndChecker,
@@ -118,6 +147,7 @@ struct Shown {
     countdown: Option<u64>,
     status: String,
     enabled: Option<bool>,
+    config_error: Option<(ConfigError, Fallback)>,
     tray_icon: TrayIconState,
     fast_ticks: bool,
 }
@@ -216,6 +246,7 @@ impl App {
         mtm: MainThreadMarker,
         config: Config,
         config_path: PathBuf,
+        config_error: Option<ConfigError>,
         ipc: Server,
         now: SystemTime,
     ) -> App {
@@ -236,12 +267,14 @@ impl App {
             config_path,
             config_mtime,
             config_checked: None,
+            config_error: config_error.map(|e| (e, Fallback::Defaults)),
             ipc,
             status_item: None,
             tray_icon,
             tray_icon_incoming,
             enable_item: None,
             status_item_label: None,
+            config_error_items: None,
             break_screen,
             pre_break_dialog,
             dnd,
@@ -407,6 +440,13 @@ impl App {
             }
             self.shown.enabled = Some(enabled);
         }
+
+        if self.shown.config_error != self.config_error {
+            if let Some([heading, detail]) = &self.config_error_items {
+                show_config_error(heading, detail, self.config_error.as_ref());
+            }
+            self.shown.config_error = self.config_error.clone();
+        }
     }
 
     fn sync_tray_icon(&mut self, state: TrayIconState) {
@@ -483,15 +523,33 @@ impl App {
         }
         self.config_mtime = mtime;
 
+        match self.reload_config() {
+            Ok(()) => eprintln!("omma: reloaded the config"),
+            Err((e, fallback)) => eprintln!(
+                "omma: {}: {e}; {}",
+                self.config_path.display(),
+                fallback.describe()
+            ),
+        }
+    }
+
+    /// rereads the config file. after an error the config in effect stays, and the menu
+    /// shows the error until the file loads.
+    fn reload_config(&mut self) -> Result<(), (ConfigError, Fallback)> {
         match Config::from_file(&self.config_path) {
             Ok(new) => {
                 self.apply_config(new);
-                eprintln!("omma: reloaded the config");
+                self.config_error = None;
+                Ok(())
             }
-            Err(e) => eprintln!(
-                "omma: {}: {e}; kept the previous config",
-                self.config_path.display()
-            ),
+            Err(e) => {
+                let fallback = match self.config_error {
+                    Some((_, Fallback::Defaults)) => Fallback::Defaults,
+                    _ => Fallback::LastGood,
+                };
+                self.config_error = Some((e.clone(), fallback));
+                Err((e, fallback))
+            }
         }
     }
 
@@ -513,6 +571,11 @@ impl App {
         let target: &AnyObject = delegate;
 
         self.status_item_label = Some(self.add_disabled_item(&menu, "Starting…"));
+        let heading = self.add_disabled_item(&menu, "");
+        let detail = self.add_item(&menu, "", sel!(openConfig:), target);
+        heading.setHidden(true);
+        detail.setHidden(true);
+        self.config_error_items = Some([heading, detail]);
         menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item(&menu, "Take a break now", sel!(takeBreak:), target);
         self.add_item(&menu, "Take a short break", sel!(takeShortBreak:), target);
@@ -586,6 +649,27 @@ impl App {
             None => button.setTitle(&NSString::from_str("\u{1F441}")), // fallback glyph
         }
     }
+}
+
+/// fills the menu's two config error items, or hides them when there's no error
+fn show_config_error(
+    heading: &NSMenuItem,
+    detail: &NSMenuItem,
+    error: Option<&(ConfigError, Fallback)>,
+) {
+    if let Some((error, fallback)) = error {
+        let full = error.to_string();
+        let short = match full.char_indices().nth(MENU_ERROR_CHARS) {
+            Some((cut, _)) => format!("{}…", &full[..cut]),
+            None => full.clone(),
+        };
+        let title = format!("⚠ Config error: {}", fallback.describe());
+        heading.setTitle(&NSString::from_str(&title));
+        detail.setTitle(&NSString::from_str(&short));
+        detail.setToolTip(Some(&NSString::from_str(&full)));
+    }
+    heading.setHidden(error.is_none());
+    detail.setHidden(error.is_none());
 }
 
 fn tray_icon_blink_on(now: SystemTime) -> bool {
