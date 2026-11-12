@@ -85,8 +85,19 @@ impl BreakScreen {
 
         // monospaced so the digits don't shift as they tick
         let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_heavy);
-
+        // with no display, sync tries again on its next tick
         let screens = NSScreen::screens(mtm);
+        if screens.count() == 0 {
+            return;
+        }
+        let image = brk.image.as_deref().and_then(|path| {
+            let image = load_image(path);
+            if image.is_none() {
+                eprintln!("omma: can't show {} as an image", path.display());
+            }
+            image
+        });
+
         for i in 0..screens.count() {
             let screen = screens.objectAtIndex(i);
             let frame = screen.frame();
@@ -113,12 +124,11 @@ impl BreakScreen {
             blur.setState(NSVisualEffectState::Active);
             backdrop.addSubview(&blur);
 
-            // optional custom image, between blur and scrim. a file that isn't an image is skipped.
-            // a permanent gaussian blur keeps it a soft backdrop instead of a sharp photo.
-            let image_view = brk
-                .image
+            // optional custom image, between blur and scrim. a permanent gaussian blur keeps it a
+            // soft backdrop instead of a sharp photo.
+            let image_view = image
                 .as_deref()
-                .and_then(|p| make_image_view(mtm, p, full, screen.backingScaleFactor()));
+                .and_then(|image| make_image_view(mtm, image, full, screen.backingScaleFactor()));
             if let Some(view) = &image_view {
                 backdrop.addSubview(view);
             }
@@ -334,18 +344,22 @@ impl BreakScreen {
     }
 }
 
+/// None when the file isn't an image AppKit can read
+fn load_image(path: &Path) -> Option<Retained<NSImage>> {
+    let path = NSString::from_str(path.to_str()?);
+    NSImage::initWithContentsOfFile(NSImage::alloc(), &path)
+}
+
 fn make_image_view(
     mtm: MainThreadMarker,
-    path: &Path,
+    image: &NSImage,
     frame: NSRect,
     backing_scale: f64,
 ) -> Option<Retained<NSView>> {
-    let ns_path = NSString::from_str(path.to_str()?);
-    let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &ns_path)?;
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
     view.setWantsLayer(true);
     let layer = view.layer()?;
-    let image_obj: &AnyObject = &image;
+    let image_obj: &AnyObject = image;
     unsafe {
         layer.setContents(Some(image_obj));
         layer.setContentsGravity(kCAGravityResizeAspectFill);
