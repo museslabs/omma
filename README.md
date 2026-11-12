@@ -53,6 +53,8 @@ omma --reload              re-read the config of the running instance now
 omma --print-default-config   print the default config as TOML
 ```
 
+Flags can't be combined.
+
 The agent also watches the config file and reloads automatically within ~1s of
 a save, so `--reload` is only needed for an instant, explicit refresh.
 

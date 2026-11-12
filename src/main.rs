@@ -9,22 +9,23 @@ mod queue;
 mod scheduler;
 
 use clap::Parser;
+use cli::Mode;
 
 fn main() -> anyhow::Result<()> {
-    let args = cli::Args::parse();
-
-    if args.print_default_config {
-        print!("{}", config::DEFAULT_CONFIG);
-        return Ok(());
-    }
-
-    if let Some(cmd) = args.client_command() {
-        let running = ipc::send(cmd)?;
-        if !running {
-            eprintln!("omma is not running.");
-            std::process::exit(1);
+    match cli::Args::parse().mode() {
+        Mode::Run => {}
+        Mode::PrintDefaultConfig => {
+            print!("{}", config::DEFAULT_CONFIG);
+            return Ok(());
         }
-        return Ok(());
+        Mode::Send(cmd) => {
+            let running = ipc::send(cmd)?;
+            if !running {
+                eprintln!("omma is not running.");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
     }
 
     let config_path = config::config_path().ok_or_else(|| {
