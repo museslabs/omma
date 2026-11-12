@@ -39,16 +39,23 @@ impl Hotkeys {
         }
     }
 
-    /// holds `keys` until `release`, each one Carbon accepts. a press sends `warningSkip:` or
-    /// `warningPostpone:` to `target`, which must live as long as the app: it's the delegate.
-    pub fn hold(&mut self, target: &AnyObject, keys: &[(Action, KeySpec)]) {
+    /// holds each of `keys` that Carbon accepts until `release`, and returns why it refused
+    /// the others. a press sends `warningSkip:` or `warningPostpone:` to `target`, which must
+    /// live as long as the app: it's the delegate.
+    pub fn hold(&mut self, target: &AnyObject, keys: &[(Action, KeySpec)]) -> Vec<String> {
         self.release();
-        if keys.is_empty() || !self.install_handler(target) {
-            return;
+        if keys.is_empty() {
+            return Vec::new();
         }
+        if let Err(status) = self.install_handler(target) {
+            return vec![format!(
+                "can't listen for global shortcuts (error {status})"
+            )];
+        }
+        let mut problems = Vec::new();
         for &(action, spec) in keys {
             let Some(code) = key_code(spec.key) else {
-                log!("no key on the keyboard layout types `{spec}`");
+                problems.push(format!("no key on the keyboard layout types `{spec}`"));
                 continue;
             };
             let id = EventHotKeyID {
@@ -70,9 +77,12 @@ impl Hotkeys {
             if status == NO_ERR {
                 self.held.push((action, spec, hotkey));
             } else {
-                log!("can't take `{spec}` as a global shortcut (error {status})");
+                problems.push(format!(
+                    "can't take `{spec}` as a global shortcut (error {status})"
+                ));
             }
         }
+        problems
     }
 
     /// the shortcut held for `action`, if Carbon took it
@@ -90,10 +100,10 @@ impl Hotkeys {
         }
     }
 
-    /// once per run; false when Carbon refuses
-    fn install_handler(&mut self, target: &AnyObject) -> bool {
+    /// once per run. the error is Carbon's status when it refuses
+    fn install_handler(&mut self, target: &AnyObject) -> Result<(), OSStatus> {
         if self.handler_installed {
-            return true;
+            return Ok(());
         }
         let pressed = EventTypeSpec {
             event_class: EVENT_CLASS_KEYBOARD,
@@ -113,10 +123,11 @@ impl Hotkeys {
             )
         };
         self.handler_installed = status == NO_ERR;
-        if !self.handler_installed {
-            log!("can't listen for global shortcuts (error {status})");
+        if self.handler_installed {
+            Ok(())
+        } else {
+            Err(status)
         }
-        self.handler_installed
     }
 }
 

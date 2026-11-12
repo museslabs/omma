@@ -66,8 +66,7 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
         return Some(Reason::Running(app_name(&app)));
     }
 
-    // SAFETY: no arguments
-    if !dnd.needs_accessibility() || !unsafe { AXIsProcessTrusted() } {
+    if !dnd.needs_accessibility() || !is_trusted() {
         return None;
     }
     limit_ax_wait();
@@ -79,6 +78,12 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
     matching_title(&workspace, &dnd.window_title_matches).map(Reason::Window)
 }
 
+/// whether omma has Accessibility permission. it can change while omma runs.
+pub fn is_trusted() -> bool {
+    // SAFETY: no arguments
+    unsafe { AXIsProcessTrusted() }
+}
+
 /// asks for Accessibility permission unless omma has it. the system's prompt doesn't block.
 pub fn request_accessibility() {
     // SAFETY: an immutable CFString that the framework exports
@@ -86,12 +91,7 @@ pub fn request_accessibility() {
     let options =
         CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[CFBoolean::new(true)]);
     // SAFETY: the options map CFString keys to CFBoolean values, as the call expects
-    if !unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) } {
-        log!(
-            "the fullscreen and window-title rules need Accessibility permission.\n      \
-             Grant it in System Settings → Privacy & Security → Accessibility."
-        );
-    }
+    unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) };
 }
 
 /// whether a rule names part of the app's name or bundle id

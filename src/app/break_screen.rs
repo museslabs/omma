@@ -58,6 +58,15 @@ const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     hint_font_size: 13.0,
 };
 
+/// a break screen that `show` put up
+pub struct Built {
+    /// how long after `show` returned the countdown comes into focus. zero with animations
+    /// off, or when building the screen took longer than its entrance
+    pub settling: Duration,
+    /// whether the break's image loaded, or why not. None when the break has no image
+    pub image: Option<Result<(), String>>,
+}
+
 pub struct BreakScreen {
     mtm: MainThreadMarker,
     /// one per display while the break shows; empty from the moment `hide` starts
@@ -89,17 +98,15 @@ impl BreakScreen {
         }
     }
 
-    /// covers every display with `brk`, counting down from `remaining`. returns how long
-    /// after it returns the countdown comes into focus: zero with animations off, or when
-    /// building the screen took longer than its entrance. None when there was no display
-    /// to show it on.
+    /// covers every display with `brk`, counting down from `remaining`. None when there was
+    /// no display to show it on.
     pub fn show(
         &mut self,
         brk: &Break,
         remaining: u64,
         buttons: Buttons,
         target: &AnyObject,
-    ) -> Option<Duration> {
+    ) -> Option<Built> {
         self.teardown_now();
         let mtm = self.mtm;
         // SAFETY: immutable AppKit constants
@@ -116,13 +123,17 @@ impl BreakScreen {
         if screens.count() == 0 {
             return None;
         }
-        let image = brk.image.as_deref().and_then(|path| {
-            let image = load_image(path);
-            if image.is_none() {
-                log!("can't show {} as an image", path.display());
+        let (image, loaded) = if let Some(path) = brk.image.as_deref() {
+            match load_image(path) {
+                Some(image) => (Some(image), Some(Ok(()))),
+                None => {
+                    let why = format!("can't show {} as an image", path.display());
+                    (None, Some(Err(why)))
+                }
             }
-            image
-        });
+        } else {
+            (None, None)
+        };
 
         for i in 0..screens.count() {
             let screen = screens.objectAtIndex(i);
@@ -323,11 +334,15 @@ impl BreakScreen {
                 }
             });
         }
-        Some(if animate {
+        let settling = if animate {
             let left = now + FOREGROUND_SETTLED - CACurrentMediaTime();
             Duration::from_secs_f64(left.max(0.0))
         } else {
             Duration::ZERO
+        };
+        Some(Built {
+            settling,
+            image: loaded,
         })
     }
 

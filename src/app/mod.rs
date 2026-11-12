@@ -26,7 +26,7 @@ use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
-use crate::config::{self, Config, ConfigError, DndAction, KeySpec};
+use crate::config::{self, Config, ConfigError, DndAction, DoNotDisturb, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
@@ -51,9 +51,14 @@ const FAST_TICK_SECS: f64 = 0.2;
 const SLOW_TICK_SECS: f64 = 1.0;
 /// the config file is checked for changes at most this often
 const CONFIG_POLL: Duration = Duration::from_secs(1);
-/// the config error and do-not-disturb items are cut to this many characters. their tooltips
-/// have all of it.
+/// the config error, do-not-disturb and problem items are cut to this many characters.
+/// their tooltips show the whole text.
 const MENU_CHARS: usize = 72;
+const NEEDS_ACCESSIBILITY: &str =
+    "the fullscreen and window-title rules need Accessibility permission";
+/// System Settings, at the Accessibility list
+const ACCESSIBILITY_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 /// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
@@ -125,6 +130,25 @@ pub fn run(
     Ok(())
 }
 
+/// what went wrong outside the config file. each one shows in the menu and in `omma --status`
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Problems {
+    /// why a break's image didn't load. it stays until a break shows its image or the
+    /// config reloads
+    image: Option<String>,
+    /// the shortcuts the last warning couldn't take
+    shortcuts: Option<String>,
+    /// a window rule is on without the permission it needs
+    accessibility: Option<String>,
+}
+
+impl Problems {
+    /// in the order of their menu items
+    fn slots(&self) -> [Option<&str>; 3] {
+        [&self.image, &self.shortcuts, &self.accessibility].map(Option::as_deref)
+    }
+}
+
 /// mutated only from the main thread, via the delegate
 struct App {
     mtm: MainThreadMarker,
@@ -146,6 +170,9 @@ struct App {
     /// a heading and the error itself, which opens the config file when clicked. hidden
     /// while the config is fine
     config_error_items: Option<[Retained<NSMenuItem>; 2]>,
+    /// one per `Problems` slot, hidden while that slot is empty
+    problem_items: Option<[Retained<NSMenuItem>; 3]>,
+    problems: Problems,
     break_screen: BreakScreen,
     pre_break_dialog: PreBreakDialog,
     /// the warning's global shortcuts, held while it shows
@@ -169,6 +196,7 @@ struct Shown {
     /// the warning's global shortcuts are held
     hotkeys: bool,
     config_error: Option<(ConfigError, Fallback)>,
+    problems: Problems,
     tray_icon: TrayIconState,
     fast_ticks: bool,
 }
@@ -217,6 +245,15 @@ define_class!(
         fn open_config(&self, _sender: *mut AnyObject) {
             let path = self.with_app(|app| app.config_path.clone());
             open_config_file(&path);
+        }
+
+        #[unsafe(method(openAccessibilitySettings:))]
+        fn open_accessibility_settings(&self, _sender: *mut AnyObject) {
+            let opened = NSURL::URLWithString(&NSString::from_str(ACCESSIBILITY_SETTINGS))
+                .is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url));
+            if !opened {
+                log!("can't open System Settings");
+            }
         }
 
         #[unsafe(method(skip:))]
@@ -298,7 +335,7 @@ impl App {
 
         let config_mtime = file_mtime(&config_path);
 
-        App {
+        let mut app = App {
             mtm,
             core,
             config,
@@ -314,6 +351,8 @@ impl App {
             status_item_label: None,
             suppressed_item: None,
             config_error_items: None,
+            problem_items: None,
+            problems: Problems::default(),
             break_screen,
             pre_break_dialog,
             hotkeys: Hotkeys::new(),
@@ -321,7 +360,9 @@ impl App {
             suppressed: None,
             shown: Shown::default(),
             timer: None,
-        }
+        };
+        app.check_accessibility();
+        app
     }
 
     fn on_tick(&mut self, now: SystemTime, target: &AnyObject) {
@@ -331,6 +372,11 @@ impl App {
         }
 
         self.maybe_reload_config(now);
+        // while the permission is missing, each tick checks again, so a grant clears the item
+        // at once
+        if self.problems.accessibility.is_some() {
+            self.check_accessibility();
+        }
 
         let event = self.core.tick(now, idle_time());
         self.react(now, event, target);
@@ -389,8 +435,8 @@ impl App {
         (event, Ok(text))
     }
 
-    /// the status line, why do-not-disturb held off the last break, and the config file's
-    /// error, each on its own line when there is one
+    /// the status line, why do-not-disturb held off the last break, the config file's error
+    /// and the problems, each on its own line when there is one
     fn status_report(&self, now: SystemTime) -> String {
         let error = self
             .config_error
@@ -403,6 +449,13 @@ impl App {
         ]
         .into_iter()
         .flatten()
+        .chain(
+            self.problems
+                .slots()
+                .into_iter()
+                .flatten()
+                .map(String::from),
+        )
         .collect::<Vec<_>>()
         .join("\n")
     }
@@ -420,6 +473,7 @@ impl App {
         match event {
             Event::Warn => {
                 let dnd = &self.config.do_not_disturb;
+                set_problem(&mut self.problems.accessibility, accessibility_problem(dnd));
                 self.suppressed = activity::should_suppress(dnd).map(|reason| match dnd.action {
                     DndAction::Skip => format!("Skipped the last break: {reason}"),
                     DndAction::Postpone => format!("Postponed the break: {reason}"),
@@ -470,7 +524,11 @@ impl App {
                 .into_iter()
                 .filter_map(|(action, key, allowed)| Some((action, key.filter(|_| allowed)?)))
                 .collect();
-                self.hotkeys.hold(target, &wanted);
+                let refused = self.hotkeys.hold(target, &wanted);
+                set_problem(
+                    &mut self.problems.shortcuts,
+                    (!refused.is_empty()).then(|| refused.join("; ")),
+                );
             } else {
                 self.hotkeys.release();
             }
@@ -494,7 +552,7 @@ impl App {
             if in_break {
                 let keys = self.config.keybindings;
                 let buttons = self.buttons(keys.skip, keys.postpone);
-                let settling = self.break_screen.show(
+                let built = self.break_screen.show(
                     self.core.current(),
                     remaining.unwrap_or(0),
                     buttons,
@@ -503,9 +561,14 @@ impl App {
                 // once per break: show runs again only while no screen was built. building
                 // takes time, so the start counts from the clock after it, while `now` is
                 // still when the screen was asked for.
-                if let Some(settling) = settling {
-                    let built = SystemTime::now();
-                    self.core.start_countdown_at(now, built + settling);
+                if let Some(built) = built {
+                    let built_at = SystemTime::now();
+                    self.core.start_countdown_at(now, built_at + built.settling);
+                    match built.image {
+                        Some(Err(problem)) => set_problem(&mut self.problems.image, Some(problem)),
+                        Some(Ok(())) => self.problems.image = None,
+                        None => {}
+                    }
                 }
                 self.shown.countdown = remaining;
             } else {
@@ -582,6 +645,15 @@ impl App {
                 show_config_error(heading, detail, self.config_error.as_ref());
             }
             self.shown.config_error = self.config_error.clone();
+        }
+
+        if self.shown.problems != self.problems {
+            if let Some(items) = &self.problem_items {
+                for (item, problem) in items.iter().zip(self.problems.slots()) {
+                    show_problem(item, problem);
+                }
+            }
+            self.shown.problems = self.problems.clone();
         }
     }
 
@@ -683,6 +755,13 @@ impl App {
             activity::request_accessibility();
         }
         self.config = new;
+        self.problems.image = None;
+        self.check_accessibility();
+    }
+
+    fn check_accessibility(&mut self) {
+        let problem = accessibility_problem(&self.config.do_not_disturb);
+        set_problem(&mut self.problems.accessibility, problem);
     }
 
     fn build_status_item(&mut self, delegate: &Delegate) {
@@ -701,6 +780,15 @@ impl App {
         heading.setHidden(true);
         detail.setHidden(true);
         self.config_error_items = Some([heading, detail]);
+        let problems = [
+            self.add_item(&menu, "", sel!(openConfig:), target),
+            self.add_item(&menu, "", sel!(openConfig:), target),
+            self.add_item(&menu, "", sel!(openAccessibilitySettings:), target),
+        ];
+        for item in &problems {
+            item.setHidden(true);
+        }
+        self.problem_items = Some(problems);
         menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item(&menu, "Take a break now", sel!(takeBreak:), target);
         self.add_item(&menu, "Take a short break", sel!(takeShortBreak:), target);
@@ -793,6 +881,38 @@ fn show_config_error(
     detail.setHidden(error.is_none());
 }
 
+/// fills a problem's item, or hides it when there's no problem
+fn show_problem(item: &NSMenuItem, problem: Option<&str>) {
+    if let Some(problem) = problem {
+        let title = format!("⚠ {}", shorten(&capitalized(problem), MENU_CHARS));
+        item.setTitle(&NSString::from_str(&title));
+        item.setToolTip(Some(&NSString::from_str(problem)));
+    }
+    item.setHidden(problem.is_none());
+}
+
+/// replaces a problem and logs it when it's new
+fn set_problem(slot: &mut Option<String>, problem: Option<String>) {
+    if let Some(text) = &problem
+        && slot.as_ref() != Some(text)
+    {
+        log!("{text}");
+    }
+    *slot = problem;
+}
+
+fn accessibility_problem(dnd: &DoNotDisturb) -> Option<String> {
+    (dnd.needs_accessibility() && !activity::is_trusted()).then(|| NEEDS_ACCESSIBILITY.into())
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// `text` cut to `chars` characters, with an ellipsis when it was longer
 fn shorten(text: &str, chars: usize) -> String {
     match text.char_indices().nth(chars) {
@@ -849,6 +969,13 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capitalized_uppercases_the_first_character() {
+        assert_eq!(capitalized("can't show"), "Can't show");
+        assert_eq!(capitalized("ένα"), "Ένα");
+        assert_eq!(capitalized(""), "");
+    }
 
     #[test]
     fn shorten_cuts_whole_characters() {
