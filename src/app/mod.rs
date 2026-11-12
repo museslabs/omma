@@ -5,7 +5,6 @@ mod activity;
 mod break_screen;
 mod glass_button;
 mod hotkey;
-mod idle;
 mod panel;
 mod pre_break_dialog;
 mod sound;
@@ -21,6 +20,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
     NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
+use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
@@ -321,8 +321,7 @@ impl App {
 
         self.maybe_reload_config(now);
 
-        let idle = Duration::try_from_secs_f64(idle::idle_seconds()).unwrap_or_default();
-        let event = self.core.tick(now, idle);
+        let event = self.core.tick(now, idle_time());
         self.react(now, event, target);
     }
 
@@ -766,6 +765,15 @@ fn tray_icon_blink_on(now: SystemTime) -> bool {
     now.duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
         .unwrap_or(false)
+}
+
+/// time since the last keyboard, mouse or trackpad input to any app. needs no permission.
+fn idle_time() -> Duration {
+    let secs = CGEventSource::seconds_since_last_event_type(
+        CGEventSourceStateID::CombinedSessionState,
+        CGEventType(!0), // kCGAnyInputEventType
+    );
+    Duration::try_from_secs_f64(secs).unwrap_or_default()
 }
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {

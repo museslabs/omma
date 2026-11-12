@@ -84,6 +84,11 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "CAMediaTimingFunction",
 ] }
 objc2-core-image = { version = "0.3", default-features = false, features = ["std", "CIFilter"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEventSource",
+    "CGEventTypes",
+] }
 
 [profile.release]
 lto = true
