@@ -15,7 +15,8 @@ use objc2_app_kit::{
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, NSRunLoop,
+    NSRunLoopCommonModes, NSString, NSTimer,
 };
 use objc2_quartz_core::{
     CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
@@ -116,7 +117,8 @@ pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
-/// runs `f` once, `delay` seconds from now, on the main run loop
+/// runs `f` once, `delay` seconds from now, on the main run loop. like the app's tick, it
+/// runs in the common modes, so an open status menu doesn't hold it up.
 pub fn after(_mtm: MainThreadMarker, delay: f64, f: impl FnOnce() + 'static) {
     let f = Cell::new(Some(f));
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
@@ -124,9 +126,13 @@ pub fn after(_mtm: MainThreadMarker, delay: f64, f: impl FnOnce() + 'static) {
             f();
         }
     });
-    // SAFETY: the marker proves this is the main thread, so the timer goes on the main run
-    // loop and fires there, the only thread the block's captures may be used on
-    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block) };
+    // SAFETY: the marker proves this is the main thread, and the timer goes on the main run
+    // loop and fires there, the only thread the block's captures may be used on. the mode
+    // is an immutable Foundation constant.
+    unsafe {
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(delay, false, &block);
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
 }
 
 /// what an animation leaves behind
