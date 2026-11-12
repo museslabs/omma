@@ -12,8 +12,8 @@ use super::glass_button::{
     Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
-    make_panel, slide_y,
+    Fill, LabelStyle, Panel, after, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
+    make_label, make_panel, slide_y,
 };
 
 const PANEL_W: f64 = 340.0;
@@ -214,22 +214,14 @@ impl PreBreakDialog {
         }
         if let Some(layer) = glass.layer() {
             let now = CACurrentMediaTime();
-            attach_blur(&layer, 0.0);
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
-            layer.addAnimation_forKey(
-                &blur_radius(0.0, 22.0, now, HIDE_DURATION, Fill::Exit),
-                None,
-            );
+            blur_out(&layer, 22.0, now, HIDE_DURATION);
             layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, Fill::Exit), None);
         }
         if let Some(layer) = body.layer() {
             let now = CACurrentMediaTime();
-            attach_blur(&layer, 0.0);
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
-            layer.addAnimation_forKey(
-                &blur_radius(0.0, 18.0, now, HIDE_DURATION, Fill::Exit),
-                None,
-            );
+            blur_out(&layer, 18.0, now, HIDE_DURATION);
         }
 
         after(self.mtm, HIDE_DURATION + 0.03, move || {

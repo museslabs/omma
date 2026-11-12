@@ -18,8 +18,8 @@ use super::glass_button::{
     Buttons, GlassButton, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
-    make_panel, scale, spring_y,
+    Fill, LabelStyle, Panel, after, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
+    make_label, make_panel, scale, spring_y,
 };
 use crate::queue::Break;
 
@@ -313,12 +313,8 @@ impl BreakScreen {
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
             }
             if let Some(layer) = overlay.foreground.layer() {
-                attach_unclipped_blur(&layer, 0.0);
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
-                layer.addAnimation_forKey(
-                    &blur_radius(0.0, BLUR_RADIUS, now, EXIT_DURATION, Fill::Exit),
-                    None,
-                );
+                blur_out(&layer, BLUR_RADIUS, now, EXIT_DURATION);
             }
         }
 

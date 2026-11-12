@@ -227,8 +227,12 @@ pub fn spring_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
     anim
 }
 
-/// gives the layer a gaussian blur named "blur" whose radius `blur_radius` animates. `resting` is
-/// the radius while no animation runs: 0.0 for a passing blur, more to keep the layer soft.
+/// the key of the animation `blur_out` adds
+const BLUR_OUT: &str = "blur-out";
+
+/// gives the layer a gaussian blur named "blur" whose radius `blur_radius` animates.
+/// `resting` is the radius while no animation runs: 0.0 for a passing blur, more to keep
+/// the layer soft.
 pub fn attach_blur(layer: &CALayer, resting: f64) {
     // SAFETY: CIGaussianBlur takes an NSNumber for inputRadius, and a layer's filters are
     // CIFilters
@@ -247,11 +251,26 @@ pub fn attach_blur(layer: &CALayer, resting: f64) {
     }
 }
 
-/// drops a passing blur once its animation is over, so the layer renders without the filter
+/// blurs a leaving layer from sharp to `radius`, and holds the blur until the layer goes away
+pub fn blur_out(layer: &CALayer, radius: f64, begin: f64, duration: f64) {
+    attach_blur(layer, 0.0);
+    layer.addAnimation_forKey(
+        &blur_radius(0.0, radius, begin, duration, Fill::Exit),
+        Some(&NSString::from_str(BLUR_OUT)),
+    );
+}
+
+/// drops a passing blur once its animation is over, so the layer renders without the
+/// filter. a layer that has started to leave in the meantime keeps its blur.
 pub fn detach_blur_after(mtm: MainThreadMarker, layer: Retained<CALayer>, delay: f64) {
     after(mtm, delay, move || {
-        // SAFETY: None clears the filters
-        unsafe { layer.setFilters(None) };
+        let leaving = layer
+            .animationKeys()
+            .is_some_and(|keys| keys.containsObject(&NSString::from_str(BLUR_OUT)));
+        if !leaving {
+            // SAFETY: None clears the filters
+            unsafe { layer.setFilters(None) };
+        }
     });
 }
 
