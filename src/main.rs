@@ -27,7 +27,12 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cfg = config::Config::load();
+    let config_path = config::config_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "can't locate the config file: set HOME or XDG_CONFIG_HOME to an absolute path"
+        )
+    })?;
+    let cfg = config::Config::load(&config_path);
     let server = match ipc::bind() {
         Ok(s) => s,
         Err(ipc::BindError::AlreadyRunning) => {
@@ -37,5 +42,5 @@ fn main() -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("could not start omma: {e}"),
     };
 
-    app::run(cfg, server)
+    app::run(cfg, config_path, server)
 }

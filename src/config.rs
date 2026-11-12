@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -288,9 +289,8 @@ impl Config {
     }
 
     /// write a default file if none exists
-    pub fn load() -> Config {
-        let path = config_path();
-        match std::fs::read_to_string(&path) {
+    pub fn load(path: &Path) -> Config {
+        match std::fs::read_to_string(path) {
             Ok(data) => match toml::from_str::<Config>(&data) {
                 Ok(cfg) => match cfg.validate() {
                     Ok(()) => cfg,
@@ -308,7 +308,7 @@ impl Config {
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let cfg = Config::default();
-                if let Err(e) = write_default(&path, &cfg) {
+                if let Err(e) = write_default(path, &cfg) {
                     eprintln!(
                         "omma: could not write default config to {}: {e}",
                         path.display()
@@ -353,7 +353,7 @@ fn secs(value: i64) -> Duration {
     Duration::from_secs(value.try_into().unwrap_or(0))
 }
 
-fn write_default(path: &PathBuf, cfg: &Config) -> std::io::Result<()> {
+fn write_default(path: &Path, cfg: &Config) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -361,16 +361,19 @@ fn write_default(path: &PathBuf, cfg: &Config) -> std::io::Result<()> {
     std::fs::write(path, data)
 }
 
-pub fn config_path() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
+/// `$XDG_CONFIG_HOME/omma/config.toml`, else `~/.config/omma/config.toml`. None when neither
+/// is an absolute path.
+pub fn config_path() -> Option<PathBuf> {
+    config_path_from(std::env::var_os("XDG_CONFIG_HOME"), std::env::home_dir())
+}
+
+/// the XDG base directory spec says to ignore an empty or relative `XDG_CONFIG_HOME`
+fn config_path_from(xdg_config_home: Option<OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let base = xdg_config_home
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".config"))
-                .unwrap_or_else(|_| PathBuf::from(".config"))
-        })
-        .join("omma")
-        .join("config.toml")
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.filter(|h| h.is_absolute()).map(|h| h.join(".config")))?;
+    Some(base.join("omma").join("config.toml"))
 }
 
 #[cfg(test)]
@@ -430,5 +433,25 @@ mod tests {
 
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("short_breaks[0].name must not be empty"));
+    }
+
+    #[test]
+    fn config_path_prefers_an_absolute_xdg_config_home() {
+        let path = |xdg: Option<&str>, home: Option<&str>| {
+            config_path_from(xdg.map(OsString::from), home.map(PathBuf::from))
+        };
+        let file = |dir: &str| Some(Path::new(dir).join("omma/config.toml"));
+
+        assert_eq!(path(Some("/xdg"), Some("/home/u")), file("/xdg"));
+        assert_eq!(path(None, Some("/home/u")), file("/home/u/.config"));
+        assert_eq!(path(Some(""), Some("/home/u")), file("/home/u/.config"));
+        assert_eq!(
+            path(Some("rel/dir"), Some("/home/u")),
+            file("/home/u/.config")
+        );
+        assert_eq!(path(Some("/xdg"), None), file("/xdg"));
+        assert_eq!(path(None, None), None);
+        assert_eq!(path(Some(""), Some("")), None);
+        assert_eq!(path(Some("rel"), Some("home/u")), None);
     }
 }

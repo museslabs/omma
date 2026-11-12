@@ -23,7 +23,7 @@ use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::ipc::{self, Command, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
@@ -68,7 +68,7 @@ enum TrayIconState {
     Incoming,
 }
 
-pub fn run(config: Config, ipc: Server) -> anyhow::Result<()> {
+pub fn run(config: Config, config_path: PathBuf, ipc: Server) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("omma must run on the main thread"))?;
 
@@ -76,7 +76,7 @@ pub fn run(config: Config, ipc: Server) -> anyhow::Result<()> {
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let now = SystemTime::now();
-    let app = App::new(mtm, config, ipc, now)?;
+    let app = App::new(mtm, config, config_path, ipc, now)?;
     let delegate = Delegate::new(mtm, app);
     let target: &AnyObject = &delegate;
     delegate.with_app(|app| {
@@ -215,6 +215,7 @@ impl App {
     fn new(
         mtm: MainThreadMarker,
         config: Config,
+        config_path: PathBuf,
         ipc: Server,
         now: SystemTime,
     ) -> anyhow::Result<App> {
@@ -226,7 +227,6 @@ impl App {
 
         let core = Core::new(config.settings()?, now);
 
-        let config_path = config::config_path();
         let config_mtime = file_mtime(&config_path);
 
         Ok(App {
