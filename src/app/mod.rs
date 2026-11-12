@@ -26,7 +26,7 @@ use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
-use crate::config::{self, Config, ConfigError, KeySpec};
+use crate::config::{self, Config, ConfigError, DndAction, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
@@ -51,8 +51,9 @@ const FAST_TICK_SECS: f64 = 0.2;
 const SLOW_TICK_SECS: f64 = 1.0;
 /// the config file is checked for changes at most this often
 const CONFIG_POLL: Duration = Duration::from_secs(1);
-/// a config error's menu item is cut to this many characters; its tooltip has all of it
-const MENU_ERROR_CHARS: usize = 72;
+/// the config error and do-not-disturb items are cut to this many characters. their tooltips
+/// have all of it.
+const MENU_CHARS: usize = 72;
 
 /// None if the bytes fail to decode, caller falls back to a text glyph
 fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
@@ -140,6 +141,8 @@ struct App {
     tray_icon_incoming: Option<Retained<NSImage>>,
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
+    /// why do-not-disturb held off the last break. hidden while there's no reason
+    suppressed_item: Option<Retained<NSMenuItem>>,
     /// a heading and the error itself, which opens the config file when clicked. hidden
     /// while the config is fine
     config_error_items: Option<[Retained<NSMenuItem>; 2]>,
@@ -149,6 +152,8 @@ struct App {
     hotkeys: Hotkeys,
     /// the user closed the warning without skipping or postponing; cleared when it ends
     warning_dismissed: bool,
+    /// why do-not-disturb held off the last break, while omma waits for the next one
+    suppressed: Option<String>,
     shown: Shown,
     /// set up by the first `sync`
     timer: Option<Retained<NSTimer>>,
@@ -159,6 +164,7 @@ struct App {
 struct Shown {
     countdown: Option<u64>,
     status: String,
+    suppressed: Option<String>,
     enabled: Option<bool>,
     /// the warning's global shortcuts are held
     hotkeys: bool,
@@ -306,11 +312,13 @@ impl App {
             tray_icon_incoming,
             enable_item: None,
             status_item_label: None,
+            suppressed_item: None,
             config_error_items: None,
             break_screen,
             pre_break_dialog,
             hotkeys: Hotkeys::new(),
             warning_dismissed: false,
+            suppressed: None,
             shown: Shown::default(),
             timer: None,
         }
@@ -381,15 +389,22 @@ impl App {
         (event, Ok(text))
     }
 
-    /// the status line, then the config file's error if it has one
+    /// the status line, why do-not-disturb held off the last break, and the config file's
+    /// error, each on its own line when there is one
     fn status_report(&self, now: SystemTime) -> String {
-        let status = self.core.status_text(now);
-        match &self.config_error {
-            Some((e, fallback)) => {
-                format!("{status}\n{}", self.describe_config_error(e, *fallback))
-            }
-            None => status,
-        }
+        let error = self
+            .config_error
+            .as_ref()
+            .map(|(e, fallback)| self.describe_config_error(e, *fallback));
+        [
+            Some(self.core.status_text(now)),
+            self.suppressed.clone(),
+            error,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// runs the event's side effects, then brings the widgets in line with the core
@@ -404,8 +419,14 @@ impl App {
         let alert = &self.config.audible_alert;
         match event {
             Event::Warn => {
-                if activity::should_suppress(&self.config.do_not_disturb) {
-                    self.core.suppress(now, self.config.do_not_disturb.action);
+                let dnd = &self.config.do_not_disturb;
+                self.suppressed = activity::should_suppress(dnd).map(|reason| match dnd.action {
+                    DndAction::Skip => format!("Skipped the last break: {reason}"),
+                    DndAction::Postpone => format!("Postponed the break: {reason}"),
+                });
+                if let Some(text) = &self.suppressed {
+                    eprintln!("omma: do-not-disturb: {text}");
+                    self.core.suppress(now, dnd.action);
                 } else if alert.enabled && alert.pre_break {
                     sound::play(&alert.pre_break_sound);
                 }
@@ -428,6 +449,9 @@ impl App {
         let in_break = matches!(phase, Phase::Break { .. });
         if !warning {
             self.warning_dismissed = false;
+        }
+        if !matches!(phase, Phase::Waiting { .. }) {
+            self.suppressed = None;
         }
 
         let show_warning = warning && self.config.notification.enabled && !self.warning_dismissed;
@@ -528,6 +552,17 @@ impl App {
                 item.setTitle(&NSString::from_str(&status));
             }
             self.shown.status = status;
+        }
+
+        if self.shown.suppressed != self.suppressed {
+            if let Some(item) = &self.suppressed_item {
+                if let Some(text) = &self.suppressed {
+                    item.setTitle(&NSString::from_str(&shorten(text, MENU_CHARS)));
+                    item.setToolTip(Some(&NSString::from_str(text)));
+                }
+                item.setHidden(self.suppressed.is_none());
+            }
+            self.shown.suppressed = self.suppressed.clone();
         }
 
         let enabled = self.core.is_enabled();
@@ -658,6 +693,9 @@ impl App {
         let target: &AnyObject = delegate;
 
         self.status_item_label = Some(self.add_disabled_item(&menu, "Starting…"));
+        let suppressed = self.add_disabled_item(&menu, "");
+        suppressed.setHidden(true);
+        self.suppressed_item = Some(suppressed);
         let heading = self.add_disabled_item(&menu, "");
         let detail = self.add_item(&menu, "", sel!(openConfig:), target);
         heading.setHidden(true);
@@ -746,17 +784,21 @@ fn show_config_error(
 ) {
     if let Some((error, fallback)) = error {
         let full = error.to_string();
-        let short = match full.char_indices().nth(MENU_ERROR_CHARS) {
-            Some((cut, _)) => format!("{}…", &full[..cut]),
-            None => full.clone(),
-        };
         let title = format!("⚠ Config error: {}", fallback.describe());
         heading.setTitle(&NSString::from_str(&title));
-        detail.setTitle(&NSString::from_str(&short));
+        detail.setTitle(&NSString::from_str(&shorten(&full, MENU_CHARS)));
         detail.setToolTip(Some(&NSString::from_str(&full)));
     }
     heading.setHidden(error.is_none());
     detail.setHidden(error.is_none());
+}
+
+/// `text` cut to `chars` characters, with an ellipsis when it was longer
+fn shorten(text: &str, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.into(),
+    }
 }
 
 fn tray_icon_blink_on(now: SystemTime) -> bool {
@@ -802,4 +844,17 @@ fn open_config_file(path: &Path) {
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shorten_cuts_whole_characters() {
+        assert_eq!(shorten("Next break", 10), "Next break");
+        assert_eq!(shorten("Next break", 4), "Next…");
+        assert_eq!(shorten("“Πλάνο” is on screen", 7), "“Πλάνο”…");
+        assert_eq!(shorten("", 0), "");
+    }
 }

@@ -2,8 +2,10 @@
 //! need no permission. the fullscreen and window-title rules read other apps' windows through
 //! the Accessibility API, which the user grants.
 
+use std::fmt;
 use std::ptr::{self, NonNull};
 
+use objc2::rc::Retained;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 use objc2_application_services::{
     AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement,
@@ -19,11 +21,33 @@ use crate::config::{AppName, DoNotDisturb, TitlePattern};
 /// omma's main thread for the system's default, about 6 s.
 const AX_TIMEOUT_SECS: f32 = 0.25;
 
-/// whether a rule holds now. permission for the window rules is checked each time, so a
-/// grant while omma runs counts at once.
-pub fn should_suppress(dnd: &DoNotDisturb) -> bool {
+/// a do-not-disturb rule that held, with the app's name or the window's title
+pub enum Reason {
+    Running(String),
+    Frontmost(String),
+    Fullscreen(String),
+    Window(String),
+}
+
+impl fmt::Display for Reason {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Reason::Running(app) => write!(f, "{app} is running"),
+            Reason::Frontmost(app) => write!(f, "{app} is in front"),
+            Reason::Fullscreen(app) => write!(f, "{app} is fullscreen"),
+            // a line break in a title would split a menu item
+            Reason::Window(title) => {
+                write!(f, "“{}” is on screen", title.replace(char::is_control, " "))
+            }
+        }
+    }
+}
+
+/// the first rule that holds now. permission for the window rules is checked each time, so
+/// a grant while omma runs counts at once.
+pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
     if !dnd.enabled {
-        return false;
+        return None;
     }
     let workspace = NSWorkspace::sharedWorkspace();
 
@@ -31,25 +55,28 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> bool {
         && let Some(front) = workspace.frontmostApplication()
         && running_app_matches(&front, &dnd.skip_when_app_active)
     {
-        return true;
+        return Some(Reason::Frontmost(app_name(&front)));
     }
     if !dnd.skip_when_app_running.is_empty()
-        && workspace
+        && let Some(app) = workspace
             .runningApplications()
             .iter()
-            .any(|app| running_app_matches(&app, &dnd.skip_when_app_running))
+            .find(|app| running_app_matches(app, &dnd.skip_when_app_running))
     {
-        return true;
+        return Some(Reason::Running(app_name(&app)));
     }
 
     // SAFETY: no arguments
     if !dnd.needs_accessibility() || !unsafe { AXIsProcessTrusted() } {
-        return false;
+        return None;
     }
     limit_ax_wait();
-    (dnd.skip_when_fullscreen && frontmost_is_fullscreen(&workspace))
-        || (!dnd.window_title_matches.is_empty()
-            && any_window_title_matches(&workspace, &dnd.window_title_matches))
+    if dnd.skip_when_fullscreen
+        && let Some(front) = fullscreen_app(&workspace)
+    {
+        return Some(Reason::Fullscreen(app_name(&front)));
+    }
+    matching_title(&workspace, &dnd.window_title_matches).map(Reason::Window)
 }
 
 /// asks for Accessibility permission unless omma has it. the system's prompt doesn't block.
@@ -75,6 +102,12 @@ fn app_matches(rules: &[AppName], name: &str, bundle_id: &str) -> bool {
         .iter()
         .map(AppName::as_str)
         .any(|rule| name.contains(rule) || bundle_id.contains(rule))
+}
+
+fn app_name(app: &NSRunningApplication) -> String {
+    app.localizedName()
+        .or_else(|| app.bundleIdentifier())
+        .map_or_else(|| "an app".into(), |name| name.to_string())
 }
 
 fn running_app_matches(app: &NSRunningApplication, rules: &[AppName]) -> bool {
@@ -127,17 +160,21 @@ fn attribute_as<T: ConcreteType>(
     attribute(element, name)?.downcast().ok()
 }
 
-fn frontmost_is_fullscreen(workspace: &NSWorkspace) -> bool {
-    workspace.frontmostApplication().is_some_and(|front| {
-        attribute_as::<AXUIElement>(&ax_app(&front), "AXFocusedWindow")
-            .and_then(|window| attribute_as::<CFBoolean>(&window, "AXFullScreen"))
-            .is_some_and(|fullscreen| fullscreen.as_bool())
-    })
+/// the frontmost app, when its focused window is fullscreen
+fn fullscreen_app(workspace: &NSWorkspace) -> Option<Retained<NSRunningApplication>> {
+    let front = workspace.frontmostApplication()?;
+    attribute_as::<AXUIElement>(&ax_app(&front), "AXFocusedWindow")
+        .and_then(|window| attribute_as::<CFBoolean>(&window, "AXFullScreen"))
+        .is_some_and(|fullscreen| fullscreen.as_bool())
+        .then_some(front)
 }
 
-/// whether a pattern matches the title of a window on screen: one that isn't minimized, of
+/// the first title a pattern matches, of a window on screen: one that isn't minimized, of
 /// an app that isn't hidden
-fn any_window_title_matches(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> bool {
+fn matching_title(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> Option<String> {
+    if patterns.is_empty() {
+        return None;
+    }
     workspace
         .runningApplications()
         .iter()
@@ -146,13 +183,12 @@ fn any_window_title_matches(workspace: &NSWorkspace, patterns: &[TitlePattern]) 
             app.activationPolicy() == NSApplicationActivationPolicy::Regular && !app.isHidden()
         })
         .flat_map(|app| windows(&app))
-        .any(|window| {
-            attribute_as::<CFString>(&window, "AXTitle").is_some_and(|title| {
-                let title = title.to_string();
-                patterns.iter().any(|p| p.is_match(&title))
-            })
-            // asked only of a matching window, which keeps the calls few
-            && !attribute_as::<CFBoolean>(&window, "AXMinimized").is_some_and(|m| m.as_bool())
+        .find_map(|window| {
+            let title = attribute_as::<CFString>(&window, "AXTitle")?.to_string();
+            let minimized =
+                || attribute_as::<CFBoolean>(&window, "AXMinimized").is_some_and(|m| m.as_bool());
+            // minimized is asked only of a matching window, which keeps the calls few
+            (patterns.iter().any(|p| p.is_match(&title)) && !minimized()).then_some(title)
         })
 }
 
@@ -190,6 +226,26 @@ mod tests {
         assert!(!app_matches(&zoom, "", ""));
         assert!(app_matches(&rules(&["keynote", "zoom"]), "Zoom", ""));
         assert!(!app_matches(&[], "Zoom", "us.zoom.xos"));
+    }
+
+    #[test]
+    fn a_reason_names_the_app_or_the_window() {
+        assert_eq!(
+            Reason::Running("Zoom".into()).to_string(),
+            "Zoom is running"
+        );
+        assert_eq!(
+            Reason::Frontmost("Zoom".into()).to_string(),
+            "Zoom is in front"
+        );
+        assert_eq!(
+            Reason::Fullscreen("Keynote".into()).to_string(),
+            "Keynote is fullscreen"
+        );
+        assert_eq!(
+            Reason::Window("Zoom\nMeeting".into()).to_string(),
+            "“Zoom Meeting” is on screen"
+        );
     }
 
     #[test]
