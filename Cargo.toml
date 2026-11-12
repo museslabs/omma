@@ -28,6 +28,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSArray",
     "NSAttributedString",
     "NSData",
+    "NSEnumerator",
     "NSGeometry",
     "NSKeyValueCoding",
     "NSObjCRuntime",
@@ -84,6 +85,20 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "CAMediaTimingFunction",
 ] }
 objc2-core-image = { version = "0.3", default-features = false, features = ["std", "CIFilter"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-application-services = { version = "0.3", default-features = false, features = [
+    "std",
+    "libc",
+    "AXError",
+    "AXUIElement",
+    "HIServices",
+] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGEventSource",
