@@ -1,10 +1,16 @@
+//! one running instance per user. it holds a lock file, and clients reach it through a
+//! socket in the same directory.
+
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,56 +62,58 @@ impl FromStr for Command {
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnknownCommand;
 
-#[derive(Debug)]
-pub enum BindError {
-    AlreadyRunning,
-    Io(std::io::Error),
+/// `~/Library/Application Support/omma`, where the running instance keeps its lock file and
+/// socket. None when the home directory isn't an absolute path.
+pub fn runtime_dir() -> Option<PathBuf> {
+    std::env::home_dir()
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join("Library/Application Support/omma"))
 }
 
-impl std::fmt::Display for BindError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BindError::AlreadyRunning => write!(f, "omma is already running"),
-            BindError::Io(e) => write!(f, "{e}"),
-        }
-    }
-}
-impl std::error::Error for BindError {}
-
-pub fn socket_path() -> PathBuf {
-    std::env::temp_dir().join("omma.sock")
-}
+const LOCK_FILE: &str = "omma.lock";
+const SOCKET: &str = "omma.sock";
 
 pub struct Server {
     rx: Receiver<Command>,
     status: Arc<Mutex<String>>,
+    /// locked for as long as the process lives. the kernel releases it however the
+    /// process ends, so a crash leaves nothing to clean up.
+    _lock: File,
 }
 
-pub fn bind() -> Result<Server, BindError> {
-    let path = socket_path();
-
-    // a live app owns the socket if connect succeeds
-    if path.exists() {
-        match UnixStream::connect(&path) {
-            Ok(_) => return Err(BindError::AlreadyRunning),
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+/// takes the instance lock in `dir`, creating `dir` if needed, and listens on the socket
+/// there. None when another instance holds the lock.
+pub fn bind(dir: &Path) -> io::Result<Option<Server>> {
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join(LOCK_FILE))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Error(e)) => return Err(e),
     }
 
-    let listener = UnixListener::bind(&path).map_err(BindError::Io)?;
+    // with the lock held, a socket left here is stale. bind reports anything else in the way.
+    let path = dir.join(SOCKET);
+    let _ = fs::remove_file(&path);
+    let listener = UnixListener::bind(&path)?;
 
     let (tx, rx) = mpsc::channel();
     let status = Arc::new(Mutex::new(String::from("starting")));
     let status_for_thread = Arc::clone(&status);
 
-    std::thread::Builder::new()
+    thread::Builder::new()
         .name("omma-ipc".into())
-        .spawn(move || accept_loop(listener, tx, status_for_thread))
-        .map_err(BindError::Io)?;
+        .spawn(move || accept_loop(listener, tx, status_for_thread))?;
 
-    Ok(Server { rx, status })
+    Ok(Some(Server {
+        rx,
+        status,
+        _lock: lock,
+    }))
 }
 
 impl Server {
@@ -117,12 +125,6 @@ impl Server {
         if let Ok(mut g) = self.status.lock() {
             *g = s;
         }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(socket_path());
     }
 }
 
@@ -156,12 +158,12 @@ fn accept_loop(listener: UnixListener, tx: Sender<Command>, status: Arc<Mutex<St
 }
 
 /// returns Ok(false) if no app is running
-pub fn send(cmd: Command) -> std::io::Result<bool> {
-    let path = socket_path();
-    let mut stream = match UnixStream::connect(&path) {
+pub fn send(dir: &Path, cmd: Command) -> io::Result<bool> {
+    let mut stream = match UnixStream::connect(dir.join(SOCKET)) {
         Ok(s) => s,
-        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(false),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return Ok(false);
+        }
         Err(e) => return Err(e),
     };
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -179,7 +181,68 @@ pub fn send(cmd: Command) -> std::io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    /// a fresh path under /tmp, removed on drop. a socket path must fit in 104 bytes,
+    /// which a long $TMPDIR can exceed.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Scratch {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let dir = PathBuf::from(format!("/tmp/omma-test-{}-{n}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn bind_creates_a_private_directory() {
+        let scratch = Scratch::new();
+        let _server = bind(&scratch.0).unwrap().unwrap();
+        let mode = fs::metadata(&scratch.0).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn only_one_instance_holds_the_lock() {
+        let scratch = Scratch::new();
+        let first = bind(&scratch.0).unwrap().unwrap();
+        assert!(bind(&scratch.0).unwrap().is_none());
+        drop(first);
+        assert!(bind(&scratch.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_stale_socket_does_not_block_startup() {
+        let scratch = Scratch::new();
+        fs::create_dir(&scratch.0).unwrap();
+        drop(UnixListener::bind(scratch.0.join(SOCKET)).unwrap());
+        assert!(scratch.0.join(SOCKET).exists());
+        assert!(bind(&scratch.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn send_finds_nothing_running() {
+        let scratch = Scratch::new();
+        assert!(!send(&scratch.0, Command::Status).unwrap(), "no directory");
+        fs::create_dir(&scratch.0).unwrap();
+        drop(UnixListener::bind(scratch.0.join(SOCKET)).unwrap());
+        assert!(
+            !send(&scratch.0, Command::Status).unwrap(),
+            "a stale socket"
+        );
+    }
 
     #[test]
     fn wire_names_round_trip() {

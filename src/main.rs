@@ -8,6 +8,9 @@ mod ipc;
 mod queue;
 mod scheduler;
 
+use std::path::PathBuf;
+
+use anyhow::Context;
 use clap::Parser;
 use cli::Mode;
 
@@ -19,7 +22,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Mode::Send(cmd) => {
-            let running = ipc::send(cmd)?;
+            let running = ipc::send(&runtime_dir()?, cmd)?;
             if !running {
                 eprintln!("omma is not running.");
                 std::process::exit(1);
@@ -27,6 +30,14 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     }
+
+    let dir = runtime_dir()?;
+    let Some(server) =
+        ipc::bind(&dir).with_context(|| format!("could not start omma in {}", dir.display()))?
+    else {
+        eprintln!("omma is already running.");
+        std::process::exit(1);
+    };
 
     let config_path = config::config_path().ok_or_else(|| {
         anyhow::anyhow!(
@@ -37,14 +48,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(e) = &config_error {
         eprintln!("omma: {}: {e}; using the defaults", config_path.display());
     }
-    let server = match ipc::bind() {
-        Ok(s) => s,
-        Err(ipc::BindError::AlreadyRunning) => {
-            eprintln!("omma is already running.");
-            std::process::exit(1);
-        }
-        Err(e) => anyhow::bail!("could not start omma: {e}"),
-    };
 
     app::run(cfg, config_path, config_error, server)
+}
+
+fn runtime_dir() -> anyhow::Result<PathBuf> {
+    ipc::runtime_dir().context("can't locate the home directory: set HOME to an absolute path")
 }

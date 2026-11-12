@@ -25,7 +25,7 @@ use objc2_foundation::{
 };
 
 use crate::config::{Config, ConfigError};
-use crate::ipc::{self, Command, Server};
+use crate::ipc::{Command, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
 use activity::DndChecker;
@@ -533,10 +533,7 @@ impl App {
             .status();
     }
 
-    /// removes the socket itself: `terminate:` with no app delegate ends in `exit()`, which
-    /// runs no destructors or pending timers
     fn quit(&self) {
-        let _ = std::fs::remove_file(ipc::socket_path());
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
 
