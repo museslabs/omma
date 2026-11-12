@@ -42,42 +42,13 @@ pub struct GlassButtonStyle {
     pub hint_font_size: f64,
 }
 
-impl GlassButtonStyle {
-    pub fn fixed(width: f64, height: f64, title_font_size: f64, hint_font_size: f64) -> Self {
-        GlassButtonStyle {
-            height,
-            width: GlassButtonWidth::Fixed(width),
-            title_font_size,
-            hint_font_size,
-        }
-    }
-
-    pub fn fit(
-        height: f64,
-        min_width: f64,
-        horizontal_padding: f64,
-        title_font_size: f64,
-        hint_font_size: f64,
-    ) -> Self {
-        GlassButtonStyle {
-            height,
-            width: GlassButtonWidth::Fit {
-                min_width,
-                horizontal_padding,
-            },
-            title_font_size,
-            hint_font_size,
-        }
-    }
-}
-
 pub fn make_glass_button(
     mtm: MainThreadMarker,
     title: &str,
     shortcut: Option<Shortcut>,
     target: &AnyObject,
     action: Sel,
-    style: GlassButtonStyle,
+    style: &GlassButtonStyle,
 ) -> Retained<NSGlassEffectView> {
     let keybind = shortcut.map(|shortcut| key_equivalent(shortcut.spec()));
     let title_ns = NSString::from_str(title);

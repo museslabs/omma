@@ -6,6 +6,7 @@ mod break_screen;
 mod glass_button;
 mod hotkey;
 mod idle;
+mod panel;
 mod pre_break_dialog;
 mod sound;
 

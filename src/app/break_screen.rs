@@ -1,37 +1,27 @@
 //! one fullscreen overlay per display in liquid glass style. buttons are
 //! NSGlassEffectView capsules wrapping a borderless NSButton.
 
-use core::ptr::NonNull;
 use std::path::Path;
 
-use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont,
-    NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView, NSImage, NSPanel, NSScreen,
-    NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSApplicationActivationPolicy, NSBox, NSBoxType, NSColor, NSFont,
+    NSFontWeightHeavy, NSFontWeightRegular, NSGlassEffectView, NSImage, NSScreen, NSTextAlignment,
+    NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_core_image::CIFilter;
-use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize,
-    NSString, NSTimer,
-};
-use objc2_quartz_core::{
-    CABasicAnimation, CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CASpringAnimation, kCAFillModeBackwards, kCAFillModeBoth, kCAGravityResizeAspectFill,
-    kCAMediaTimingFunctionEaseInEaseOut,
-};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
-use super::glass_button::{GlassButtonStyle, Shortcut, make_glass_button};
+use super::glass_button::{GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button};
+use super::panel::{
+    Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
+    make_panel, scale, spring_y,
+};
 use crate::config::KeySpec;
 
-/// above normal windows and fullscreen apps
-const SCREEN_SAVER_LEVEL: isize = 1000;
 /// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
 const SCRIM_ALPHA: f64 = 0.25;
 const BUTTON_HEIGHT: f64 = 46.0;
@@ -44,24 +34,19 @@ const IMAGE_BLUR_RADIUS_START: f64 = 60.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
 const EXIT_DURATION: f64 = 0.32;
-
-define_class!(
-    #[unsafe(super(NSPanel))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "OmmaBreakWindow"]
-    struct BreakWindow;
-
-    impl BreakWindow {
-        #[unsafe(method(canBecomeKeyWindow))]
-        fn can_become_key_window(&self) -> bool {
-            true
-        }
-    }
-);
+const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
+    height: BUTTON_HEIGHT,
+    width: GlassButtonWidth::Fit {
+        min_width: 120.0,
+        horizontal_padding: 48.0,
+    },
+    title_font_size: 16.0,
+    hint_font_size: 13.0,
+};
 
 pub struct BreakScreen {
     mtm: MainThreadMarker,
-    windows: Vec<Retained<BreakWindow>>,
+    windows: Vec<Retained<Panel>>,
     countdown_labels: Vec<Retained<NSTextField>>,
     /// kept so the exit transition can blur and fade out the message/countdown/buttons
     foregrounds: Vec<Retained<NSView>>,
@@ -121,7 +106,8 @@ impl BreakScreen {
             let cx = w / 2.0;
             let cy = h / 2.0;
 
-            let window = make_window(mtm, frame);
+            // keys reach a key window only in the active app: `show` activates omma
+            let window = make_panel(mtm, frame, NSWindowStyleMask::Borderless, true);
             let Some(content) = window.contentView() else {
                 continue;
             };
@@ -167,13 +153,16 @@ impl BreakScreen {
             let name_label = make_label(
                 mtm,
                 name,
-                &title_font,
-                &msg_color,
                 NSRect::new(
                     NSPoint::new(cx - msg_w / 2.0, cy + 44.0),
                     NSSize::new(msg_w, 80.0),
                 ),
-                2,
+                &LabelStyle {
+                    font: &title_font,
+                    color: &msg_color,
+                    alignment: NSTextAlignment::Center,
+                    max_lines: 2,
+                },
             );
             foreground.addSubview(&name_label);
 
@@ -181,13 +170,16 @@ impl BreakScreen {
             let count_label = make_label(
                 mtm,
                 &remaining.to_string(),
-                &count_font,
-                &NSColor::whiteColor(),
                 NSRect::new(
                     NSPoint::new(cx - 250.0, cy - 90.0),
                     NSSize::new(500.0, 130.0),
                 ),
-                1,
+                &LabelStyle {
+                    font: &count_font,
+                    color: &NSColor::whiteColor(),
+                    alignment: NSTextAlignment::Center,
+                    max_lines: 1,
+                },
             );
             foreground.addSubview(&count_label);
 
@@ -200,7 +192,7 @@ impl BreakScreen {
                     skip_key.map(Shortcut::Local),
                     target,
                     sel!(skip:),
-                    GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
+                    &BUTTON_STYLE,
                 ));
             }
             if allow_postpone {
@@ -210,7 +202,7 @@ impl BreakScreen {
                     postpone_key.map(Shortcut::Local),
                     target,
                     sel!(postpone:),
-                    GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
+                    &BUTTON_STYLE,
                 ));
             }
             if !buttons.is_empty() {
@@ -232,18 +224,18 @@ impl BreakScreen {
             // slides down from above, buttons slide up from below. countdown just sharpens.
             if animate {
                 if let Some(layer) = backdrop.layer() {
-                    layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, false), None);
+                    layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, Fill::Entrance), None);
                 }
                 if let Some(layer) = foreground.layer() {
                     let begin = now + 0.06;
-                    attach_blur(&layer, 0.0);
-                    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.55, false), None);
+                    attach_unclipped_blur(&layer, 0.0);
+                    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.55, Fill::Entrance), None);
                     layer.addAnimation_forKey(
-                        &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, false),
+                        &blur_radius(BLUR_RADIUS, 0.0, begin, 0.55, Fill::Entrance),
                         None,
                     );
                     // drop the transition blur once the entrance settles so the break renders crisp
-                    detach_blur_after(layer, 0.75);
+                    detach_blur_after(mtm, layer, 0.75);
                 }
                 // image holds at its resting radius after the sharpen-in, no detach
                 if let Some(layer) = image_view.as_ref().and_then(|v| v.layer()) {
@@ -254,7 +246,7 @@ impl BreakScreen {
                             IMAGE_BLUR_RADIUS_RESTING,
                             begin,
                             0.55,
-                            false,
+                            Fill::Entrance,
                         ),
                         None,
                     );
@@ -262,11 +254,11 @@ impl BreakScreen {
                 let label_begin = now + 0.68;
                 let buttons_begin = label_begin + 0.28;
                 if let Some(layer) = name_label.layer() {
-                    animate_delayed_entrance(layer, 28.0, label_begin, now);
+                    animate_delayed_entrance(mtm, layer, 28.0, label_begin, now);
                 }
                 for button in &buttons {
                     if let Some(layer) = button.layer() {
-                        animate_delayed_entrance(layer, -28.0, buttons_begin, now);
+                        animate_delayed_entrance(mtm, layer, -28.0, buttons_begin, now);
                     }
                 }
             }
@@ -321,15 +313,15 @@ impl BreakScreen {
         let now = CACurrentMediaTime();
         for backdrop in &self.backdrops {
             if let Some(layer) = backdrop.layer() {
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, true), None);
+                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
             }
         }
         for foreground in &self.foregrounds {
             if let Some(layer) = foreground.layer() {
-                attach_blur(&layer, 0.0);
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, true), None);
+                attach_unclipped_blur(&layer, 0.0);
+                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
                 layer.addAnimation_forKey(
-                    &blur_radius(0.0, BLUR_RADIUS, now, EXIT_DURATION, true),
+                    &blur_radius(0.0, BLUR_RADIUS, now, EXIT_DURATION, Fill::Exit),
                     None,
                 );
             }
@@ -340,22 +332,13 @@ impl BreakScreen {
         // accessory mode.
         let windows = std::mem::take(&mut self.windows);
         let mtm = self.mtm;
-        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        after(mtm, EXIT_DURATION + 0.05, move || {
             for window in &windows {
                 window.orderOut(None);
             }
             NSApplication::sharedApplication(mtm)
                 .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         });
-        // SAFETY: scheduled on and fired from the main run loop where these main-thread-only
-        // windows are safe to touch.
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-                EXIT_DURATION + 0.05,
-                false,
-                &block,
-            );
-        }
 
         self.backdrops.clear();
         self.foregrounds.clear();
@@ -388,39 +371,6 @@ fn force_activate(app: &NSApplication) {
     app.activateIgnoringOtherApps(true);
 }
 
-fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<BreakWindow> {
-    let window: Retained<BreakWindow> = unsafe {
-        let alloc = BreakWindow::alloc(mtm);
-        msg_send![
-            alloc,
-            initWithContentRect: frame,
-            styleMask: NSWindowStyleMask::Borderless,
-            backing: NSBackingStoreType::Buffered,
-            defer: false,
-        ]
-    };
-
-    window.setOpaque(false);
-    window.setHasShadow(false);
-    // NSPanel hides on app deactivate, and an accessory app is never "active"
-    window.setHidesOnDeactivate(false);
-    // clear background so the behind-window blur samples the desktop. dark appearance keeps
-    // the glass and native buttons legible.
-    window.setBackgroundColor(Some(&NSColor::clearColor()));
-    if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
-        window.setAppearance(Some(&appearance));
-    }
-    window.setLevel(SCREEN_SAVER_LEVEL);
-    window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    // we hold a Retained ref for the screen's lifetime and orderOut instead of closing
-    unsafe { window.setReleasedWhenClosed(false) };
-    window
-}
-
 fn make_image_view(
     mtm: MainThreadMarker,
     path: &Path,
@@ -439,123 +389,29 @@ fn make_image_view(
     }
     layer.setContentsScale(backing_scale);
     layer.setOpacity(IMAGE_OPACITY);
-    attach_blur(&layer, IMAGE_BLUR_RADIUS_RESTING);
+    attach_unclipped_blur(&layer, IMAGE_BLUR_RADIUS_RESTING);
     Some(view)
 }
 
-fn make_label(
-    mtm: MainThreadMarker,
-    text: &str,
-    font: &NSFont,
-    color: &NSColor,
-    frame: NSRect,
-    max_lines: isize,
-) -> Retained<NSTextField> {
-    let s = NSString::from_str(text);
-    let label = NSTextField::labelWithString(&s, mtm);
-    label.setWantsLayer(true);
-    label.setFrame(frame);
-    label.setAlignment(NSTextAlignment::Center);
-    label.setFont(Some(font));
-    label.setTextColor(Some(color));
-    label.setMaximumNumberOfLines(max_lines);
-    label
-}
-
-/// hold=true (exit) keeps the final value on screen instead of snapping back to the model
-/// value, since windows are about to be torn down. hold=false (entrance) uses backwards fill so
-/// callers can stagger entrances by pushing begin later.
-fn apply_fill(anim: &CABasicAnimation, hold: bool) {
-    if hold {
-        anim.setFillMode(unsafe { kCAFillModeBoth });
-        anim.setRemovedOnCompletion(false);
-    } else {
-        anim.setFillMode(unsafe { kCAFillModeBackwards });
-    }
-}
-
-fn basic(
-    key_path: &str,
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-) -> Retained<CABasicAnimation> {
-    let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key_path)));
-    unsafe {
-        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from)));
-        anim.setToValue(Some(&*NSNumber::numberWithDouble(to)));
-    }
-    anim.setDuration(duration);
-    anim.setBeginTime(begin);
-    anim.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(unsafe {
-        kCAMediaTimingFunctionEaseInEaseOut
-    })));
-    anim
-}
-
-fn fade(from: f64, to: f64, begin: f64, duration: f64, hold: bool) -> Retained<CABasicAnimation> {
-    let anim = basic("opacity", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-fn blur_radius(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    hold: bool,
-) -> Retained<CABasicAnimation> {
-    let anim = basic("filters.blur.inputRadius", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-fn scale(from: f64, to: f64, begin: f64, duration: f64) -> Retained<CABasicAnimation> {
-    let anim = basic("transform.scale", from, to, begin, duration);
-    apply_fill(&anim, false);
-    anim
-}
-
-fn scale_hold(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    hold: bool,
-) -> Retained<CABasicAnimation> {
-    let anim = basic("transform.scale", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-/// positive from_y starts above (slides down), negative starts below (slides up)
-fn slide_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
-    let anim = CASpringAnimation::animationWithKeyPath(Some(&NSString::from_str(
-        "transform.translation.y",
-    )));
-    unsafe {
-        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from_y)));
-        anim.setToValue(Some(&*NSNumber::numberWithDouble(0.0)));
-    }
-    anim.setMass(1.0);
-    anim.setStiffness(180.0);
-    anim.setDamping(22.0);
-    anim.setInitialVelocity(0.0);
-    anim.setDuration(anim.settlingDuration().min(0.7));
-    anim.setBeginTime(begin);
-    anim.setFillMode(unsafe { kCAFillModeBackwards });
-    anim
+/// `attach_blur`, letting the blur bleed past the layer's edge instead of being clipped
+fn attach_unclipped_blur(layer: &CALayer, resting: f64) {
+    attach_blur(layer, resting);
+    layer.setMasksToBounds(false);
 }
 
 /// invisible until `begin`, then springs in and resolves from blur to sharp
-fn animate_delayed_entrance(layer: Retained<CALayer>, from_y: f64, begin: f64, now: f64) {
-    attach_blur(&layer, 0.0);
-    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, false), None);
-    layer.addAnimation_forKey(&blur_radius(12.0, 0.0, begin, 0.42, false), None);
-    layer.addAnimation_forKey(&slide_y(from_y, begin), None);
-    detach_blur_after(layer, begin - now + 0.5);
+fn animate_delayed_entrance(
+    mtm: MainThreadMarker,
+    layer: Retained<CALayer>,
+    from_y: f64,
+    begin: f64,
+    now: f64,
+) {
+    attach_unclipped_blur(&layer, 0.0);
+    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, Fill::Entrance), None);
+    layer.addAnimation_forKey(&blur_radius(12.0, 0.0, begin, 0.42, Fill::Entrance), None);
+    layer.addAnimation_forKey(&spring_y(from_y, begin), None);
+    detach_blur_after(mtm, layer, begin - now + 0.5);
 }
 
 /// old digit shrinks/blurs out, new digit starts larger/blurred and resolves in place
@@ -581,57 +437,17 @@ fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSS
 
     let now = CACurrentMediaTime();
     if let Some(layer) = outgoing.layer() {
-        attach_blur(&layer, 0.0);
-        layer.addAnimation_forKey(&fade(1.0, 0.0, now, 0.3, true), None);
-        layer.addAnimation_forKey(&scale_hold(1.0, 0.88, now, 0.3, true), None);
-        layer.addAnimation_forKey(&blur_radius(0.0, 10.0, now, 0.3, true), None);
+        attach_unclipped_blur(&layer, 0.0);
+        layer.addAnimation_forKey(&fade(1.0, 0.0, now, 0.3, Fill::Exit), None);
+        layer.addAnimation_forKey(&scale(1.0, 0.88, now, 0.3, Fill::Exit), None);
+        layer.addAnimation_forKey(&blur_radius(0.0, 10.0, now, 0.3, Fill::Exit), None);
     }
     if let Some(layer) = label.layer() {
-        attach_blur(&layer, 0.0);
-        layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.3, false), None);
-        layer.addAnimation_forKey(&scale(1.12, 1.0, now, 0.3), None);
-        layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now, 0.3, false), None);
-        detach_blur_after(layer, 0.34);
+        attach_unclipped_blur(&layer, 0.0);
+        layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.3, Fill::Entrance), None);
+        layer.addAnimation_forKey(&scale(1.12, 1.0, now, 0.3, Fill::Entrance), None);
+        layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now, 0.3, Fill::Entrance), None);
+        detach_blur_after(mtm, layer, 0.34);
     }
-    remove_view_after(outgoing, 0.34);
-}
-
-/// makes filters.blur.inputRadius animatable. `resting` is the radius held when no animation
-/// is running, pass 0.0 for a transient blur or a non-zero to keep the layer permanently soft.
-fn attach_blur(layer: &CALayer, resting: f64) {
-    let name = NSString::from_str("CIGaussianBlur");
-    let Some(filter) = (unsafe { CIFilter::filterWithName(&name) }) else {
-        return;
-    };
-    unsafe {
-        filter.setDefaults();
-        let radius = NSString::from_str("inputRadius");
-        filter.setValue_forKey(Some(&*NSNumber::numberWithDouble(resting)), &radius);
-        filter.setName(&NSString::from_str("blur"));
-        let item: &AnyObject = &filter;
-        let filters = NSArray::from_slice(&[item]);
-        layer.setFilters(Some(&filters));
-    }
-    // let the blur bleed past the layer's edge instead of clipping
-    layer.setMasksToBounds(false);
-}
-
-fn detach_blur_after(layer: Retained<CALayer>, delay: f64) {
-    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| unsafe {
-        layer.setFilters(None);
-    });
-    // SAFETY: scheduled on and fired from the main run loop
-    unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
-    }
-}
-
-fn remove_view_after(view: Retained<NSTextField>, delay: f64) {
-    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
-        view.removeFromSuperview();
-    });
-    // SAFETY: scheduled on and fired from the main run loop
-    unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
-    }
+    after(mtm, 0.34, move || outgoing.removeFromSuperview());
 }

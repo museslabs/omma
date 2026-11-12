@@ -1,38 +1,35 @@
-use core::ptr::NonNull;
-
-use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadOnly, msg_send, sel};
+use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSColor,
-    NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView, NSGlassEffectViewStyle,
-    NSPanel, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
+    NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindowStyleMask,
 };
-use objc2_core_image::CIFilter;
-use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize,
-    NSString, NSTimer,
-};
-use objc2_quartz_core::{
-    CABasicAnimation, CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
-};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::CACurrentMediaTime;
 
-use super::glass_button::{GlassButtonStyle, Shortcut, make_glass_button};
+use super::glass_button::{GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button};
+use super::panel::{
+    Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
+    make_panel, slide_y,
+};
 use crate::config::KeySpec;
 
-const PANEL_LEVEL: isize = 1000;
 const PANEL_W: f64 = 340.0;
 const PANEL_H: f64 = 112.0;
 const BUTTON_W: f64 = 140.0;
 const BUTTON_H: f64 = 36.0;
 const HIDE_DURATION: f64 = 0.24;
+const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
+    height: BUTTON_H,
+    width: GlassButtonWidth::Fixed(BUTTON_W),
+    title_font_size: 13.0,
+    hint_font_size: 11.0,
+};
 
 pub struct PreBreakDialog {
     mtm: MainThreadMarker,
-    window: Option<Retained<NSPanel>>,
+    window: Option<Retained<Panel>>,
     glass: Option<Retained<NSGlassEffectView>>,
     body: Option<Retained<NSView>>,
     countdown_label: Option<Retained<NSTextField>>,
@@ -77,7 +74,14 @@ impl PreBreakDialog {
             NSSize::new(PANEL_W, PANEL_H),
         );
 
-        let window = make_window(self.mtm, frame);
+        // never key, and a click doesn't activate omma: the warning takes no focus from the
+        // app the user is in
+        let window = make_panel(
+            self.mtm,
+            frame,
+            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+            false,
+        );
         let Some(content) = window.contentView() else {
             return;
         };
@@ -91,7 +95,6 @@ impl PreBreakDialog {
         glass.setCornerRadius(26.0);
         glass.setStyle(NSGlassEffectViewStyle::Regular);
         if let Some(layer) = glass.layer() {
-            center_layer_anchor(&layer, PANEL_W, PANEL_H);
             layer.setMasksToBounds(true);
         }
         content.addSubview(&glass);
@@ -103,27 +106,31 @@ impl PreBreakDialog {
         body.setWantsLayer(true);
         glass.setContentView(Some(&body));
 
+        // SAFETY: immutable AppKit constants
+        let (semibold, medium) = unsafe { (NSFontWeightSemibold, NSFontWeightMedium) };
         let title = make_label(
             self.mtm,
             "Break soon",
-            14.0,
-            unsafe { NSFontWeightSemibold },
-            0.76,
-            NSTextAlignment::Left,
             NSRect::new(NSPoint::new(28.0, 65.0), NSSize::new(130.0, 18.0)),
-            1,
+            &LabelStyle {
+                font: &NSFont::systemFontOfSize_weight(14.0, semibold),
+                color: &NSColor::colorWithWhite_alpha(1.0, 0.76),
+                alignment: NSTextAlignment::Left,
+                max_lines: 1,
+            },
         );
         body.addSubview(&title);
 
         let countdown = make_label(
             self.mtm,
             &fmt_seconds(seconds_until_break),
-            28.0,
-            unsafe { NSFontWeightMedium },
-            0.95,
-            NSTextAlignment::Left,
             NSRect::new(NSPoint::new(28.0, 25.0), NSSize::new(130.0, 34.0)),
-            1,
+            &LabelStyle {
+                font: &NSFont::systemFontOfSize_weight(28.0, medium),
+                color: &NSColor::colorWithWhite_alpha(1.0, 0.95),
+                alignment: NSTextAlignment::Left,
+                max_lines: 1,
+            },
         );
         body.addSubview(&countdown);
 
@@ -142,7 +149,7 @@ impl PreBreakDialog {
             primary_key,
             target,
             primary_action,
-            GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
+            &BUTTON_STYLE,
         );
         primary.setFrame(NSRect::new(
             NSPoint::new(button_x, primary_y),
@@ -157,7 +164,7 @@ impl PreBreakDialog {
                 postpone_key.map(Shortcut::Global),
                 target,
                 sel!(postpone:),
-                GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
+                &BUTTON_STYLE,
             );
             postpone.setFrame(NSRect::new(
                 NSPoint::new(button_x, 58.0),
@@ -168,15 +175,18 @@ impl PreBreakDialog {
 
         if let Some(layer) = glass.layer() {
             let now = CACurrentMediaTime();
-            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.16, false), None);
-            layer.addAnimation_forKey(&slide_y(28.0, 0.0, now, 0.22, false), None);
+            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.16, Fill::Entrance), None);
+            layer.addAnimation_forKey(&slide_y(28.0, 0.0, now, 0.22, Fill::Entrance), None);
         }
         if let Some(layer) = body.layer() {
             let now = CACurrentMediaTime();
-            attach_blur(&layer);
-            layer.addAnimation_forKey(&fade(0.0, 1.0, now + 0.03, 0.2, false), None);
-            layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now + 0.03, 0.28, false), None);
-            detach_blur_after(layer, 0.36);
+            attach_blur(&layer, 0.0);
+            layer.addAnimation_forKey(&fade(0.0, 1.0, now + 0.03, 0.2, Fill::Entrance), None);
+            layer.addAnimation_forKey(
+                &blur_radius(10.0, 0.0, now + 0.03, 0.28, Fill::Entrance),
+                None,
+            );
+            detach_blur_after(self.mtm, layer, 0.36);
         }
 
         window.orderFrontRegardless();
@@ -204,179 +214,33 @@ impl PreBreakDialog {
             && let Some(layer) = glass.layer()
         {
             let now = CACurrentMediaTime();
-            attach_blur(&layer);
-            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-            layer.addAnimation_forKey(&blur_radius(0.0, 22.0, now, HIDE_DURATION, true), None);
-            layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, true), None);
+            attach_blur(&layer, 0.0);
+            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
+            layer.addAnimation_forKey(
+                &blur_radius(0.0, 22.0, now, HIDE_DURATION, Fill::Exit),
+                None,
+            );
+            layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, Fill::Exit), None);
         }
         if let Some(body) = self.body.take()
             && let Some(layer) = body.layer()
         {
             let now = CACurrentMediaTime();
-            attach_blur(&layer);
-            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, true), None);
-            layer.addAnimation_forKey(&blur_radius(0.0, 18.0, now, HIDE_DURATION, true), None);
+            attach_blur(&layer, 0.0);
+            layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
+            layer.addAnimation_forKey(
+                &blur_radius(0.0, 18.0, now, HIDE_DURATION, Fill::Exit),
+                None,
+            );
         }
         self.countdown_label = None;
 
-        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
-            window.orderOut(None);
+        after(self.mtm, HIDE_DURATION + 0.03, move || {
+            window.orderOut(None)
         });
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-                HIDE_DURATION + 0.03,
-                false,
-                &block,
-            );
-        }
     }
-}
-
-/// a borderless panel never becomes key, and a non-activating one takes clicks without
-/// activating omma, so the warning never takes focus from the app the user is in
-fn make_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSPanel> {
-    let window: Retained<NSPanel> = unsafe {
-        let alloc = NSPanel::alloc(mtm);
-        msg_send![
-            alloc,
-            initWithContentRect: frame,
-            styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-            backing: NSBackingStoreType::Buffered,
-            defer: false,
-        ]
-    };
-
-    window.setOpaque(false);
-    // native shadows follow the panel rect, not the rounded glass, so they leak a jagged outline
-    window.setHasShadow(false);
-    // a panel hides when its app isn't active, and omma never is while the warning shows
-    window.setHidesOnDeactivate(false);
-    window.setBackgroundColor(Some(&NSColor::clearColor()));
-    if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
-        window.setAppearance(Some(&appearance));
-    }
-    window.setLevel(PANEL_LEVEL);
-    window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    unsafe { window.setReleasedWhenClosed(false) };
-    window
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "grouped into a struct when the panel code is shared"
-)]
-fn make_label(
-    mtm: MainThreadMarker,
-    text: &str,
-    size: f64,
-    weight: f64,
-    alpha: f64,
-    alignment: NSTextAlignment,
-    frame: NSRect,
-    max_lines: isize,
-) -> Retained<NSTextField> {
-    let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-    label.setFrame(frame);
-    label.setAlignment(alignment);
-    label.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight)));
-    label.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, alpha)));
-    label.setMaximumNumberOfLines(max_lines);
-    label
 }
 
 fn fmt_seconds(seconds: u64) -> String {
     format!("{seconds}s")
-}
-
-fn apply_fill(anim: &CABasicAnimation, hold: bool) {
-    if hold {
-        anim.setFillMode(unsafe { kCAFillModeBoth });
-        anim.setRemovedOnCompletion(false);
-    } else {
-        anim.setFillMode(unsafe { kCAFillModeBackwards });
-    }
-}
-
-fn basic(
-    key_path: &str,
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-) -> Retained<CABasicAnimation> {
-    let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key_path)));
-    unsafe {
-        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from)));
-        anim.setToValue(Some(&*NSNumber::numberWithDouble(to)));
-    }
-    anim.setDuration(duration);
-    anim.setBeginTime(begin);
-    anim.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(unsafe {
-        kCAMediaTimingFunctionEaseInEaseOut
-    })));
-    anim
-}
-
-fn fade(from: f64, to: f64, begin: f64, duration: f64, hold: bool) -> Retained<CABasicAnimation> {
-    let anim = basic("opacity", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-fn blur_radius(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    hold: bool,
-) -> Retained<CABasicAnimation> {
-    let anim = basic("filters.blur.inputRadius", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-fn slide_y(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    hold: bool,
-) -> Retained<CABasicAnimation> {
-    let anim = basic("transform.translation.y", from, to, begin, duration);
-    apply_fill(&anim, hold);
-    anim
-}
-
-fn center_layer_anchor(layer: &CALayer, width: f64, height: f64) {
-    layer.setAnchorPoint(NSPoint::new(0.5, 0.5));
-    layer.setPosition(NSPoint::new(width / 2.0, height / 2.0));
-}
-
-fn attach_blur(layer: &CALayer) {
-    let name = NSString::from_str("CIGaussianBlur");
-    let Some(filter) = (unsafe { CIFilter::filterWithName(&name) }) else {
-        return;
-    };
-    unsafe {
-        filter.setDefaults();
-        let radius = NSString::from_str("inputRadius");
-        filter.setValue_forKey(Some(&*NSNumber::numberWithDouble(0.0)), &radius);
-        filter.setName(&NSString::from_str("blur"));
-        let item: &AnyObject = &filter;
-        let filters = NSArray::from_slice(&[item]);
-        layer.setFilters(Some(&filters));
-    }
-}
-
-fn detach_blur_after(layer: Retained<CALayer>, delay: f64) {
-    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| unsafe {
-        layer.setFilters(None);
-    });
-    unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block);
-    }
 }
