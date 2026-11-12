@@ -402,7 +402,13 @@ impl App {
             Command::Enable => self.cli_set_enabled(now, true),
             Command::Disable => self.cli_set_enabled(now, false),
             Command::Status => (None, Ok(self.status_report(now))),
-            Command::Reload => (None, self.reload_config()),
+            Command::Reload => {
+                let reply = self.reload_config();
+                if let Err(text) = &reply {
+                    log!("{text}");
+                }
+                (None, reply)
+            }
             Command::Quit => (None, Ok("quitting".into())),
         }
     }
@@ -938,11 +944,15 @@ fn idle_time() -> Duration {
 /// opens the config file in the app set for it, or else in the default text editor. a
 /// missing file is created from the defaults first.
 fn open_config_file(path: &Path) {
-    if let Ok(false) = path.try_exists()
-        && let Err(e) = config::write_default(path)
-    {
-        log!("can't create {}: {e}", path.display());
-        return;
+    match path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(e) = config::write_default(path) {
+                log!("can't create {}: {e}", path.display());
+                return;
+            }
+        }
+        Err(e) => log!("can't check for {}: {e}", path.display()),
     }
     if NSURL::from_file_path(path).is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url)) {
         return;

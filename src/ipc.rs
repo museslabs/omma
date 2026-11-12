@@ -150,14 +150,18 @@ fn accept_loop(listener: UnixListener, tx: Sender<Request>) {
             continue;
         };
         let tx = tx.clone();
-        // a connection that gets no thread is dropped, and its client sees no reply
-        let _ = thread::Builder::new()
+        // a connection that gets no thread is dropped, and its client sees it close without
+        // a reply
+        let spawned = thread::Builder::new()
             .name("omma-ipc-client".into())
             .spawn(move || {
                 if let Some(request) = read_request(stream) {
                     let _ = tx.send(request);
                 }
             });
+        if let Err(e) = spawned {
+            log!("can't read a command from the CLI: {e}");
+        }
     }
 }
 
