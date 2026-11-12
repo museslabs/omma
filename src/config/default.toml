@@ -1,0 +1,128 @@
+# omma config. omma rereads this file within a second of every save.
+#
+# Times are in seconds. A key you leave out keeps its default. The keys at the
+# top must come before the first [table] header, because TOML puts every key
+# below a header into that table.
+
+# Time between breaks.
+short_break_interval = 900   # 15 min
+long_break_interval  = 4500  # 75 min
+
+# How long a break lasts. Each break in the lists at the end can set its own.
+short_break_duration = 15
+long_break_duration  = 60
+
+# The warning shows up this long before a break.
+pre_break_warning = 10
+
+# Postpone pushes a break back by postpone_duration.
+allow_postpone    = false
+postpone_duration = 300  # 5 min
+
+# true hides Skip and Postpone, so every break runs its full length.
+strict_break = false
+
+# true shuffles each list of breaks; false goes through them in order.
+random_order = true
+
+[smart_pause]
+# After idle_seconds without keyboard or mouse input the schedule pauses. Once
+# you're back the next break is a full interval away, and time away at least as
+# long as a long break counts as one.
+enabled      = true
+idle_seconds = 60
+
+[audible_alert]
+# Sounds by name, from /System/Library/Sounds: Basso, Blow, Bottle, Frog,
+# Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine or Tink.
+enabled          = true
+pre_break        = true  # when the warning shows up
+post_break       = true  # when a break runs to its end
+pre_break_sound  = "Tink"
+post_break_sound = "Glass"
+
+[notification]
+# The panel that warns of a break.
+enabled = true
+
+[keybindings]
+# Shortcuts for the Skip and Postpone buttons. A shortcut is one key, either a
+# single character or escape, space, enter, tab or delete, after any of the
+# modifiers cmd, shift, alt (or option) and ctrl, joined by +. For example "s"
+# or "cmd+shift+s". "" turns a shortcut off.
+skip     = "escape"
+postpone = "space"
+
+[do_not_disturb]
+# Holds breaks back while you're busy. action = "skip" drops the break, and
+# "postpone" tries again after postpone_duration.
+enabled = true
+action  = "skip"
+
+# Apps, matched case-insensitively against part of the app's name or bundle id,
+# for example ["zoom"].
+skip_when_app_running = []
+skip_when_app_active  = []  # only while the app is frontmost
+
+# These two need Accessibility permission.
+skip_when_fullscreen = false  # while the frontmost window is fullscreen
+window_title_matches = []     # case-insensitive regexes, e.g. ["Zoom Meeting"]
+
+# The breaks. Each has a name, and can set its own duration and a background
+# image:
+#
+#   [[long_breaks]]
+#   name     = "Take a walk"
+#   duration = 300
+#   image    = "~/Pictures/trail.jpg"
+
+[[short_breaks]]
+name = "Gently close your eyes"
+
+[[short_breaks]]
+name = "Roll your eyes a few times to each side"
+
+[[short_breaks]]
+name = "Rotate your eyes in clockwise direction"
+
+[[short_breaks]]
+name = "Rotate your eyes in counterclockwise direction"
+
+[[short_breaks]]
+name = "Blink your eyes"
+
+[[short_breaks]]
+name = "Focus on a point in the far distance"
+
+[[short_breaks]]
+name = "Have some water"
+
+[[short_breaks]]
+name = "Relax your shoulders and drop them away from your ears"
+
+[[short_breaks]]
+name = "Stretch your neck gently from side to side"
+
+[[short_breaks]]
+name = "Check your posture and sit back comfortably"
+
+[[short_breaks]]
+name = "Unclench your jaw and relax your face"
+
+[[short_breaks]]
+name = "Stretch your wrists and fingers"
+
+[[long_breaks]]
+name = "Stand up and stretch your back and legs"
+
+[[long_breaks]]
+name = "Walk around for a while"
+
+[[long_breaks]]
+name = "Lean back at your seat and relax"
+
+[[long_breaks]]
+name = "Step away from the screen and look out a window"
+
+[[long_breaks]]
+name = "Walk over and refill your water"

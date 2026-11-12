@@ -2,12 +2,15 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::queue::{Break, BreakType, Breaks};
 use crate::scheduler::Settings;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// commented, and equal to `Config::default()`; written on first run
+pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub short_break_interval: i64,
@@ -31,23 +34,23 @@ pub struct Config {
     pub do_not_disturb: DoNotDisturb,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BreakCfg {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub duration: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SmartPause {
     pub enabled: bool,
     pub idle_seconds: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct AudibleAlert {
     pub enabled: bool,
@@ -58,7 +61,7 @@ pub struct AudibleAlert {
     pub post_break_sound: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct NotificationCfg {
     pub enabled: bool,
@@ -67,14 +70,14 @@ pub struct NotificationCfg {
 /// key spec accepts `escape`, `space`, a letter like `s`, or combos like `cmd+s`.
 /// modifiers: cmd, shift, alt/option, ctrl. named keys: escape/esc, space,
 /// enter/return, tab, delete/backspace. empty string disables the bind.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Keybindings {
     pub skip: String,
     pub postpone: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct DoNotDisturb {
     pub enabled: bool,
@@ -89,7 +92,7 @@ pub struct DoNotDisturb {
     pub action: DndAction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DndAction {
     Skip,
@@ -284,10 +287,6 @@ impl Config {
         })
     }
 
-    pub fn default_toml() -> anyhow::Result<String> {
-        Ok(toml::to_string_pretty(&Config::default())?)
-    }
-
     /// write a default file if none exists
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
@@ -308,7 +307,7 @@ impl Config {
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let cfg = Config::default();
-                if let Err(e) = write_default(path, &cfg) {
+                if let Err(e) = write_default(path) {
                     eprintln!(
                         "omma: could not write default config to {}: {e}",
                         path.display()
@@ -353,12 +352,11 @@ fn secs(value: i64) -> Duration {
     Duration::from_secs(value.try_into().unwrap_or(0))
 }
 
-fn write_default(path: &Path, cfg: &Config) -> std::io::Result<()> {
+fn write_default(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let data = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
-    std::fs::write(path, data)
+    std::fs::write(path, DEFAULT_CONFIG)
 }
 
 /// `$XDG_CONFIG_HOME/omma/config.toml`, else `~/.config/omma/config.toml`. None when neither
@@ -381,15 +379,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_round_trips_through_toml() {
-        let toml = Config::default_toml().unwrap();
-        let parsed: Config = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.short_break_interval, 900);
-        assert_eq!(parsed.do_not_disturb.action, DndAction::Skip);
-        assert!(!parsed.do_not_disturb.skip_when_fullscreen);
-        assert_eq!(parsed.keybindings.skip, "escape");
-        assert_eq!(parsed.keybindings.postpone, "space");
-        assert!(parsed.settings().is_ok());
+    fn the_default_file_is_the_default_config() {
+        let parsed: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(parsed, Config::default());
     }
 
     #[test]

@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
 
     if args.print_default_config {
-        print!("{}", config::Config::default_toml()?);
+        print!("{}", config::DEFAULT_CONFIG);
         return Ok(());
     }
 
