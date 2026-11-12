@@ -76,8 +76,14 @@ pub fn runtime_dir() -> Option<PathBuf> {
 
 const LOCK_FILE: &str = "omma.lock";
 const SOCKET: &str = "omma.sock";
+/// a client writes its command as soon as it connects
+const READ_TIMEOUT: Duration = Duration::from_secs(1);
+/// a command line is cut off here. the longest command name is 11 bytes.
+const MAX_LINE: u64 = 64;
 /// the main thread writes replies, and mustn't wait on a client
 const WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+/// keeps a persistent accept error, such as running out of file descriptors, from spinning
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// covers the main thread's next tick, up to a second away
 const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -136,24 +142,34 @@ impl Request {
     }
 }
 
+/// reads each connection on its own thread, so a slow client holds up only itself
 fn accept_loop(listener: UnixListener, tx: Sender<Request>) {
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
-        if let Some(request) = read_request(stream)
-            && tx.send(request).is_err()
-        {
-            return;
-        }
+        let Ok(stream) = stream else {
+            thread::sleep(ACCEPT_BACKOFF);
+            continue;
+        };
+        let tx = tx.clone();
+        // a connection that gets no thread is dropped, and its client sees no reply
+        let _ = thread::Builder::new()
+            .name("omma-ipc-client".into())
+            .spawn(move || {
+                if let Some(request) = read_request(stream) {
+                    let _ = tx.send(request);
+                }
+            });
     }
 }
 
 /// None when the client sent no command in time, or one this instance doesn't know, which
 /// is answered here
 fn read_request(stream: UnixStream) -> Option<Request> {
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT)).ok()?;
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line).ok()?;
+    BufReader::new((&stream).take(MAX_LINE))
+        .read_line(&mut line)
+        .ok()?;
     let line = line.trim();
     match line.parse() {
         Ok(command) => Some(Request { command, stream }),
@@ -318,6 +334,59 @@ mod tests {
             round_trip(&scratch.0, &server, Command::TakeBreak, err.clone()),
             Some(err)
         );
+    }
+
+    #[test]
+    fn silent_clients_do_not_hold_up_others() {
+        let scratch = Scratch::new();
+        let server = bind(&scratch.0).unwrap().unwrap();
+        let socket = scratch.0.join(SOCKET);
+        // read one after another, these would outlast the client's timeout
+        let _silent: Vec<_> = (0..4)
+            .map(|_| UnixStream::connect(&socket).unwrap())
+            .collect();
+        let ok = Ok("fine".to_string());
+        assert_eq!(
+            round_trip(&scratch.0, &server, Command::Status, ok.clone()),
+            Some(ok)
+        );
+    }
+
+    #[test]
+    fn a_slow_client_does_not_hold_up_others() {
+        let scratch = Scratch::new();
+        let server = bind(&scratch.0).unwrap().unwrap();
+        let mut slow = UnixStream::connect(scratch.0.join(SOCKET)).unwrap();
+        // a byte every 100 ms keeps each of the server's reads short of its timeout
+        let _trickle = thread::spawn(move || {
+            for _ in 0..50 {
+                if slow.write_all(b"s").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let ok = Ok("fine".to_string());
+        assert_eq!(
+            round_trip(&scratch.0, &server, Command::Status, ok.clone()),
+            Some(ok)
+        );
+    }
+
+    #[test]
+    fn a_long_line_is_cut_off() {
+        let scratch = Scratch::new();
+        let _server = bind(&scratch.0).unwrap().unwrap();
+        let mut stream = UnixStream::connect(scratch.0.join(SOCKET)).unwrap();
+        stream.set_read_timeout(Some(REPLY_TIMEOUT)).unwrap();
+        let _ = stream.write_all(&[b's'; 4096]);
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        let expected = format!(
+            "unknown command '{}' (is the running omma older than this CLI?)",
+            "s".repeat(64)
+        );
+        assert_eq!(decode(&response), Some(Err(expected)));
     }
 
     #[test]
