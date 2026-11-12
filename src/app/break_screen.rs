@@ -9,7 +9,7 @@ use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSBox, NSBoxType, NSButton, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSImage,
     NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWorkspace,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
@@ -18,8 +18,8 @@ use super::glass_button::{
     Buttons, GlassButton, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
-    make_label, make_panel, scale, spring_y,
+    Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
+    detach_blur_after, fade, make_label, make_panel, scale, spring_y,
 };
 use crate::queue::Break;
 
@@ -49,7 +49,7 @@ pub struct BreakScreen {
     mtm: MainThreadMarker,
     /// one per display while the break shows; empty from the moment `hide` starts
     overlays: Vec<Overlay>,
-    /// off when the user has asked macOS to reduce motion
+    /// see `animations_on`
     animate: bool,
 }
 
@@ -79,8 +79,7 @@ impl BreakScreen {
         let weight_regular = unsafe { NSFontWeightRegular };
         let weight_heavy = unsafe { NSFontWeightHeavy };
 
-        // reduce motion: skip every blur, slide and cross-fade
-        self.animate = !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+        self.animate = animations_on();
         let animate = self.animate;
         let now = CACurrentMediaTime();
 

@@ -11,7 +11,7 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSColor,
     NSFont, NSPanel, NSScreenSaverWindowLevel, NSTextAlignment, NSTextField,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -106,6 +106,12 @@ pub fn make_label(
     label.setTextColor(Some(style.color));
     label.setMaximumNumberOfLines(style.max_lines);
     label
+}
+
+/// false when the user has asked macOS to reduce motion: then windows appear and go at once,
+/// with no blur, slide or fade
+pub fn animations_on() -> bool {
+    !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
 /// runs `f` once, `delay` seconds from now, on the main run loop

@@ -12,8 +12,8 @@ use super::glass_button::{
     Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
-    make_label, make_panel, slide_y,
+    Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
+    detach_blur_after, fade, make_label, make_panel, slide_y,
 };
 
 const PANEL_W: f64 = 340.0;
@@ -35,6 +35,8 @@ pub struct PreBreakDialog {
 }
 
 struct Showing {
+    /// see `animations_on`
+    animate: bool,
     window: Retained<Panel>,
     glass: Retained<NSGlassEffectView>,
     body: Retained<NSView>,
@@ -160,24 +162,14 @@ impl PreBreakDialog {
             shown_buttons.push(postpone.button);
         }
 
-        if let Some(layer) = glass.layer() {
-            let now = CACurrentMediaTime();
-            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.16, Fill::Entrance), None);
-            layer.addAnimation_forKey(&slide_y(28.0, 0.0, now, 0.22, Fill::Entrance), None);
-        }
-        if let Some(layer) = body.layer() {
-            let now = CACurrentMediaTime();
-            attach_blur(&layer, 0.0);
-            layer.addAnimation_forKey(&fade(0.0, 1.0, now + 0.03, 0.2, Fill::Entrance), None);
-            layer.addAnimation_forKey(
-                &blur_radius(10.0, 0.0, now + 0.03, 0.28, Fill::Entrance),
-                None,
-            );
-            detach_blur_after(self.mtm, layer, 0.36);
+        let animate = animations_on();
+        if animate {
+            animate_entrance(self.mtm, &glass, &body);
         }
 
         window.orderFrontRegardless();
         self.shown = Some(Showing {
+            animate,
             window,
             glass,
             body,
@@ -199,6 +191,7 @@ impl PreBreakDialog {
 
     pub fn hide(&mut self) {
         let Some(Showing {
+            animate,
             window,
             glass,
             body,
@@ -208,18 +201,21 @@ impl PreBreakDialog {
         else {
             return;
         };
+        if !animate {
+            window.orderOut(None);
+            return;
+        }
         // inert while it fades: a disabled button takes no clicks
         for button in &buttons {
             button.setEnabled(false);
         }
+        let now = CACurrentMediaTime();
         if let Some(layer) = glass.layer() {
-            let now = CACurrentMediaTime();
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
             blur_out(&layer, 22.0, now, HIDE_DURATION);
             layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, Fill::Exit), None);
         }
         if let Some(layer) = body.layer() {
-            let now = CACurrentMediaTime();
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
             blur_out(&layer, 18.0, now, HIDE_DURATION);
         }
@@ -227,6 +223,24 @@ impl PreBreakDialog {
         after(self.mtm, HIDE_DURATION + 0.03, move || {
             window.orderOut(None)
         });
+    }
+}
+
+/// the glass slides down into place as the text inside resolves from blur
+fn animate_entrance(mtm: MainThreadMarker, glass: &NSGlassEffectView, body: &NSView) {
+    let now = CACurrentMediaTime();
+    if let Some(layer) = glass.layer() {
+        layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.16, Fill::Entrance), None);
+        layer.addAnimation_forKey(&slide_y(28.0, 0.0, now, 0.22, Fill::Entrance), None);
+    }
+    if let Some(layer) = body.layer() {
+        attach_blur(&layer, 0.0);
+        layer.addAnimation_forKey(&fade(0.0, 1.0, now + 0.03, 0.2, Fill::Entrance), None);
+        layer.addAnimation_forKey(
+            &blur_radius(10.0, 0.0, now + 0.03, 0.28, Fill::Entrance),
+            None,
+        );
+        detach_blur_after(mtm, layer, 0.36);
     }
 }
 
