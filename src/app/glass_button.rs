@@ -11,6 +11,22 @@ use objc2_foundation::{
 
 use crate::config::{Key, KeySpec};
 
+/// a button's keyboard shortcut. a local one is the button's key equivalent; a global one is
+/// held elsewhere, so the button only shows its hint.
+#[derive(Clone, Copy)]
+pub enum Shortcut {
+    Local(KeySpec),
+    Global(KeySpec),
+}
+
+impl Shortcut {
+    fn spec(self) -> KeySpec {
+        match self {
+            Shortcut::Local(spec) | Shortcut::Global(spec) => spec,
+        }
+    }
+}
+
 pub enum GlassButtonWidth {
     Fixed(f64),
     Fit {
@@ -58,12 +74,12 @@ impl GlassButtonStyle {
 pub fn make_glass_button(
     mtm: MainThreadMarker,
     title: &str,
-    key: Option<KeySpec>,
+    shortcut: Option<Shortcut>,
     target: &AnyObject,
     action: Sel,
     style: GlassButtonStyle,
 ) -> Retained<NSGlassEffectView> {
-    let keybind = key.map(key_equivalent);
+    let keybind = shortcut.map(|shortcut| key_equivalent(shortcut.spec()));
     let title_ns = NSString::from_str(title);
     let full = match &keybind {
         Some(kb) => format!("{title}  {}", kb.label),
@@ -102,7 +118,7 @@ pub fn make_glass_button(
     }
     button.setAttributedTitle(&attributed);
 
-    if let Some(kb) = &keybind {
+    if let (Some(Shortcut::Local(_)), Some(kb)) = (shortcut, &keybind) {
         button.setKeyEquivalent(&NSString::from_str(&kb.key_equivalent));
         button.setKeyEquivalentModifierMask(kb.mods);
     }

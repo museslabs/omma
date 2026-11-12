@@ -59,6 +59,12 @@ enabled = true
 skip     = "escape"
 postpone = "space"
 
+# The same for the warning, except that these work from any app while it shows,
+# so it never needs focus. Each needs cmd or ctrl, for example
+# "cmd+shift+option+space". "" turns one off.
+warning_skip     = ""
+warning_postpone = ""
+
 [do_not_disturb]
 # Holds breaks back while you're busy. action = "skip" drops the break, and
 # "postpone" tries again after postpone_duration.

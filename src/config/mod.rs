@@ -86,7 +86,8 @@ pub struct Notification {
     pub enabled: bool,
 }
 
-/// shortcuts for the break screen's Skip and Postpone buttons; None turns one off
+/// shortcuts for Skip and Postpone; None turns one off. `skip` and `postpone` act on the
+/// break screen, the `warning_` pair from any app while the warning shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keybindings {
@@ -94,6 +95,10 @@ pub struct Keybindings {
     pub skip: Option<KeySpec>,
     #[serde(deserialize_with = "keys::optional")]
     pub postpone: Option<KeySpec>,
+    #[serde(deserialize_with = "keys::optional_global")]
+    pub warning_skip: Option<KeySpec>,
+    #[serde(deserialize_with = "keys::optional_global")]
+    pub warning_postpone: Option<KeySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -356,6 +361,8 @@ impl Default for Keybindings {
         Keybindings {
             skip: Some(KeySpec::plain(Key::Escape)),
             postpone: Some(KeySpec::plain(Key::Space)),
+            warning_skip: None,
+            warning_postpone: None,
         }
     }
 }
@@ -392,16 +399,19 @@ impl ConfigFile {
             ));
         }
         let postpone_shown = self.allow_postpone && !self.strict_break;
-        if let Keybindings {
-            skip: Some(skip),
-            postpone: Some(postpone),
-        } = self.keybindings
-            && skip == postpone
-            && postpone_shown
-        {
-            return Err(format!(
-                "keybindings.skip and keybindings.postpone are both `{skip}`"
-            ));
+        let keys = self.keybindings;
+        for (skip, postpone, prefix) in [
+            (keys.skip, keys.postpone, ""),
+            (keys.warning_skip, keys.warning_postpone, "warning_"),
+        ] {
+            if let (Some(skip), Some(postpone)) = (skip, postpone)
+                && skip == postpone
+                && postpone_shown
+            {
+                return Err(format!(
+                    "keybindings.{prefix}skip and keybindings.{prefix}postpone are both `{skip}`"
+                ));
+            }
         }
 
         let breaks = |entries: Vec<BreakEntry>, kind, default: BreakLength| {
@@ -861,6 +871,44 @@ mod tests {
         ))
         .unwrap();
         parse("allow_postpone = true\n[keybindings]\nskip = \"\"\npostpone = \"\"\n").unwrap();
+    }
+
+    #[test]
+    fn warning_shortcuts_need_cmd_or_ctrl() {
+        let keys = parse(
+            "allow_postpone = true\n[keybindings]\n\
+             warning_skip = \"cmd+shift+option+space\"\nwarning_postpone = \"ctrl+p\"\n",
+        )
+        .unwrap()
+        .keybindings;
+        assert_eq!(
+            keys.warning_skip,
+            Some("cmd+shift+alt+space".parse().unwrap())
+        );
+        assert_eq!(keys.warning_postpone, Some("ctrl+p".parse().unwrap()));
+        assert_eq!(Keybindings::default().warning_skip, None);
+
+        for spec in ["space", "shift+s", "alt+s"] {
+            assert_eq!(
+                rejects(&format!("[keybindings]\nwarning_skip = \"{spec}\"\n")),
+                format!(
+                    "line 2: keybindings.warning_skip: `{spec}` works from any app, so it needs \
+                     cmd or ctrl"
+                )
+            );
+        }
+        assert_eq!(
+            rejects("[keybindings]\nwarning_skip = \"cmd+σ\"\n"),
+            "line 2: keybindings.warning_skip: `σ` isn't on an ASCII keyboard layout, which \
+             global shortcuts use"
+        );
+        assert_eq!(
+            rejects(
+                "allow_postpone = true\n[keybindings]\n\
+                 warning_skip = \"ctrl+s\"\nwarning_postpone = \"control+S\"\n"
+            ),
+            "keybindings.warning_skip and keybindings.warning_postpone are both `ctrl+s`"
+        );
     }
 
     #[test]

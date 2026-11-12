@@ -162,6 +162,27 @@ pub(super) fn optional<'de, D: Deserializer<'de>>(de: D) -> Result<Option<KeySpe
     spec.parse().map(Some).map_err(serde::de::Error::custom)
 }
 
+/// a shortcut that works from any app, or None for `""`. it needs cmd or ctrl: a plain or
+/// shifted key would be taken from whatever the user is typing in. its key is found on the
+/// ASCII-capable keyboard layout, so a character key has to be ASCII.
+pub(super) fn optional_global<'de, D: Deserializer<'de>>(
+    de: D,
+) -> Result<Option<KeySpec>, D::Error> {
+    let spec = optional(de)?;
+    let error = match spec {
+        Some(spec) if !spec.mods.cmd && !spec.mods.ctrl => {
+            format!("`{spec}` works from any app, so it needs cmd or ctrl")
+        }
+        Some(KeySpec {
+            key: Key::Char(c), ..
+        }) if !c.is_ascii() => {
+            format!("`{c}` isn't on an ASCII keyboard layout, which global shortcuts use")
+        }
+        _ => return Ok(spec),
+    };
+    Err(serde::de::Error::custom(error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,7 +27,7 @@ use objc2_quartz_core::{
     kCAMediaTimingFunctionEaseInEaseOut,
 };
 
-use super::glass_button::{GlassButtonStyle, make_glass_button};
+use super::glass_button::{GlassButtonStyle, Shortcut, make_glass_button};
 use crate::config::KeySpec;
 
 /// above normal windows and fullscreen apps
@@ -197,7 +197,7 @@ impl BreakScreen {
                 buttons.push(make_glass_button(
                     mtm,
                     "Skip",
-                    skip_key,
+                    skip_key.map(Shortcut::Local),
                     target,
                     sel!(skip:),
                     GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),
@@ -207,7 +207,7 @@ impl BreakScreen {
                 buttons.push(make_glass_button(
                     mtm,
                     "Postpone",
-                    postpone_key,
+                    postpone_key.map(Shortcut::Local),
                     target,
                     sel!(postpone:),
                     GlassButtonStyle::fit(BUTTON_HEIGHT, 120.0, 48.0, 16.0, 13.0),

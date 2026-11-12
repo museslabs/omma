@@ -4,6 +4,7 @@
 mod activity;
 mod break_screen;
 mod glass_button;
+mod hotkey;
 mod idle;
 mod pre_break_dialog;
 mod sound;
@@ -29,6 +30,7 @@ use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
 use activity::DndChecker;
 use break_screen::BreakScreen;
+use hotkey::{Action, Hotkeys};
 use pre_break_dialog::PreBreakDialog;
 
 /// embedded so it travels with the binary whether launched from .app or bare
@@ -133,6 +135,8 @@ struct App {
     config_error_items: Option<[Retained<NSMenuItem>; 2]>,
     break_screen: BreakScreen,
     pre_break_dialog: PreBreakDialog,
+    /// the warning's global shortcuts, held while it shows
+    hotkeys: Hotkeys,
     dnd: DndChecker,
     /// the user closed the warning without skipping or postponing; cleared when it ends
     warning_dismissed: bool,
@@ -147,6 +151,8 @@ struct Shown {
     countdown: Option<u64>,
     status: String,
     enabled: Option<bool>,
+    /// the warning's global shortcuts are held
+    hotkeys: bool,
     config_error: Option<(ConfigError, Fallback)>,
     tray_icon: TrayIconState,
     fast_ticks: bool,
@@ -203,6 +209,18 @@ define_class!(
         #[unsafe(method(postpone:))]
         fn postpone(&self, _sender: *mut AnyObject) {
             self.act(|app, now| app.core.postpone(now));
+        }
+
+        /// a global shortcut whose press was queued before the warning ended or was dismissed
+        /// arrives after its hotkeys were released; then it does nothing
+        #[unsafe(method(warningSkip:))]
+        fn warning_skip(&self, _sender: *mut AnyObject) {
+            self.act(|app, now| app.shown.hotkeys.then(|| app.core.skip(now)).flatten());
+        }
+
+        #[unsafe(method(warningPostpone:))]
+        fn warning_postpone(&self, _sender: *mut AnyObject) {
+            self.act(|app, now| app.shown.hotkeys.then(|| app.core.postpone(now)).flatten());
         }
 
         #[unsafe(method(dismissWarning:))]
@@ -277,6 +295,7 @@ impl App {
             config_error_items: None,
             break_screen,
             pre_break_dialog,
+            hotkeys: Hotkeys::new(),
             dnd,
             warning_dismissed: false,
             shown: Shown::default(),
@@ -357,6 +376,27 @@ impl App {
         }
 
         let show_warning = warning && self.config.notification.enabled && !self.warning_dismissed;
+        // the global shortcuts follow the warning, whether or not its panel could open
+        if show_warning != self.shown.hotkeys {
+            if show_warning {
+                let keys = self.config.keybindings;
+                let wanted: Vec<_> = [
+                    (Action::Skip, keys.warning_skip, self.core.can_skip()),
+                    (
+                        Action::Postpone,
+                        keys.warning_postpone,
+                        self.core.can_postpone(),
+                    ),
+                ]
+                .into_iter()
+                .filter_map(|(action, key, allowed)| Some((action, key.filter(|_| allowed)?)))
+                .collect();
+                self.hotkeys.hold(target, &wanted);
+            } else {
+                self.hotkeys.release();
+            }
+            self.shown.hotkeys = show_warning;
+        }
         if show_warning != self.pre_break_dialog.is_visible() {
             if show_warning {
                 self.pre_break_dialog.show(
@@ -364,9 +404,8 @@ impl App {
                     self.core.can_skip(),
                     self.core.can_postpone(),
                     remaining.unwrap_or(0),
-                    // the warning never takes focus, so key equivalents can't reach it
-                    None,
-                    None,
+                    self.hotkeys.held(Action::Skip),
+                    self.hotkeys.held(Action::Postpone),
                     target,
                 );
                 self.shown.countdown = remaining;

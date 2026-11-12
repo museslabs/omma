@@ -20,7 +20,7 @@ use objc2_quartz_core::{
     kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
 };
 
-use super::glass_button::{GlassButtonStyle, make_glass_button};
+use super::glass_button::{GlassButtonStyle, Shortcut, make_glass_button};
 use crate::config::KeySpec;
 
 const PANEL_LEVEL: isize = 1000;
@@ -133,7 +133,7 @@ impl PreBreakDialog {
         } else {
             sel!(dismissWarning:)
         };
-        let primary_key = skip_key.filter(|_| allow_skip);
+        let primary_key = skip_key.filter(|_| allow_skip).map(Shortcut::Global);
         let button_x = PANEL_W - BUTTON_W - 28.0;
         let primary_y = if allow_postpone { 18.0 } else { 38.0 };
         let primary = make_glass_button(
@@ -154,7 +154,7 @@ impl PreBreakDialog {
             let postpone = make_glass_button(
                 self.mtm,
                 "Postpone",
-                postpone_key,
+                postpone_key.map(Shortcut::Global),
                 target,
                 sel!(postpone:),
                 GlassButtonStyle::fixed(BUTTON_W, BUTTON_H, 13.0, 11.0),
