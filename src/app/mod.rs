@@ -25,12 +25,13 @@ use objc2_foundation::{
     MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
 use crate::scheduler::{Core, Event, Phase};
 use activity::DndChecker;
 use break_screen::BreakScreen;
+use glass_button::{Button, Buttons};
 use hotkey::{Action, Hotkeys};
 use pre_break_dialog::PreBreakDialog;
 
@@ -443,15 +444,12 @@ impl App {
         }
         if show_warning != self.pre_break_dialog.is_visible() {
             if show_warning {
-                self.pre_break_dialog.show(
-                    &self.core.current().name,
-                    self.core.can_skip(),
-                    self.core.can_postpone(),
-                    remaining.unwrap_or(0),
+                let buttons = self.buttons(
                     self.hotkeys.held(Action::Skip),
                     self.hotkeys.held(Action::Postpone),
-                    target,
                 );
+                self.pre_break_dialog
+                    .show(remaining.unwrap_or(0), buttons, target);
                 self.shown.countdown = remaining;
             } else {
                 self.pre_break_dialog.hide();
@@ -460,15 +458,12 @@ impl App {
 
         if in_break != self.break_screen.is_visible() {
             if in_break {
-                let current = self.core.current();
+                let keys = self.config.keybindings;
+                let buttons = self.buttons(keys.skip, keys.postpone);
                 self.break_screen.show(
-                    &current.name,
+                    self.core.current(),
                     remaining.unwrap_or(0),
-                    self.core.can_skip(),
-                    self.core.can_postpone(),
-                    self.config.keybindings.skip,
-                    self.config.keybindings.postpone,
-                    current.image.as_deref(),
+                    buttons,
                     target,
                 );
                 self.shown.countdown = remaining;
@@ -499,6 +494,14 @@ impl App {
             TrayIconState::Normal
         });
         self.sync_timer(warning || in_break || incoming, target);
+    }
+
+    /// the skip and postpone buttons the core allows, with these shortcuts
+    fn buttons(&self, skip: Option<KeySpec>, postpone: Option<KeySpec>) -> Buttons {
+        Buttons {
+            skip: self.core.can_skip().then_some(Button { key: skip }),
+            postpone: self.core.can_postpone().then_some(Button { key: postpone }),
+        }
     }
 
     fn sync_menu(&mut self, now: SystemTime) {

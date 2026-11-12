@@ -27,6 +27,18 @@ impl Shortcut {
     }
 }
 
+/// the buttons a window shows: skip and postpone, when allowed
+#[derive(Clone, Copy)]
+pub struct Buttons {
+    pub skip: Option<Button>,
+    pub postpone: Option<Button>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Button {
+    pub key: Option<KeySpec>,
+}
+
 pub enum GlassButtonWidth {
     Fixed(f64),
     Fit {

@@ -15,12 +15,14 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
-use super::glass_button::{GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button};
+use super::glass_button::{
+    Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+};
 use super::panel::{
     Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
     make_panel, scale, spring_y,
 };
-use crate::config::KeySpec;
+use crate::queue::Break;
 
 /// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
 const SCRIM_ALPHA: f64 = 0.25;
@@ -46,43 +48,32 @@ const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
 
 pub struct BreakScreen {
     mtm: MainThreadMarker,
-    windows: Vec<Retained<Panel>>,
-    countdown_labels: Vec<Retained<NSTextField>>,
-    /// kept so the exit transition can blur and fade out the message/countdown/buttons
-    foregrounds: Vec<Retained<NSView>>,
-    /// blur + scrim per window, faded on exit
-    backdrops: Vec<Retained<NSView>>,
-    /// off when the user has asked macos to reduce motion
+    /// one per display while the break shows; empty from the moment `hide` starts
+    overlays: Vec<Overlay>,
+    /// off when the user has asked macOS to reduce motion
     animate: bool,
+}
+
+struct Overlay {
+    window: Retained<Panel>,
+    /// desktop blur, image and scrim, faded as one on exit
+    backdrop: Retained<NSView>,
+    /// message, countdown and buttons, blurred and faded as one on exit
+    foreground: Retained<NSView>,
+    countdown: Retained<NSTextField>,
 }
 
 impl BreakScreen {
     pub fn new(mtm: MainThreadMarker) -> BreakScreen {
         BreakScreen {
             mtm,
-            windows: Vec::new(),
-            countdown_labels: Vec::new(),
-            foregrounds: Vec::new(),
-            backdrops: Vec::new(),
+            overlays: Vec::new(),
             animate: true,
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "grouped into a struct when the panel code is shared"
-    )]
-    pub fn show(
-        &mut self,
-        name: &str,
-        remaining: u64,
-        allow_skip: bool,
-        allow_postpone: bool,
-        skip_key: Option<KeySpec>,
-        postpone_key: Option<KeySpec>,
-        image_path: Option<&Path>,
-        target: &AnyObject,
-    ) {
+    /// covers every display with `brk`, counting down from `remaining`
+    pub fn show(&mut self, brk: &Break, remaining: u64, buttons: Buttons, target: &AnyObject) {
         self.teardown_now();
         let mtm = self.mtm;
         let weight_regular = unsafe { NSFontWeightRegular };
@@ -126,8 +117,10 @@ impl BreakScreen {
 
             // optional custom image, between blur and scrim. a file that isn't an image is skipped.
             // a permanent gaussian blur keeps it a soft backdrop instead of a sharp photo.
-            let image_view =
-                image_path.and_then(|p| make_image_view(mtm, p, full, screen.backingScaleFactor()));
+            let image_view = brk
+                .image
+                .as_deref()
+                .and_then(|p| make_image_view(mtm, p, full, screen.backingScaleFactor()));
             if let Some(view) = &image_view {
                 backdrop.addSubview(view);
             }
@@ -152,7 +145,7 @@ impl BreakScreen {
             let msg_color = NSColor::colorWithWhite_alpha(1.0, 0.92);
             let name_label = make_label(
                 mtm,
-                name,
+                &brk.name,
                 NSRect::new(
                     NSPoint::new(cx - msg_w / 2.0, cy + 44.0),
                     NSSize::new(msg_w, 80.0),
@@ -184,27 +177,23 @@ impl BreakScreen {
             foreground.addSubview(&count_label);
 
             let gap = 16.0;
-            let mut buttons: Vec<Retained<NSGlassEffectView>> = Vec::new();
-            if allow_skip {
-                buttons.push(make_glass_button(
+            let buttons: Vec<Retained<NSGlassEffectView>> = [
+                (buttons.skip, "Skip", sel!(skip:)),
+                (buttons.postpone, "Postpone", sel!(postpone:)),
+            ]
+            .into_iter()
+            .filter_map(|(button, title, action)| {
+                let key = button?.key.map(Shortcut::Local);
+                Some(make_glass_button(
                     mtm,
-                    "Skip",
-                    skip_key.map(Shortcut::Local),
+                    title,
+                    key,
                     target,
-                    sel!(skip:),
+                    action,
                     &BUTTON_STYLE,
-                ));
-            }
-            if allow_postpone {
-                buttons.push(make_glass_button(
-                    mtm,
-                    "Postpone",
-                    postpone_key.map(Shortcut::Local),
-                    target,
-                    sel!(postpone:),
-                    &BUTTON_STYLE,
-                ));
-            }
+                ))
+            })
+            .collect();
             if !buttons.is_empty() {
                 let widths: Vec<f64> = buttons.iter().map(|b| b.frame().size.width).collect();
                 let total: f64 = widths.iter().sum::<f64>() + gap * (buttons.len() as f64 - 1.0);
@@ -264,10 +253,12 @@ impl BreakScreen {
             }
 
             window.orderFrontRegardless();
-            self.windows.push(window);
-            self.backdrops.push(backdrop);
-            self.foregrounds.push(foreground);
-            self.countdown_labels.push(count_label);
+            self.overlays.push(Overlay {
+                window,
+                backdrop,
+                foreground,
+                countdown: count_label,
+            });
         }
 
         // only the active app can own a key window. cooperative activate() is throttled for a
@@ -275,23 +266,27 @@ impl BreakScreen {
         // and skip/postpone keys are dead until the user clicks. promote to regular and force
         // activate so the panel becomes key, hide() drops us back to accessory.
         let app = NSApplication::sharedApplication(mtm);
-        let Some(first) = self.windows.first() else {
+        let Some(first) = self.overlays.first() else {
             return;
         };
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         force_activate(&app);
-        first.makeKeyAndOrderFront(None);
+        first.window.makeKeyAndOrderFront(None);
     }
 
     pub fn is_visible(&self) -> bool {
-        !self.windows.is_empty()
+        !self.overlays.is_empty()
     }
 
     pub fn update_countdown(&self, remaining: u64) {
         let text = NSString::from_str(&remaining.to_string());
-        for label in &self.countdown_labels {
+        for overlay in &self.overlays {
+            let label = &overlay.countdown;
+            if *label.stringValue() == *text {
+                continue;
+            }
             if self.animate {
-                animate_countdown_swap(self.mtm, label, &text);
+                animate_countdown_swap(self.mtm, &overlay.foreground, label, &text);
             } else {
                 label.setStringValue(&text);
             }
@@ -299,7 +294,7 @@ impl BreakScreen {
     }
 
     pub fn hide(&mut self) {
-        if self.windows.is_empty() {
+        if self.overlays.is_empty() {
             return;
         }
         // reduce motion: tear down immediately
@@ -311,13 +306,12 @@ impl BreakScreen {
         // reverse of the entrance. animations hold their final state so the overlay stays
         // faded/blurred right up to teardown.
         let now = CACurrentMediaTime();
-        for backdrop in &self.backdrops {
-            if let Some(layer) = backdrop.layer() {
+        let overlays = std::mem::take(&mut self.overlays);
+        for overlay in &overlays {
+            if let Some(layer) = overlay.backdrop.layer() {
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
             }
-        }
-        for foreground in &self.foregrounds {
-            if let Some(layer) = foreground.layer() {
+            if let Some(layer) = overlay.foreground.layer() {
                 attach_unclipped_blur(&layer, 0.0);
                 layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
                 layer.addAnimation_forKey(
@@ -327,34 +321,25 @@ impl BreakScreen {
             }
         }
 
-        // defer teardown until the blur-out finishes. windows move into the timer block so
-        // they stay on screen for the animation, then the block orders them out and restores
-        // accessory mode.
-        let windows = std::mem::take(&mut self.windows);
+        // the overlays move into the timer so they stay on screen for the animation, then it
+        // orders them out and restores accessory mode
         let mtm = self.mtm;
         after(mtm, EXIT_DURATION + 0.05, move || {
-            for window in &windows {
-                window.orderOut(None);
+            for overlay in &overlays {
+                overlay.window.orderOut(None);
             }
             NSApplication::sharedApplication(mtm)
                 .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         });
-
-        self.backdrops.clear();
-        self.foregrounds.clear();
-        self.countdown_labels.clear();
     }
 
     /// no exit animation. order every window out, forget the views, drop back to accessory.
     /// used when reopening and when reduce motion is on.
     fn teardown_now(&mut self) {
-        let had_windows = !self.windows.is_empty();
-        for window in self.windows.drain(..) {
-            window.orderOut(None);
+        let had_windows = !self.overlays.is_empty();
+        for overlay in self.overlays.drain(..) {
+            overlay.window.orderOut(None);
         }
-        self.backdrops.clear();
-        self.foregrounds.clear();
-        self.countdown_labels.clear();
 
         if had_windows {
             let app = NSApplication::sharedApplication(self.mtm);
@@ -414,8 +399,14 @@ fn animate_delayed_entrance(
     detach_blur_after(mtm, layer, begin - now + 0.5);
 }
 
-/// old digit shrinks/blurs out, new digit starts larger/blurred and resolves in place
-fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSString) {
+/// old digit shrinks/blurs out, new digit starts larger/blurred and resolves in place.
+/// `parent` holds `label`.
+fn animate_countdown_swap(
+    mtm: MainThreadMarker,
+    parent: &NSView,
+    label: &NSTextField,
+    text: &NSString,
+) {
     let old_text = label.stringValue();
     let outgoing = NSTextField::labelWithString(&old_text, mtm);
     outgoing.setWantsLayer(true);
@@ -429,9 +420,7 @@ fn animate_countdown_swap(mtm: MainThreadMarker, label: &NSTextField, text: &NSS
         outgoing.setTextColor(Some(&color));
     }
 
-    if let Some(parent) = unsafe { label.superview() } {
-        parent.addSubview(&outgoing);
-    }
+    parent.addSubview(&outgoing);
 
     label.setStringValue(text);
 

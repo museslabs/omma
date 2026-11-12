@@ -8,12 +8,13 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CACurrentMediaTime;
 
-use super::glass_button::{GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button};
+use super::glass_button::{
+    Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+};
 use super::panel::{
     Fill, LabelStyle, Panel, after, attach_blur, blur_radius, detach_blur_after, fade, make_label,
     make_panel, slide_y,
 };
-use crate::config::KeySpec;
 
 const PANEL_W: f64 = 340.0;
 const PANEL_H: f64 = 112.0;
@@ -29,37 +30,25 @@ const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
 
 pub struct PreBreakDialog {
     mtm: MainThreadMarker,
-    window: Option<Retained<Panel>>,
-    glass: Option<Retained<NSGlassEffectView>>,
-    body: Option<Retained<NSView>>,
-    countdown_label: Option<Retained<NSTextField>>,
+    /// None from the moment `hide` starts
+    shown: Option<Showing>,
+}
+
+struct Showing {
+    window: Retained<Panel>,
+    glass: Retained<NSGlassEffectView>,
+    body: Retained<NSView>,
+    countdown: Retained<NSTextField>,
 }
 
 impl PreBreakDialog {
     pub fn new(mtm: MainThreadMarker) -> PreBreakDialog {
-        PreBreakDialog {
-            mtm,
-            window: None,
-            glass: None,
-            body: None,
-            countdown_label: None,
-        }
+        PreBreakDialog { mtm, shown: None }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "grouped into a struct when the panel code is shared"
-    )]
-    pub fn show(
-        &mut self,
-        _name: &str,
-        allow_skip: bool,
-        allow_postpone: bool,
-        seconds_until_break: u64,
-        skip_key: Option<KeySpec>,
-        postpone_key: Option<KeySpec>,
-        target: &AnyObject,
-    ) {
+    /// a skip key or a postpone key is a global shortcut: the button shows its hint and the
+    /// shortcut is held elsewhere. without skip, the warning offers Dismiss.
+    pub fn show(&mut self, seconds_until_break: u64, buttons: Buttons, target: &AnyObject) {
         self.hide();
 
         let Some(screen) = NSScreen::mainScreen(self.mtm) else {
@@ -134,15 +123,16 @@ impl PreBreakDialog {
         );
         body.addSubview(&countdown);
 
-        let primary_title = if allow_skip { "Skip" } else { "Dismiss" };
-        let primary_action = if allow_skip {
-            sel!(skip:)
-        } else {
-            sel!(dismissWarning:)
+        let (primary_title, primary_action, primary_key) = match buttons.skip {
+            Some(skip) => ("Skip", sel!(skip:), skip.key.map(Shortcut::Global)),
+            None => ("Dismiss", sel!(dismissWarning:), None),
         };
-        let primary_key = skip_key.filter(|_| allow_skip).map(Shortcut::Global);
         let button_x = PANEL_W - BUTTON_W - 28.0;
-        let primary_y = if allow_postpone { 18.0 } else { 38.0 };
+        let primary_y = if buttons.postpone.is_some() {
+            18.0
+        } else {
+            38.0
+        };
         let primary = make_glass_button(
             self.mtm,
             primary_title,
@@ -157,11 +147,11 @@ impl PreBreakDialog {
         ));
         body.addSubview(&primary);
 
-        if allow_postpone {
+        if let Some(postpone) = buttons.postpone {
             let postpone = make_glass_button(
                 self.mtm,
                 "Postpone",
-                postpone_key.map(Shortcut::Global),
+                postpone.key.map(Shortcut::Global),
                 target,
                 sel!(postpone:),
                 &BUTTON_STYLE,
@@ -190,29 +180,36 @@ impl PreBreakDialog {
         }
 
         window.orderFrontRegardless();
-        self.window = Some(window);
-        self.glass = Some(glass);
-        self.body = Some(body);
-        self.countdown_label = Some(countdown);
+        self.shown = Some(Showing {
+            window,
+            glass,
+            body,
+            countdown,
+        });
     }
 
     pub fn is_visible(&self) -> bool {
-        self.window.is_some()
+        self.shown.is_some()
     }
 
-    pub fn update_countdown(&mut self, seconds_until_break: u64) {
-        if let Some(label) = &self.countdown_label {
-            label.setStringValue(&NSString::from_str(&fmt_seconds(seconds_until_break)));
+    pub fn update_countdown(&self, seconds_until_break: u64) {
+        if let Some(shown) = &self.shown {
+            let text = NSString::from_str(&fmt_seconds(seconds_until_break));
+            shown.countdown.setStringValue(&text);
         }
     }
 
     pub fn hide(&mut self) {
-        let Some(window) = self.window.take() else {
+        let Some(Showing {
+            window,
+            glass,
+            body,
+            ..
+        }) = self.shown.take()
+        else {
             return;
         };
-        if let Some(glass) = self.glass.take()
-            && let Some(layer) = glass.layer()
-        {
+        if let Some(layer) = glass.layer() {
             let now = CACurrentMediaTime();
             attach_blur(&layer, 0.0);
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
@@ -222,9 +219,7 @@ impl PreBreakDialog {
             );
             layer.addAnimation_forKey(&slide_y(0.0, 28.0, now, HIDE_DURATION, Fill::Exit), None);
         }
-        if let Some(body) = self.body.take()
-            && let Some(layer) = body.layer()
-        {
+        if let Some(layer) = body.layer() {
             let now = CACurrentMediaTime();
             attach_blur(&layer, 0.0);
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
@@ -233,7 +228,6 @@ impl PreBreakDialog {
                 None,
             );
         }
-        self.countdown_label = None;
 
         after(self.mtm, HIDE_DURATION + 0.03, move || {
             window.orderOut(None)
