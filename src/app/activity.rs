@@ -15,6 +15,10 @@ use objc2_core_foundation::{
 
 use crate::config::{AppName, DoNotDisturb, TitlePattern};
 
+/// how long an Accessibility call waits for an app before it fails. a hung app would hold
+/// omma's main thread for the system's default, about 6 s.
+const AX_TIMEOUT_SECS: f32 = 0.25;
+
 /// whether a rule holds now. permission for the window rules is checked each time, so a
 /// grant while omma runs counts at once.
 pub fn should_suppress(dnd: &DoNotDisturb) -> bool {
@@ -42,6 +46,7 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> bool {
     if !dnd.needs_accessibility() || !unsafe { AXIsProcessTrusted() } {
         return false;
     }
+    limit_ax_wait();
     (dnd.skip_when_fullscreen && frontmost_is_fullscreen(&workspace))
         || (!dnd.window_title_matches.is_empty()
             && any_window_title_matches(&workspace, &dnd.window_title_matches))
@@ -82,6 +87,16 @@ fn running_app_matches(app: &NSRunningApplication, rules: &[AppName]) -> bool {
         .map(|s| s.to_string())
         .unwrap_or_default();
     app_matches(rules, &name, &bundle_id)
+}
+
+/// caps every Accessibility call's wait: the system-wide element's timeout is the global
+/// one. set before each round of calls, since Apple doesn't document whether setting it
+/// before permission is granted holds.
+fn limit_ax_wait() {
+    // SAFETY: no arguments
+    let system = unsafe { AXUIElement::new_system_wide() };
+    // SAFETY: plain values. the call fails only for an invalid element or a negative timeout.
+    let _ = unsafe { system.set_messaging_timeout(AX_TIMEOUT_SECS) };
 }
 
 /// the app's top-level accessibility element
