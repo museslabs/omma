@@ -296,7 +296,8 @@ impl Core {
         match self.phase {
             Phase::Disabled => "Disabled".into(),
             Phase::Paused { .. } => "Paused (idle)".into(),
-            Phase::Warning { .. } | Phase::Break { .. } => "Break in progress".into(),
+            Phase::Warning { .. } => "Break soon".into(),
+            Phase::Break { .. } => "Break in progress".into(),
             Phase::Waiting { since, postponed } => {
                 match ceil_secs(now, self.warn_at(since, postponed)) {
                     0 => "Next break shortly".into(),
@@ -1347,7 +1348,7 @@ mod tests {
         assert_eq!(core.status_text(at_ms(59_500)), "Next break in 1s - s0");
         assert_eq!(core.status_text(at(60)), "Next break shortly");
         assert_eq!(step(&mut core, at(60)), Some(Event::Warn));
-        assert_eq!(core.status_text(at(60)), "Break in progress");
+        assert_eq!(core.status_text(at(60)), "Break soon");
         assert_eq!(step(&mut core, at(62)), Some(Event::BreakStarted));
         assert_eq!(core.status_text(at(62)), "Break in progress");
         assert_eq!(step(&mut core, at(65)), BREAK_ENDED);
