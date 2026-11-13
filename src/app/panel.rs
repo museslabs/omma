@@ -9,9 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBackingStoreType, NSColor,
-    NSFont, NSPanel, NSScreenSaverWindowLevel, NSTextAlignment, NSTextField,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+    NSBackingStoreType, NSColor, NSFont, NSPanel, NSScreenSaverWindowLevel, NSTextAlignment,
+    NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -20,7 +20,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{
     CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
-    kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
+    CATransaction, kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
 };
 
 define_class!(
@@ -92,6 +92,14 @@ pub fn keep_dark(panel: &Panel) {
     }
 }
 
+pub fn is_dark(appearance: &NSAppearance) -> bool {
+    // SAFETY: immutable AppKit constants
+    let (light, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
+    appearance
+        .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[light, dark]))
+        .is_some_and(|name| name.isEqualToString(dark))
+}
+
 pub struct LabelStyle<'a> {
     pub font: &'a NSFont,
     pub color: &'a NSColor,
@@ -153,7 +161,8 @@ pub enum Fill {
     Exit,
 }
 
-fn basic(
+/// animates the number at `key_path` on an ease-in-out curve
+pub fn property(
     key_path: &str,
     from: f64,
     to: f64,
@@ -195,7 +204,7 @@ pub fn fade(
     duration: f64,
     fill: Fill,
 ) -> Retained<CABasicAnimation> {
-    basic("opacity", from, to, begin, duration, fill)
+    property("opacity", from, to, begin, duration, fill)
 }
 
 /// animates the blur that `attach_blur` adds
@@ -206,7 +215,7 @@ pub fn blur_radius(
     duration: f64,
     fill: Fill,
 ) -> Retained<CABasicAnimation> {
-    basic("filters.blur.inputRadius", from, to, begin, duration, fill)
+    property("filters.blur.inputRadius", from, to, begin, duration, fill)
 }
 
 pub fn scale(
@@ -216,7 +225,7 @@ pub fn scale(
     duration: f64,
     fill: Fill,
 ) -> Retained<CABasicAnimation> {
-    basic("transform.scale", from, to, begin, duration, fill)
+    property("transform.scale", from, to, begin, duration, fill)
 }
 
 pub fn slide_y(
@@ -226,7 +235,20 @@ pub fn slide_y(
     duration: f64,
     fill: Fill,
 ) -> Retained<CABasicAnimation> {
-    basic("transform.translation.y", from, to, begin, duration, fill)
+    property("transform.translation.y", from, to, begin, duration, fill)
+}
+
+/// for things that arrive: off the mark at once, then a long, gentle settle
+pub fn arrive() -> Retained<CAMediaTimingFunction> {
+    CAMediaTimingFunction::functionWithControlPoints(0.32, 0.72, 0.0, 1.0)
+}
+
+/// changes layer properties at once, without the implicit animation Core Animation adds
+pub fn without_actions(f: impl FnOnce()) {
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    f();
+    CATransaction::commit();
 }
 
 /// the number at `key_path` as it's on screen now, partway through any animation

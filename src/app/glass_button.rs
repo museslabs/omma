@@ -4,18 +4,30 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSButton, NSColor, NSEventModifierFlags, NSFont, NSFontAttributeName,
-    NSFontWeightMedium, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
-    NSView,
+    NSAccessibility, NSAppearanceCustomization, NSButton, NSColor, NSEvent, NSEventModifierFlags,
+    NSFont, NSFontAttributeName, NSFontWeightMedium, NSForegroundColorAttributeName,
+    NSGlassEffectView, NSGlassEffectViewStyle, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
+use objc2_core_graphics::CGColor;
 use objc2_foundation::{
-    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
+    MainThreadMarker, NSMutableAttributedString, NSPoint, NSPointInRect, NSRange, NSRect, NSSize,
+    NSString,
 };
+use objc2_quartz_core::{CACurrentMediaTime, CALayer};
 
+use super::panel::{Fill, arrive, is_dark, presented, property, without_actions};
 use crate::config::{Key, KeySpec};
+
+/// under the pointer a glow over a button comes up to this opacity: white in the dark
+/// appearance, black in the light. nothing moves. coming is quicker than going
+const HOVER_GLOW: f64 = 0.10;
+const HOVER_IN: f64 = 0.15;
+const HOVER_OUT: f64 = 0.22;
 
 pub struct Hosted {
     button: Retained<NSButton>,
+    /// over the button, in its shape
+    glow: Retained<CALayer>,
     /// the button's own key equivalent, which it has only while awake
     key: Option<(Retained<NSString>, NSEventModifierFlags)>,
     awake: Cell<bool>,
@@ -23,8 +35,9 @@ pub struct Hosted {
 
 define_class!(
     /// a button in its container, which is what goes in the view hierarchy. the container
-    /// can put the button to sleep: asleep it takes neither clicks nor its key, and looks no
-    /// different, where a disabled button would dim its title
+    /// shows the hover, a glow that fades where AppKit's own would snap, and can put the
+    /// button to sleep: asleep it takes neither clicks nor its key, and looks no different,
+    /// where a disabled button would dim its title
     // SAFETY: NSView can be subclassed. each override has the signature AppKit declares,
     // which registering the class checks.
     #[unsafe(super(NSView))]
@@ -45,16 +58,57 @@ define_class!(
             let this: &NSView = self;
             std::ptr::from_ref(this).cast_mut()
         }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            if self.ivars().awake.get() {
+                self.hover(true);
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.hover(false);
+        }
+
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window(&self) {
+            // SAFETY: NSView's own method, which takes and returns nothing
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            self.tint();
+        }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            // SAFETY: NSView's own method, which takes and returns nothing
+            let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
+            self.tint();
+        }
     }
 );
 
 impl ButtonHost {
-    /// awake, the button takes clicks and its key. a new button is awake
+    /// the glow lightens a dark button and darkens a light one
+    fn tint(&self) {
+        let white = if is_dark(&self.effectiveAppearance()) {
+            1.0
+        } else {
+            0.0
+        };
+        without_actions(|| {
+            self.ivars()
+                .glow
+                .setBackgroundColor(Some(&CGColor::new_generic_gray(white, 1.0)));
+        });
+    }
+
+    /// awake, the button takes clicks and its key and shows a hover. a new button is awake
     pub fn set_awake(&self, awake: bool) {
         let Hosted {
             button,
             key,
             awake: now,
+            ..
         } = self.ivars();
         now.set(awake);
         if let Some((key, mods)) = key {
@@ -65,6 +119,31 @@ impl ButtonHost {
                 button.setKeyEquivalent(&NSString::new());
             }
         }
+        // a pointer that was already on the button when it woke gets its hover
+        if awake && let Some(window) = self.window() {
+            let at = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+            if NSPointInRect(at, self.bounds()) {
+                self.hover(true);
+            }
+        }
+    }
+
+    /// eases the button's glow up or away, from wherever it has got to
+    fn hover(&self, on: bool) {
+        let glow = &self.ivars().glow;
+        let from = presented(glow, "opacity").unwrap_or(0.0);
+        let to = if on { HOVER_GLOW } else { 0.0 };
+        let duration = if on { HOVER_IN } else { HOVER_OUT };
+        let anim = property(
+            "opacity",
+            from,
+            to,
+            CACurrentMediaTime(),
+            duration,
+            Fill::Exit,
+        );
+        anim.setTimingFunction(Some(&arrive()));
+        glow.addAnimation_forKey(&anim, Some(&NSString::from_str("opacity")));
     }
 }
 
@@ -185,8 +264,15 @@ pub fn make_glass_button(
     let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, style.height));
     button.setFrame(rect);
 
+    let glow = CALayer::new();
+    glow.setFrame(rect);
+    glow.setCornerRadius(style.height / 2.0);
+    glow.setBackgroundColor(Some(&CGColor::new_generic_gray(1.0, 1.0)));
+    glow.setOpacity(0.0);
+    glow.setZPosition(1.0);
     let host = ButtonHost::alloc(mtm).set_ivars(Hosted {
         button: button.clone(),
+        glow: glow.clone(),
         key,
         awake: Cell::new(false),
     });
@@ -198,7 +284,27 @@ pub fn make_glass_button(
     glass.setStyle(NSGlassEffectViewStyle::Regular);
     glass.setContentView(Some(&button));
     host.addSubview(&glass);
+    if let Some(layer) = host.layer() {
+        layer.addSublayer(&glow);
+    }
     host.set_awake(true);
+    // the area follows the view's visible rect, and reports the pointer whether or not
+    // omma is active, which it never is
+    let owner: &AnyObject = &host;
+    // SAFETY: the owner is the view the area goes on, which implements the two methods
+    // these options make it send. the area doesn't outlive that view
+    let area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect::ZERO,
+            NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect,
+            Some(owner),
+            None,
+        )
+    };
+    host.addTrackingArea(&area);
     host
 }
 
