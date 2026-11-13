@@ -16,7 +16,7 @@ use objc2_quartz_core::{
 };
 
 use super::flip::FlipCount;
-use super::panel::{Fill, linear, presented, property, set_fill, without_actions};
+use super::panel::{Fill, arrive, linear, presented, property, set_fill, travel, without_actions};
 
 /// sRGB and alpha
 pub type Rgba = (f64, f64, f64, f64);
@@ -35,6 +35,10 @@ struct Disc {
     light: (f64, f64),
     /// as a share of the bead's radius
     radius: f64,
+    /// how far it shifts toward the pointer, as a share of the bead's diameter. the pupil
+    /// moves most, and shifting by different amounts the discs read as layers at different
+    /// depths
+    depth: (f64, f64),
 }
 
 /// the pupil is one flat colour, which the count's leaves match: `oklch(0.17 0.04 268)`, a
@@ -66,18 +70,35 @@ const DISCS: [Disc; 3] = [
         dome: Some(&WHITE),
         light: (0.36, 0.68),
         radius: 0.68,
+        depth: (0.016, 0.012),
     },
     Disc {
         dome: Some(&SKY),
         light: (0.40, 0.62),
         radius: 0.55,
+        depth: (0.040, 0.031),
     },
     Disc {
         dome: None,
         light: (0.5, 0.5),
         radius: 0.42,
+        depth: (0.075, 0.058),
     },
 ];
+
+/// a blink squashes the pupil flat like a closing lid, a little wider as it goes: its
+/// scale across and up when shut
+const BLINK_SHUT: (f64, f64) = (1.12, 0.10);
+/// it springs open a touch too tall and narrow, then settles
+const BLINK_BOUNCE: (f64, f64) = (0.96, 1.08);
+/// closing is quick, opening a little slower, and the settle slowest
+const BLINK_CLOSE: f64 = 0.09;
+const BLINK_OPEN: f64 = 0.14;
+const BLINK_SETTLE: f64 = 0.16;
+/// the blinks come round again after this long. each starts this many seconds in. they're
+/// spaced unevenly, the last two a double, to keep the round from reading as a beat
+const BLINK_PERIOD: f64 = 9.0;
+const BLINKS: [f64; 3] = [2.4, 5.9, 6.34];
 
 /// the cobalt: deep and saturated, lightest where the light falls on it at the top left and
 /// darkening to its far edge. its hue turns toward violet as it darkens, which keeps the
@@ -314,17 +335,19 @@ pub struct Bead {
     diameter: f64,
     /// the colour beneath the glass, blurred separately during entrances and exits
     content: Retained<NSView>,
+    discs: [Retained<CALayer>; 3],
     /// masks for the pigment and rings, sharing one moving liquid level
-    surface: [Retained<CAShapeLayer>; 2],
+    surface: Option<[Retained<CAShapeLayer>; 2]>,
     /// every layer shaped by the body's outline, which `drift` sets moving
     followers: Vec<Follower>,
-    count: FlipCount,
+    count: Option<FlipCount>,
 }
 
 impl Bead {
-    /// `scale` is the backing scale of the display it shows on. the pupil shows a number
-    /// that `set_count` changes
-    pub fn new(mtm: MainThreadMarker, diameter: f64, scale: f64) -> Bead {
+    /// `scale` is the backing scale of the display it shows on. with `counts`, the pupil
+    /// shows a number that `set_count` changes, the liquid can drain and the outline can
+    /// drift
+    pub fn new(mtm: MainThreadMarker, diameter: f64, scale: f64, counts: bool) -> Bead {
         let d = diameter;
         let r = d / 2.0;
         let centre = NSPoint::new(r, r);
@@ -361,7 +384,7 @@ impl Bead {
         glass.setContentView(Some(&foreground));
         view.addSubview(&glass);
         glass.setWantsLayer(true);
-        if let Some(layer) = glass.layer() {
+        if counts && let Some(layer) = glass.layer() {
             let outline = outlined(d, Outline::Glass, scale);
             follow(&outline, "path", Outline::Glass);
             // SAFETY: the mask is a fresh layer with no superlayer of its own
@@ -412,7 +435,7 @@ impl Bead {
         iris.addSublayer(&discs[1]);
         front.addSublayer(&iris);
 
-        let surface = {
+        let surface = counts.then(|| {
             let wave = || {
                 let layer = CAShapeLayer::new();
                 layer.setBounds(NSRect::new(
@@ -434,16 +457,20 @@ impl Bead {
             unsafe { iris.setMask(Some(&iris_mask)) };
 
             [mask, iris_mask]
-        };
+        });
         front.addSublayer(&discs[2]);
 
-        let count = FlipCount::new(mtm, d * COUNT_SIZE, PUPIL, centre);
-        foreground.addSubview(&count.view);
+        let count = counts.then(|| {
+            let count = FlipCount::new(mtm, d * COUNT_SIZE, PUPIL, centre);
+            foreground.addSubview(&count.view);
+            count
+        });
 
         Bead {
             view,
             diameter: d,
             content,
+            discs,
             surface,
             followers,
             count,
@@ -501,11 +528,76 @@ impl Bead {
     /// the number in the pupil, and how VoiceOver reads it. with `flip`, the digits that
     /// change turn over like the leaves of a flip clock
     pub fn set_count(&self, text: &str, spoken: &str, flip: bool) {
-        self.count.set(text, spoken, flip);
+        if let Some(count) = &self.count {
+            count.set(text, spoken, flip);
+        }
+    }
+
+    /// shifts the inner discs toward a point `x`, `y` in -1…1, with y up. the pupil moves most
+    pub fn look(&self, x: f64, y: f64) {
+        let d = self.diameter;
+        without_actions(|| {
+            for (layer, disc) in self.discs.iter().zip(&DISCS) {
+                layer.setPosition(NSPoint::new(
+                    d / 2.0 + x * d * disc.depth.0,
+                    d / 2.0 + y * d * disc.depth.1,
+                ));
+            }
+        });
+    }
+
+    /// sets the pupil blinking, for as long as the bead lives: now and then it squashes
+    /// flat about its own centre, wherever it's looking, and bounces open again
+    pub fn blink(&self) {
+        let numbers = |numbers: &[f64]| {
+            let numbers: Vec<_> = numbers.iter().map(|&n| NSNumber::new_f64(n)).collect();
+            NSArray::from_retained_slice(&numbers)
+        };
+        for (key, shut, bounce) in [
+            ("transform.scale.x", BLINK_SHUT.0, BLINK_BOUNCE.0),
+            ("transform.scale.y", BLINK_SHUT.1, BLINK_BOUNCE.1),
+        ] {
+            let mut values = vec![1.0];
+            let mut times = vec![0.0];
+            let mut timings = Vec::new();
+            for start in BLINKS {
+                let shut_at = start + BLINK_CLOSE;
+                let open_at = shut_at + BLINK_OPEN;
+                for (at, value, timing) in [
+                    (start, 1.0, linear()),
+                    (shut_at, shut, travel()),
+                    (open_at, bounce, arrive()),
+                    (open_at + BLINK_SETTLE, 1.0, travel()),
+                ] {
+                    values.push(value);
+                    times.push(at / BLINK_PERIOD);
+                    timings.push(timing);
+                }
+            }
+            values.push(1.0);
+            times.push(1.0);
+            timings.push(linear());
+
+            let anim = CAKeyframeAnimation::animationWithKeyPath(Some(&NSString::from_str(key)));
+            // SAFETY: an array of NSNumbers is an array of objects, and it's only read.
+            // NSNumbers are the value type these key paths animate
+            unsafe {
+                let values: Retained<NSArray> = Retained::cast_unchecked(numbers(&values));
+                anim.setValues(Some(&values));
+            }
+            anim.setKeyTimes(Some(&numbers(&times)));
+            anim.setTimingFunctions(Some(&NSArray::from_retained_slice(&timings)));
+            anim.setDuration(BLINK_PERIOD);
+            anim.setRepeatCount(f32::INFINITY);
+            self.discs[2].addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
+        }
     }
 
     /// sets the wave on the liquid's surface going, for as long as the bead lives
     pub fn flow(&self) {
+        let Some(surface) = &self.surface else {
+            return;
+        };
         let r = self.diameter / 2.0;
         let pass = property(
             "position.x",
@@ -517,7 +609,7 @@ impl Bead {
         );
         pass.setTimingFunction(Some(&linear()));
         pass.setRepeatCount(f32::INFINITY);
-        for layer in &self.surface {
+        for layer in surface {
             layer.addAnimation_forKey(&pass, Some(&NSString::from_str("wave")));
         }
     }
@@ -526,8 +618,11 @@ impl Bead {
     /// over `FLOW` from wherever it is on screen. without `animate` the level steps instead,
     /// for reduced motion.
     pub fn drain_to(&self, left: f64, begin: f64, animate: bool) {
+        let Some(surface) = &self.surface else {
+            return;
+        };
         let y = level_y(self.diameter, height_for(left.clamp(0.0, 1.0)));
-        for layer in &self.surface {
+        for layer in surface {
             let from = presented(layer, "position.y").unwrap_or(layer.position().y);
             without_actions(|| layer.setPosition(NSPoint::new(self.diameter / 2.0, y)));
             if animate {
@@ -670,6 +765,24 @@ mod tests {
     fn the_pupil_is_the_oklch_colour_its_comment_names() {
         let srgb = oklch_to_linear_srgb((0.17, 0.04, 268.0)).map(encode);
         assert!(close([PUPIL.0, PUPIL.1, PUPIL.2], srgb));
+    }
+
+    #[test]
+    fn each_disc_stays_inside_the_one_around_it_wherever_it_looks() {
+        for pair in DISCS.windows(2) {
+            let (outer, inner) = (&pair[0], &pair[1]);
+            // radii are shares of the bead's radius, depths of its diameter
+            let room = (outer.radius - inner.radius) / 2.0;
+            assert!(inner.depth.0 - outer.depth.0 < room);
+            assert!(inner.depth.1 - outer.depth.1 < room);
+        }
+    }
+
+    #[test]
+    fn the_blinks_follow_one_another_inside_the_round() {
+        let length = BLINK_CLOSE + BLINK_OPEN + BLINK_SETTLE;
+        assert!(BLINKS.windows(2).all(|pair| pair[0] + length < pair[1]));
+        assert!(BLINKS[BLINKS.len() - 1] + length < BLINK_PERIOD);
     }
 
     #[test]

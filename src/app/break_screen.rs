@@ -305,7 +305,7 @@ impl BreakScreen {
                 button.set_awake(false);
             }
 
-            let bead = Bead::new(mtm, d, screen.backingScaleFactor());
+            let bead = Bead::new(mtm, d, screen.backingScaleFactor(), true);
             bead.set_count(&fmt_count(remaining), &spoken_count(remaining), false);
             bead.view.setFrameOrigin(NSPoint::new(cx - d / 2.0, bead_y));
             content.addSubview(&bead.view);

@@ -4,6 +4,7 @@
 mod activity;
 mod bead;
 mod break_screen;
+mod charm;
 mod flip;
 mod glass_button;
 mod hotkey;
@@ -831,8 +832,8 @@ impl App {
         self.apply_status_icon(TrayIconState::Normal);
     }
 
-    /// the bottom centre of the menu-bar icon in screen coordinates, which the warning sits
-    /// beside. None when the icon isn't on any display, as when the menu bar is too full
+    /// the bottom centre of the menu-bar icon in screen coordinates, where the warning's bead
+    /// hangs from. None when the icon isn't on any display, as when the menu bar is too full
     /// for it
     fn status_anchor(&self) -> Option<NSPoint> {
         let button = self.status_item.as_ref()?.button(self.mtm)?;

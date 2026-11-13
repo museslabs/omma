@@ -41,10 +41,10 @@ with no Dock icon, and isn't packaged as an app bundle.
 
 - **Short and long breaks** on their own intervals: by default a short break
   every 15 minutes and a long one every 75.
-- **A warning before each break**, a small panel by the menu-bar icon with a
-  countdown and Skip and Postpone buttons. In strict mode Skip becomes Dismiss,
-  which only closes the panel. The warning never takes keyboard focus from the
-  app you're typing in.
+- **A warning before each break**, a bead that drops from the menu-bar icon on a
+  thread and a small panel beside it with a countdown and Skip and Postpone
+  buttons. In strict mode Skip becomes Dismiss, which only closes the warning.
+  The warning never takes keyboard focus from the app you're typing in.
 - **A break screen** on every display, with the break's name, a countdown in a
   bead whose colour drains as the break runs, optional background image, and
   Skip and Postpone buttons. The countdown starts once the screen has faded in,

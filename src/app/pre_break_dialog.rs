@@ -1,5 +1,6 @@
-//! the warning: a compact glass notification by the menu-bar icon counts down with skip
-//! and postpone buttons.
+//! the warning: a mati bead drops off the menu-bar icon on a thread, and a compact glass
+//! notification beside it counts down with skip and postpone buttons. they're two panels,
+//! which keeps the clear space between them from taking clicks.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -11,6 +12,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSPointInRect, NSRect, NSSize, NSString};
 use objc2_quartz_core::CACurrentMediaTime;
 
+use super::charm::Charm;
 use super::glass_button::{
     ButtonHost, Buttons, GlassButtonStyle, Shortcut, Surface, make_glass_button,
 };
@@ -37,18 +39,24 @@ const COUNT_GAP: f64 = 4.0;
 /// the capsule's narrowest, and the closest it comes to the display's edge
 const CAPSULE_MIN_W: f64 = 336.0;
 const SCREEN_EDGE: f64 = 12.0;
-/// from the capsule's right edge to the middle of the menu-bar icon, and from the menu bar
-/// down to the capsule
+/// from the capsule's right edge to the thread, and from the menu bar down to the capsule
 const CAPSULE_GAP: f64 = 46.0;
 const CAPSULE_DROP: f64 = 12.0;
+const THREAD: f64 = 42.0;
+const BEAD: f64 = 64.0;
+/// the charm's panel: wide enough for the swing, rubber band included, and deep enough for
+/// thread and bead
+const CHARM_W: f64 = 240.0;
+const CHARM_H: f64 = THREAD + BEAD + 18.0;
 /// the capsule's corners, concentric with its buttons': theirs, plus the padding between
 const CAPSULE_RADIUS: f64 = BUTTON_H / 2.0 + PAD;
 /// clear space around the capsule in its panel, for the glass's own shadow.
 /// it reaches up to the menu bar and no further, so the bar still takes its clicks
 const CAPSULE_MARGIN: f64 = CAPSULE_DROP;
-/// the capsule fades in where it sits as its text and buttons come out of a slight blur, and
-/// it leaves the same way. nothing moves or changes size
+/// the capsule fades in where it sits, a beat after the bead drops, as its text and buttons
+/// come out of a slight blur, and it leaves the same way. nothing moves or changes size
 const CONTENT_BLUR: f64 = 4.0;
+const SHOW_DELAY: f64 = 0.10;
 const SHOW_DURATION: f64 = 0.22;
 const HIDE_DURATION: f64 = 0.18;
 /// the menu bar's height, for placing the warning when the icon can't be found
@@ -77,6 +85,8 @@ struct Showing {
     body: Retained<NSView>,
     countdown: Retained<NSTextField>,
     buttons: Vec<Retained<ButtonHost>>,
+    charm_window: Retained<Panel>,
+    charm: Retained<Charm>,
 }
 
 impl PreBreakDialog {
@@ -85,7 +95,7 @@ impl PreBreakDialog {
     }
 
     /// `anchor` is the bottom centre of the menu-bar icon, in screen coordinates; without it
-    /// the warning sits at the top right of the main display. a skip or postpone key is a
+    /// the warning hangs at the top right of the main display. a skip or postpone key is a
     /// global shortcut, held by `Hotkeys`; the button only shows its hint. without skip, the
     /// warning offers Dismiss.
     pub fn show(
@@ -184,9 +194,12 @@ impl PreBreakDialog {
         let text_h = prefix.frame().size.height;
         let capsule_h = PAD + heading_h + LINE_GAP + text_h + TEXT_GAP + BUTTON_H + PAD;
 
-        let screen = screen_at(mtm, anchor).map_or(NSRect::ZERO, |screen| screen.frame());
-        let left = screen.origin.x + SCREEN_EDGE;
-        let right = screen.origin.x + screen.size.width - SCREEN_EDGE - capsule_w;
+        let screen = screen_at(mtm, anchor);
+        let screen_frame = screen
+            .as_ref()
+            .map_or(NSRect::ZERO, |screen| screen.frame());
+        let left = screen_frame.origin.x + SCREEN_EDGE;
+        let right = screen_frame.origin.x + screen_frame.size.width - SCREEN_EDGE - capsule_w;
         let capsule_x = (anchor.x - CAPSULE_GAP - capsule_w).clamp(left, right.max(left));
         let capsule_frame = NSRect::new(
             NSPoint::new(capsule_x, anchor.y - CAPSULE_DROP - capsule_h),
@@ -208,7 +221,7 @@ impl PreBreakDialog {
             ),
         );
 
-        // the panel never becomes key, so the warning takes no focus from the user's app
+        // neither panel ever becomes key, so the warning takes no focus from the user's app
         let capsule_window = make_panel(mtm, window_frame, false);
         let Some(content) = capsule_window.contentView() else {
             return;
@@ -249,29 +262,45 @@ impl PreBreakDialog {
             x += width + BUTTON_GAP;
         }
 
+        let charm_frame = NSRect::new(
+            NSPoint::new(anchor.x - CHARM_W / 2.0, anchor.y - CHARM_H),
+            NSSize::new(CHARM_W, CHARM_H),
+        );
+        let charm_window = make_panel(mtm, charm_frame, false);
+        // the panel is wide, for the swing, and mostly empty: clicks go through it to the
+        // app underneath. the charm takes them only while the pointer is on the bead
+        charm_window.setIgnoresMouseEvents(true);
+        let scale = screen.map_or(2.0, |screen| screen.backingScaleFactor());
+        let charm = Charm::new(mtm, charm_frame.size, THREAD, BEAD, scale);
+        charm_window.setContentView(Some(&charm));
+
         let animate = animations_on();
         let now = CACurrentMediaTime();
         if !animate {
-            // reduced motion: it fades up where it is
-            if let Some(layer) = capsule.layer() {
+            // reduced motion: both fade up where they are
+            for layer in [capsule.layer(), charm.layer()].into_iter().flatten() {
                 layer.addAnimation_forKey(&fade(0.0, 1.0, now, CROSS_FADE, Fill::Entrance), None);
             }
         } else {
+            charm.bubble_in(now);
+            let begin = now + SHOW_DELAY;
             if let Some(layer) = capsule.layer() {
-                let appear = fade(0.0, 1.0, now, SHOW_DURATION, Fill::Entrance);
+                let appear = fade(0.0, 1.0, begin, SHOW_DURATION, Fill::Entrance);
                 appear.setTimingFunction(Some(&arrive()));
                 layer.addAnimation_forKey(&appear, None);
             }
             if let Some(layer) = body.layer() {
                 attach_blur(&layer, 0.0);
-                let sharpen = blur_radius(CONTENT_BLUR, 0.0, now, SHOW_DURATION, Fill::Entrance);
+                let sharpen = blur_radius(CONTENT_BLUR, 0.0, begin, SHOW_DURATION, Fill::Entrance);
                 sharpen.setTimingFunction(Some(&arrive()));
                 layer.addAnimation_forKey(&sharpen, None);
-                detach_blur_after(mtm, layer, SHOW_DURATION + 0.05);
+                detach_blur_after(mtm, layer, SHOW_DELAY + SHOW_DURATION + 0.05);
             }
         }
 
         capsule_window.orderFrontRegardless();
+        charm_window.orderFrontRegardless();
+        charm.start(animate);
         self.shown = Some(Showing {
             animate,
             capsule_window,
@@ -279,6 +308,8 @@ impl PreBreakDialog {
             body,
             countdown,
             buttons: row,
+            charm_window,
+            charm,
         });
     }
 
@@ -300,6 +331,8 @@ impl PreBreakDialog {
             capsule,
             body,
             buttons,
+            charm_window,
+            charm,
             ..
         }) = self.shown.take()
         else {
@@ -309,15 +342,18 @@ impl PreBreakDialog {
         for button in &buttons {
             button.set_awake(false);
         }
+        charm_window.setIgnoresMouseEvents(true);
         let now = CACurrentMediaTime();
         if !animate {
-            // reduced motion: it fades away where it is
-            if let Some(layer) = capsule.layer() {
+            // reduced motion: both fade away where they are
+            charm.stop();
+            for layer in [capsule.layer(), charm.layer()].into_iter().flatten() {
                 let opacity = presented(&layer, "opacity").unwrap_or(1.0);
                 layer.addAnimation_forKey(&fade(opacity, 0.0, now, CROSS_FADE, Fill::Exit), None);
             }
             after(self.mtm, CROSS_FADE + 0.03, move || {
-                capsule_window.orderOut(None)
+                capsule_window.orderOut(None);
+                charm_window.orderOut(None);
             });
             return;
         }
@@ -331,8 +367,13 @@ impl PreBreakDialog {
         if let Some(layer) = body.layer() {
             blur_out(&layer, CONTENT_BLUR, now, HIDE_DURATION);
         }
+        // it swings to rest as it goes
+        charm.settle();
+        charm.bubble_out(now, HIDE_DURATION);
         after(self.mtm, HIDE_DURATION + 0.03, move || {
+            charm.stop();
             capsule_window.orderOut(None);
+            charm_window.orderOut(None);
         });
     }
 }

@@ -249,6 +249,12 @@ pub fn arrive() -> Retained<CAMediaTimingFunction> {
     CAMediaTimingFunction::functionWithControlPoints(0.32, 0.72, 0.0, 1.0)
 }
 
+/// slow off the mark, fastest midway and slow into the end, for a move between two held
+/// states such as a blink's open and shut
+pub fn travel() -> Retained<CAMediaTimingFunction> {
+    CAMediaTimingFunction::functionWithControlPoints(0.65, 0.0, 0.35, 1.0)
+}
+
 pub fn linear() -> Retained<CAMediaTimingFunction> {
     // SAFETY: an immutable Core Animation constant
     CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionLinear })
