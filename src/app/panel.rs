@@ -116,8 +116,8 @@ pub fn make_label(
     label
 }
 
-/// false when the user has asked macOS to reduce motion. windows then appear and go at
-/// once, with no blur, slide or fade.
+/// false when the user has asked macOS to reduce motion. windows then cross-fade in and
+/// out over `CROSS_FADE`, and nothing moves or blurs.
 pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
@@ -139,6 +139,9 @@ pub fn after(_mtm: MainThreadMarker, delay: f64, f: impl FnOnce() + 'static) {
         NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
 }
+
+/// how long a window takes to fade in or out under reduced motion
+pub const CROSS_FADE: f64 = 0.25;
 
 /// what an animation leaves behind
 #[derive(Clone, Copy)]
@@ -224,6 +227,17 @@ pub fn slide_y(
     fill: Fill,
 ) -> Retained<CABasicAnimation> {
     basic("transform.translation.y", from, to, begin, duration, fill)
+}
+
+/// the number at `key_path` as it's on screen now, partway through any animation
+pub fn presented(layer: &CALayer, key_path: &str) -> Option<f64> {
+    // SAFETY: the presentation layer is a read-only copy of the layer as it's drawn, and
+    // reading a number through key-value coding leaves it alone
+    let value = unsafe {
+        let shown = layer.presentationLayer()?;
+        shown.valueForKeyPath(&NSString::from_str(key_path))?
+    };
+    value.downcast::<NSNumber>().ok().map(|n| n.doubleValue())
 }
 
 /// springs into place from `from_y` points away: positive starts above, negative below

@@ -12,8 +12,8 @@ use super::glass_button::{
     Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
-    detach_blur_after, fade, make_label, make_panel, slide_y,
+    CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
+    detach_blur_after, fade, make_label, make_panel, presented, slide_y,
 };
 
 const PANEL_W: f64 = 340.0;
@@ -165,6 +165,10 @@ impl PreBreakDialog {
         let animate = animations_on();
         if animate {
             animate_entrance(self.mtm, &glass, &body);
+        } else if let Some(layer) = glass.layer() {
+            // reduced motion: it fades up where it is
+            let now = CACurrentMediaTime();
+            layer.addAnimation_forKey(&fade(0.0, 1.0, now, CROSS_FADE, Fill::Entrance), None);
         }
 
         window.orderFrontRegardless();
@@ -201,15 +205,20 @@ impl PreBreakDialog {
         else {
             return;
         };
-        if !animate {
-            window.orderOut(None);
-            return;
-        }
         // inert while it fades, since a disabled button takes no clicks
         for button in &buttons {
             button.setEnabled(false);
         }
         let now = CACurrentMediaTime();
+        if !animate {
+            // reduced motion: it fades away where it is
+            if let Some(layer) = glass.layer() {
+                let opacity = presented(&layer, "opacity").unwrap_or(1.0);
+                layer.addAnimation_forKey(&fade(opacity, 0.0, now, CROSS_FADE, Fill::Exit), None);
+            }
+            after(self.mtm, CROSS_FADE + 0.03, move || window.orderOut(None));
+            return;
+        }
         if let Some(layer) = glass.layer() {
             layer.addAnimation_forKey(&fade(1.0, 0.0, now, HIDE_DURATION, Fill::Exit), None);
             blur_out(&layer, 22.0, now, HIDE_DURATION);

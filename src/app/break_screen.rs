@@ -21,8 +21,8 @@ use super::glass_button::{
     Buttons, GlassButton, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
-    Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
-    detach_blur_after, fade, keep_dark, make_label, make_panel, scale, spring_y,
+    CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
+    detach_blur_after, fade, keep_dark, make_label, make_panel, presented, scale, spring_y,
 };
 use crate::queue::Break;
 
@@ -60,8 +60,8 @@ const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
 
 /// a break screen that `show` put up
 pub struct Built {
-    /// how long after `show` returned the countdown comes into focus. zero with animations
-    /// off, or when building the screen took longer than its entrance
+    /// how long after `show` returned the countdown comes into focus: the entrance, or the
+    /// cross-fade under reduced motion
     pub settling: Duration,
     /// whether the break's image loaded, or why not. None when the break has no image
     pub image: Option<Result<(), String>>,
@@ -303,6 +303,14 @@ impl BreakScreen {
                         animate_delayed_entrance(mtm, layer, -28.0, now + BUTTONS_BEGIN, now);
                     }
                 }
+            } else {
+                // reduced motion: the screen fades up as one, and nothing moves
+                for layer in [backdrop.layer(), foreground.layer()].into_iter().flatten() {
+                    layer.addAnimation_forKey(
+                        &fade(0.0, 1.0, now, CROSS_FADE, Fill::Entrance),
+                        None,
+                    );
+                }
             }
 
             window.orderFrontRegardless();
@@ -335,14 +343,14 @@ impl BreakScreen {
                 }
             });
         }
-        let settling = if animate {
-            let left = now + FOREGROUND_SETTLED - CACurrentMediaTime();
-            Duration::from_secs_f64(left.max(0.0))
+        let settled = if animate {
+            FOREGROUND_SETTLED
         } else {
-            Duration::ZERO
+            CROSS_FADE
         };
+        let settling = (now + settled - CACurrentMediaTime()).max(0.0);
         Some(Built {
-            settling,
+            settling: Duration::from_secs_f64(settling),
             image: loaded,
         })
     }
@@ -371,10 +379,9 @@ impl BreakScreen {
             return;
         }
         self.up.set(false);
-        if !self.animate {
-            self.teardown_now();
-            return;
-        }
+        let animate = self.animate;
+        // under reduced motion the screen fades away as one
+        let fading = if animate { EXIT_DURATION } else { CROSS_FADE };
 
         // reverse of the entrance. animations hold their final state so the overlay stays
         // faded/blurred right up to teardown.
@@ -386,17 +393,18 @@ impl BreakScreen {
             for button in &overlay.buttons {
                 button.setEnabled(false);
             }
-            if let Some(layer) = overlay.backdrop.layer() {
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
+            let layers = [overlay.backdrop.layer(), overlay.foreground.layer()];
+            for layer in layers.into_iter().flatten() {
+                let opacity = presented(&layer, "opacity").unwrap_or(1.0);
+                layer.addAnimation_forKey(&fade(opacity, 0.0, now, fading, Fill::Exit), None);
             }
-            if let Some(layer) = overlay.foreground.layer() {
-                layer.addAnimation_forKey(&fade(1.0, 0.0, now, EXIT_DURATION, Fill::Exit), None);
+            if animate && let Some(layer) = overlay.foreground.layer() {
                 blur_out(&layer, BLUR_RADIUS, now, EXIT_DURATION);
             }
         }
 
         // the overlays move into the timer so they stay on screen for the animation
-        after(self.mtm, EXIT_DURATION + 0.05, move || {
+        after(self.mtm, fading + 0.05, move || {
             for overlay in &overlays {
                 overlay.window.orderOut(None);
             }
@@ -404,7 +412,7 @@ impl BreakScreen {
     }
 
     /// orders every window out and forgets the views, with no exit animation. used when
-    /// reopening and when reduce motion is on.
+    /// reopening.
     fn teardown_now(&mut self) {
         self.up.set(false);
         for overlay in self.overlays.drain(..) {
