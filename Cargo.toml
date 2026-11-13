@@ -7,6 +7,8 @@ license = "GPL-3.0-or-later"
 description = "An eye-strain break reminder for the macOS menu bar"
 repository = "https://github.com/museslabs/omma"
 readme = "README.md"
+# The bead's design files belong to the repository, not the crate.
+exclude = ["design/"]
 keywords = ["macos", "health", "eye-strain", "break", "menu-bar"]
 categories = ["command-line-utilities"]
 
