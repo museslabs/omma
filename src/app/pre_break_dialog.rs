@@ -100,7 +100,7 @@ impl PreBreakDialog {
             NSRect::new(NSPoint::new(28.0, 65.0), NSSize::new(130.0, 18.0)),
             &LabelStyle {
                 font: &NSFont::systemFontOfSize_weight(14.0, semibold),
-                color: &NSColor::colorWithWhite_alpha(1.0, 0.76),
+                color: &NSColor::secondaryLabelColor(),
                 alignment: NSTextAlignment::Left,
                 max_lines: 1,
             },
@@ -113,7 +113,7 @@ impl PreBreakDialog {
             NSRect::new(NSPoint::new(28.0, 25.0), NSSize::new(130.0, 34.0)),
             &LabelStyle {
                 font: &NSFont::systemFontOfSize_weight(28.0, medium),
-                color: &NSColor::colorWithWhite_alpha(1.0, 0.95),
+                color: &NSColor::labelColor(),
                 alignment: NSTextAlignment::Left,
                 max_lines: 1,
             },

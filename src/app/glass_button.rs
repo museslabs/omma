@@ -94,7 +94,7 @@ pub fn make_glass_button(
     unsafe {
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
-            &NSColor::whiteColor(),
+            &NSColor::labelColor(),
             title_range,
         );
         attributed.addAttribute_value_range(NSFontAttributeName, &title_font, title_range);
@@ -102,7 +102,7 @@ pub fn make_glass_button(
 
     if keybind.is_some() {
         let hint_font = NSFont::systemFontOfSize_weight(style.hint_font_size, medium);
-        let dim = NSColor::colorWithWhite_alpha(1.0, 0.55);
+        let dim = NSColor::secondaryLabelColor();
         let start = title_ns.length();
         let hint_range = NSRange::new(start, full_ns.length() - start);
         // SAFETY: as for the title

@@ -68,16 +68,12 @@ pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Ret
     panel.setHasShadow(false);
     // a panel hides when its app isn't active, and omma never activates
     panel.setHidesOnDeactivate(false);
-    // clear, so the glass and the behind-window blur sample the desktop. the dark
-    // appearance keeps the glass and its text legible.
+    // clear, so the glass and the behind-window blur sample the desktop. its appearance
+    // is the system's, light or dark
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
     // a see-through window lets clicks through where it's transparent unless told
     // otherwise; this one takes them over its whole frame, faded out or not
     panel.setIgnoresMouseEvents(false);
-    // SAFETY: an immutable AppKit constant
-    if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
-        panel.setAppearance(Some(&appearance));
-    }
     panel.setLevel(NSScreenSaverWindowLevel);
     panel.setCollectionBehavior(
         NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -85,6 +81,15 @@ pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Ret
             | NSWindowCollectionBehavior::FullScreenAuxiliary,
     );
     panel
+}
+
+/// for a panel that darkens what's behind it whatever the system's appearance. its glass
+/// and text have to be the dark ones
+pub fn keep_dark(panel: &Panel) {
+    // SAFETY: an immutable AppKit constant
+    if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
+        panel.setAppearance(Some(&appearance));
+    }
 }
 
 pub struct LabelStyle<'a> {

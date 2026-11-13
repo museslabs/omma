@@ -22,7 +22,7 @@ use super::glass_button::{
 };
 use super::panel::{
     Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
-    detach_blur_after, fade, make_label, make_panel, scale, spring_y,
+    detach_blur_after, fade, keep_dark, make_label, make_panel, scale, spring_y,
 };
 use crate::queue::Break;
 
@@ -146,6 +146,8 @@ impl BreakScreen {
             let cy = h / 2.0;
 
             let window = make_panel(mtm, frame, true);
+            // white text over a black scrim, in light mode too
+            keep_dark(&window);
             let Some(content) = window.contentView() else {
                 continue;
             };
