@@ -69,9 +69,11 @@ const ACCESSIBILITY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 /// None if the bytes fail to decode. the status item then shows a text glyph.
-fn tray_icon_image(bytes: &[u8]) -> Option<Retained<NSImage>> {
+/// `description` is what VoiceOver reads for the icon.
+fn tray_icon_image(bytes: &[u8], description: &str) -> Option<Retained<NSImage>> {
     let data = NSData::with_bytes(bytes);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+    image.setAccessibilityDescription(Some(&NSString::from_str(description)));
     // template images draw from alpha alone, so the glyph auto-tints with the menu bar
     image.setTemplate(true);
     image.setSize(NSSize {
@@ -339,9 +341,10 @@ impl App {
         if config.do_not_disturb.needs_accessibility() {
             activity::request_accessibility();
         }
-        let tray_icon = tray_icon_image(TRAY_ICON_SVG);
-        let tray_icon_incoming = tray_icon_image(TRAY_ICON_INCOMING_SVG);
-        let tray_icon_disabled = tray_icon_image(TRAY_ICON_DISABLED_SVG);
+        // the incoming icon blinks with the plain one before a break and reads the same
+        let tray_icon = tray_icon_image(TRAY_ICON_SVG, "omma");
+        let tray_icon_incoming = tray_icon_image(TRAY_ICON_INCOMING_SVG, "omma");
+        let tray_icon_disabled = tray_icon_image(TRAY_ICON_DISABLED_SVG, "omma, disabled");
         let break_screen = BreakScreen::new(mtm);
         let pre_break_dialog = PreBreakDialog::new(mtm);
 
