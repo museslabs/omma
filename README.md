@@ -4,7 +4,7 @@
 
 Eye-strain break reminder for the macOS menu bar, written in Rust.
 
-![example](example.gif)
+<img width="1200" height="675" alt="omma-example" src="https://github.com/user-attachments/assets/3f0ea20c-6a7c-4870-8aea-bc578ba1f2f3" />
 
 omma counts down to your next break from the menu bar. Just before it, a bead
 drops from the icon with a warning, then the break covers every display with a
