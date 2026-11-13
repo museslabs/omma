@@ -2,14 +2,14 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
+    NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
     NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CACurrentMediaTime;
 
 use super::glass_button::{
-    Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+    ButtonHost, Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
     CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
@@ -41,7 +41,7 @@ struct Showing {
     glass: Retained<NSGlassEffectView>,
     body: Retained<NSView>,
     countdown: Retained<NSTextField>,
-    buttons: Vec<Retained<NSButton>>,
+    buttons: Vec<Retained<ButtonHost>>,
 }
 
 impl PreBreakDialog {
@@ -138,12 +138,12 @@ impl PreBreakDialog {
             primary_action,
             &BUTTON_STYLE,
         );
-        primary.capsule.setFrame(NSRect::new(
+        primary.setFrame(NSRect::new(
             NSPoint::new(button_x, primary_y),
             NSSize::new(BUTTON_W, BUTTON_H),
         ));
-        body.addSubview(&primary.capsule);
-        let mut shown_buttons = vec![primary.button];
+        body.addSubview(&primary);
+        let mut shown_buttons = vec![primary];
 
         if let Some(postpone) = buttons.postpone {
             let postpone = make_glass_button(
@@ -154,12 +154,12 @@ impl PreBreakDialog {
                 sel!(postpone:),
                 &BUTTON_STYLE,
             );
-            postpone.capsule.setFrame(NSRect::new(
+            postpone.setFrame(NSRect::new(
                 NSPoint::new(button_x, 58.0),
                 NSSize::new(BUTTON_W, BUTTON_H),
             ));
-            body.addSubview(&postpone.capsule);
-            shown_buttons.push(postpone.button);
+            body.addSubview(&postpone);
+            shown_buttons.push(postpone);
         }
 
         let animate = animations_on();
@@ -205,9 +205,9 @@ impl PreBreakDialog {
         else {
             return;
         };
-        // inert while it fades, since a disabled button takes no clicks
+        // inert while it fades, since a sleeping button takes no clicks
         for button in &buttons {
-            button.setEnabled(false);
+            button.set_awake(false);
         }
         let now = CACurrentMediaTime();
         if !animate {

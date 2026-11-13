@@ -1,15 +1,72 @@
+use std::cell::Cell;
+
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{AnyThread, MainThreadOnly};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSButton, NSColor, NSEventModifierFlags, NSFont, NSFontAttributeName,
     NSFontWeightMedium, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
 use crate::config::{Key, KeySpec};
+
+pub struct Hosted {
+    button: Retained<NSButton>,
+    /// the button's own key equivalent, which it has only while awake
+    key: Option<(Retained<NSString>, NSEventModifierFlags)>,
+    awake: Cell<bool>,
+}
+
+define_class!(
+    /// a button in its container, which is what goes in the view hierarchy. the container
+    /// can put the button to sleep: asleep it takes neither clicks nor its key, and looks no
+    /// different, where a disabled button would dim its title
+    // SAFETY: NSView can be subclassed. each override has the signature AppKit declares,
+    // which registering the class checks.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OmmaButtonHost"]
+    #[ivars = Hosted]
+    pub struct ButtonHost;
+
+    impl ButtonHost {
+        /// asleep, a click on the button stops at this view, which does nothing with it
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            // SAFETY: NSView's own hitTest:, with the argument and return types it declares
+            let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
+            if hit.is_null() || self.ivars().awake.get() {
+                return hit;
+            }
+            let this: &NSView = self;
+            std::ptr::from_ref(this).cast_mut()
+        }
+    }
+);
+
+impl ButtonHost {
+    /// awake, the button takes clicks and its key. a new button is awake
+    pub fn set_awake(&self, awake: bool) {
+        let Hosted {
+            button,
+            key,
+            awake: now,
+        } = self.ivars();
+        now.set(awake);
+        if let Some((key, mods)) = key {
+            if awake {
+                button.setKeyEquivalent(key);
+                button.setKeyEquivalentModifierMask(*mods);
+            } else {
+                button.setKeyEquivalent(&NSString::new());
+            }
+        }
+    }
+}
 
 /// a button's keyboard shortcut. a local one is the button's key equivalent; a global one is
 /// held elsewhere, so the button only shows its hint.
@@ -54,13 +111,6 @@ pub struct GlassButtonStyle {
     pub hint_font_size: f64,
 }
 
-/// a borderless button in a glass capsule
-pub struct GlassButton {
-    /// what goes in the view hierarchy
-    pub capsule: Retained<NSGlassEffectView>,
-    pub button: Retained<NSButton>,
-}
-
 pub fn make_glass_button(
     mtm: MainThreadMarker,
     title: &str,
@@ -68,7 +118,7 @@ pub fn make_glass_button(
     target: &AnyObject,
     action: Sel,
     style: &GlassButtonStyle,
-) -> GlassButton {
+) -> Retained<ButtonHost> {
     let keybind = shortcut.map(|shortcut| key_equivalent(shortcut.spec()));
     let title_ns = NSString::from_str(title);
     let full = match &keybind {
@@ -114,10 +164,12 @@ pub fn make_glass_button(
     }
     button.setAttributedTitle(&attributed);
 
-    if let (Some(Shortcut::Local(_)), Some(kb)) = (shortcut, &keybind) {
-        button.setKeyEquivalent(&NSString::from_str(&kb.key_equivalent));
-        button.setKeyEquivalentModifierMask(kb.mods);
-    }
+    let key = match (shortcut, &keybind) {
+        (Some(Shortcut::Local(_)), Some(kb)) => {
+            Some((NSString::from_str(&kb.key_equivalent), kb.mods))
+        }
+        _ => None,
+    };
 
     if matches!(style.width, GlassButtonWidth::Fit { .. }) {
         button.sizeToFit();
@@ -133,12 +185,21 @@ pub fn make_glass_button(
     let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, style.height));
     button.setFrame(rect);
 
-    let capsule = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
-    capsule.setWantsLayer(true);
-    capsule.setCornerRadius(style.height / 2.0);
-    capsule.setStyle(NSGlassEffectViewStyle::Regular);
-    capsule.setContentView(Some(&button));
-    GlassButton { capsule, button }
+    let host = ButtonHost::alloc(mtm).set_ivars(Hosted {
+        button: button.clone(),
+        key,
+        awake: Cell::new(false),
+    });
+    // SAFETY: NSView's designated initializer, with the argument type it declares
+    let host: Retained<ButtonHost> = unsafe { msg_send![super(host), initWithFrame: rect] };
+    host.setWantsLayer(true);
+    let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
+    glass.setCornerRadius(style.height / 2.0);
+    glass.setStyle(NSGlassEffectViewStyle::Regular);
+    glass.setContentView(Some(&button));
+    host.addSubview(&glass);
+    host.set_awake(true);
+    host
 }
 
 struct KeyBind {
@@ -190,6 +251,14 @@ fn key_equivalent(spec: KeySpec) -> KeyBind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// registering the class makes objc2 check each override against the signature AppKit
+    /// declares, which otherwise happens only at the first button
+    #[test]
+    fn the_button_host_class_registers() {
+        use objc2::ClassType;
+        let _ = ButtonHost::class();
+    }
 
     fn bind(spec: &str) -> (String, NSEventModifierFlags, String) {
         let kb = key_equivalent(spec.parse().unwrap());

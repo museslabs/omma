@@ -10,8 +10,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSButton, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSImage,
-    NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
+    NSBox, NSBoxType, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSImage, NSScreen,
+    NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
 use objc2_core_foundation::CGAffineTransform;
@@ -21,7 +21,7 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
 use super::glass_button::{
-    Buttons, GlassButton, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+    ButtonHost, Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
 };
 use super::panel::{
     CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
@@ -93,7 +93,7 @@ struct Overlay {
     /// message, countdown and buttons, blurred and faded as one on exit
     foreground: Retained<NSView>,
     countdown: Retained<NSTextField>,
-    buttons: Vec<Retained<NSButton>>,
+    buttons: Vec<Retained<ButtonHost>>,
 }
 
 impl BreakScreen {
@@ -232,7 +232,7 @@ impl BreakScreen {
             foreground.addSubview(&count_label);
 
             let gap = 16.0;
-            let buttons: Vec<GlassButton> = [
+            let buttons: Vec<Retained<ButtonHost>> = [
                 (buttons.skip, "Skip", sel!(skip:)),
                 (buttons.postpone, "Postpone", sel!(postpone:)),
             ]
@@ -250,19 +250,16 @@ impl BreakScreen {
             })
             .collect();
             if !buttons.is_empty() {
-                let widths: Vec<f64> = buttons
-                    .iter()
-                    .map(|b| b.capsule.frame().size.width)
-                    .collect();
+                let widths: Vec<f64> = buttons.iter().map(|b| b.frame().size.width).collect();
                 let total: f64 = widths.iter().sum::<f64>() + gap * (buttons.len() as f64 - 1.0);
                 let by = 150.0;
                 let mut x = cx - total / 2.0;
                 for (button, bw) in buttons.iter().zip(widths.iter()) {
-                    button.capsule.setFrame(NSRect::new(
+                    button.setFrame(NSRect::new(
                         NSPoint::new(x, by),
                         NSSize::new(*bw, BUTTON_HEIGHT),
                     ));
-                    foreground.addSubview(&button.capsule);
+                    foreground.addSubview(button);
                     x += bw + gap;
                 }
             }
@@ -308,8 +305,8 @@ impl BreakScreen {
                 for button in &buttons {
                     // takes neither clicks nor its shortcut until it shows, so keys typed as
                     // the break starts don't skip it
-                    button.button.setEnabled(false);
-                    if let Some(layer) = button.capsule.layer() {
+                    button.set_awake(false);
+                    if let Some(layer) = button.layer() {
                         animate_delayed_entrance(mtm, layer, -28.0, now + BUTTONS_BEGIN, now);
                     }
                 }
@@ -329,7 +326,7 @@ impl BreakScreen {
                 backdrop,
                 foreground,
                 countdown: count_label,
-                buttons: buttons.into_iter().map(|b| b.button).collect(),
+                buttons,
             });
         }
 
@@ -348,7 +345,7 @@ impl BreakScreen {
             after(mtm, delay, move || {
                 if up.get() {
                     for button in &buttons {
-                        button.setEnabled(true);
+                        button.set_awake(true);
                     }
                 }
             });
@@ -398,10 +395,10 @@ impl BreakScreen {
         let now = CACurrentMediaTime();
         let overlays = std::mem::take(&mut self.overlays);
         for overlay in &overlays {
-            // inert while it fades. a disabled button takes neither clicks nor its shortcut,
+            // inert while it fades. a sleeping button takes neither clicks nor its shortcut,
             // and the overlay still catches clicks, so none reach the app behind it
             for button in &overlay.buttons {
-                button.setEnabled(false);
+                button.set_awake(false);
             }
             let layers = [overlay.backdrop.layer(), overlay.foreground.layer()];
             for layer in layers.into_iter().flatten() {
