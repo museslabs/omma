@@ -25,7 +25,7 @@ cargo install --path .
 
 Or download the Apple silicon build from the
 [releases page](https://github.com/museslabs/omma/releases) and unpack it. It
-isn't notarized, so if macOS won't run it, clear its quarantine flag:
+isn't notarized. If macOS won't run it, clear its quarantine flag:
 
 ```sh
 tar -xzf omma-v0.1.0-aarch64-apple-darwin.tar.gz
@@ -47,17 +47,17 @@ with no Dock icon, and isn't packaged as an app bundle.
   The warning never takes keyboard focus from the app you're typing in.
 - **A break screen** on every display, with the break's name, a countdown in a
   bead whose colour drains as the break runs, optional background image, and
-  Skip and Postpone buttons. The countdown starts once the screen has faded in,
-  so a break runs about 0.6 s longer than its length, or 0.25 s with Reduce
-  Motion on. omma never becomes the active app, and your app gets the keyboard
-  back when the break ends.
+  Skip and Postpone buttons. The countdown waits for the screen to fade in,
+  which adds about 0.6 s to a break, or 0.25 s with Reduce Motion on. omma
+  never becomes the active app, and your app gets the keyboard back when the
+  break ends.
 - **A menu** with the time to the next break, items to take a break now (the
   next one, a short one or a long one), Enabled, Open config… and Quit. It also
   lists anything that needs fixing; see
   [When something's wrong](#when-somethings-wrong).
 - **Sounds** before a break and after one that ran to its end.
-- **Smart pause**: the schedule pauses while you're away from the keyboard.
-- **Do not disturb**: rules that hold breaks back while you're busy.
+- **Smart pause**, which holds the schedule while you're away from the keyboard.
+- **Do-not-disturb rules** that hold breaks back while you're busy.
 - **A CLI** that controls the running instance.
 
 ## Configuration
@@ -106,12 +106,12 @@ warning_postpone = ""
 ```
 
 `skip` and `postpone` work on the break screen once its buttons have appeared,
-a little over a second in, so a key you were typing as the break began doesn't
+a little over a second in. A key you were typing as the break began doesn't
 skip it.
 
-`warning_skip` and `warning_postpone` are off by default. They work from any app
-while the warning shows, as system-wide shortcuts, so the warning never needs
-focus. Each needs `cmd` or `ctrl`, for example `"cmd+shift+option+space"`.
+`warning_skip` and `warning_postpone` are off by default. They're system-wide
+shortcuts that work from any app while the warning shows, and the warning never
+takes focus. Each needs `cmd` or `ctrl`, for example `"cmd+shift+option+space"`.
 
 A shortcut is one key after any of the modifiers `cmd`, `shift`, `alt` (or
 `option`) and `ctrl`, joined by `+`: a single character, or `escape`, `space`,
@@ -129,11 +129,11 @@ enabled      = true
 idle_seconds = 60
 ```
 
-After `idle_seconds` without keyboard or mouse input the schedule pauses. The
-idle time counts from your last input, so the threshold counts toward your rest.
-Once you're back the next break is a full interval away, and time away at least
-as long as a long break counts as one. Sleep counts as time away, so waking the
-Mac never brings on a break at once.
+After `idle_seconds` without keyboard or mouse input the schedule pauses. Your
+rest counts from your last input, threshold included. Once you're back the next
+break is a full interval away, and time away at least as long as a long break
+counts as one. Sleep counts as time away too, and waking the Mac never brings on
+a break at once.
 
 ### Do not disturb
 
@@ -159,8 +159,8 @@ drops the break and `"postpone"` tries again after `postpone_duration`, even wit
   ignoring case. `"zoom"` covers Zoom being open at all.
 - `window_titles` holds a break while a window on screen has a matching
   title. Minimized windows and hidden apps don't count. Each entry is a regex
-  that ignores case, so a plain word matches anywhere in a title: `"Plain"`
-  also matches "explain". A TOML literal string with word boundaries,
+  that ignores case. A plain word matches anywhere in a title: `"Plain"` also
+  matches "explain". A TOML literal string with word boundaries,
   `'\bPlain\b'`, matches the word alone. A browser window shows only its
   active tab's title.
 - Each request omma sends an app gives up after 0.25 s. An app that's hung, or
@@ -169,9 +169,8 @@ drops the break and `"postpone"` tries again after `postpone_duration`, even wit
 The fullscreen and window-title rules need Accessibility permission. omma asks
 for it when it starts with one of them on, or when a save turns one on. Grant it
 in System Settings → Privacy & Security → Accessibility (Device Control and Data
-Access on macOS 27), and the rules work from
-the next break, with no restart. Started from a terminal, omma uses the
-terminal's permission instead of its own.
+Access on macOS 27), and the rules work from the next break, with no restart.
+Started from a terminal, omma uses the terminal's permission instead of its own.
 
 ## When something's wrong
 
