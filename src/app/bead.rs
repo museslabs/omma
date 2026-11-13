@@ -16,7 +16,9 @@ use objc2_quartz_core::{
 };
 
 use super::flip::FlipCount;
-use super::panel::{Fill, arrive, linear, presented, property, set_fill, travel, without_actions};
+use super::panel::{
+    Fill, arrive, fade, linear, presented, property, set_fill, travel, without_actions,
+};
 
 /// sRGB and alpha
 pub type Rgba = (f64, f64, f64, f64);
@@ -533,6 +535,13 @@ impl Bead {
         }
     }
 
+    /// brings the count up from nothing over `duration`, from `begin`
+    pub fn reveal_count(&self, begin: f64, duration: f64) {
+        if let Some(layer) = self.count.as_ref().and_then(|count| count.view.layer()) {
+            layer.addAnimation_forKey(&fade(0.0, 1.0, begin, duration, Fill::Entrance), None);
+        }
+    }
+
     /// shifts the inner discs toward a point `x`, `y` in -1…1, with y up. the pupil moves most
     pub fn look(&self, x: f64, y: f64) {
         let d = self.diameter;
@@ -590,6 +599,29 @@ impl Bead {
             anim.setDuration(BLINK_PERIOD);
             anim.setRepeatCount(f32::INFINITY);
             self.discs[2].addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
+        }
+    }
+
+    /// eases the inner discs back to the middle from where `look(x, y)` puts them, over
+    /// `duration` from `begin`. until then they stay where that look left them
+    pub fn look_away_from(&self, x: f64, y: f64, begin: f64, duration: f64) {
+        let d = self.diameter;
+        for (layer, disc) in self.discs.iter().zip(&DISCS) {
+            for (key, lean) in [
+                ("position.x", x * d * disc.depth.0),
+                ("position.y", y * d * disc.depth.1),
+            ] {
+                let back = property(
+                    key,
+                    d / 2.0 + lean,
+                    d / 2.0,
+                    begin,
+                    duration,
+                    Fill::Entrance,
+                );
+                back.setTimingFunction(Some(&arrive()));
+                layer.addAnimation_forKey(&back, None);
+            }
         }
     }
 

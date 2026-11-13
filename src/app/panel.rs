@@ -19,8 +19,8 @@ use objc2_foundation::{
     NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 use objc2_quartz_core::{
-    CAAnimation, CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CASpringAnimation, CATransaction, kCAFillModeBackwards, kCAFillModeBoth,
+    CAAnimation, CABasicAnimation, CAKeyframeAnimation, CALayer, CAMediaTiming,
+    CAMediaTimingFunction, CASpringAnimation, CATransaction, kCAFillModeBackwards, kCAFillModeBoth,
     kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionLinear,
 };
 
@@ -297,7 +297,7 @@ pub const POP: Spring = Spring {
     stiffness: 300.0,
     damping: 26.0,
 };
-/// the bead growing into place
+/// the bead's flight across the display
 pub const FLIGHT: Spring = Spring {
     stiffness: 150.0,
     damping: 20.0,
@@ -338,6 +338,27 @@ pub fn spring_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
         SETTLE,
         Fill::Entrance,
     )
+}
+
+/// the blur `attach_blur` adds, from sharp up to `peak` early on and back to sharp, the way
+/// something blurs as it picks up speed
+pub fn blur_pulse(peak: f64, begin: f64, duration: f64) -> Retained<CAKeyframeAnimation> {
+    let anim = CAKeyframeAnimation::animationWithKeyPath(Some(&NSString::from_str(
+        "filters.blur.inputRadius",
+    )));
+    let numbers =
+        |values: [f64; 3]| NSArray::from_retained_slice(&values.map(NSNumber::numberWithDouble));
+    // SAFETY: an array of NSNumbers is an array of objects, and it's only read. NSNumbers
+    // are the value type this key path animates
+    unsafe {
+        let values: Retained<NSArray> = Retained::cast_unchecked(numbers([0.0, peak, 0.0]));
+        anim.setValues(Some(&values));
+    }
+    anim.setKeyTimes(Some(&numbers([0.0, 0.3, 1.0])));
+    anim.setDuration(duration);
+    anim.setBeginTime(begin);
+    set_fill(&anim, Fill::Entrance);
+    anim
 }
 
 /// the key of the animation `blur_out` adds

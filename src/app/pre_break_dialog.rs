@@ -70,6 +70,14 @@ const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     hint_font_size: 11.0,
 };
 
+/// the warning's bead as the break screen's bead takes over from it
+pub struct HandOff {
+    /// in screen coordinates
+    pub frame: NSRect,
+    /// how far its rings lean toward the pointer, as `Bead::look` takes it
+    pub look: (f64, f64),
+}
+
 pub struct PreBreakDialog {
     mtm: MainThreadMarker,
     /// None from the moment `hide` starts
@@ -105,7 +113,7 @@ impl PreBreakDialog {
         target: &AnyObject,
         anchor: Option<NSPoint>,
     ) {
-        self.hide();
+        self.hide(false);
         let mtm = self.mtm;
         let Some(anchor) = anchor.or_else(|| fallback_anchor(mtm)) else {
             return;
@@ -324,7 +332,22 @@ impl PreBreakDialog {
         }
     }
 
-    pub fn hide(&mut self) {
+    /// the hanging bead, for the break screen's bead to take over from
+    pub fn hand_off(&self) -> Option<HandOff> {
+        let shown = self.shown.as_ref()?;
+        let origin = shown.charm_window.frame().origin;
+        let bead = shown.charm.bead_frame();
+        Some(HandOff {
+            frame: NSRect::new(
+                NSPoint::new(origin.x + bead.origin.x, origin.y + bead.origin.y),
+                bead.size,
+            ),
+            look: shown.charm.look(),
+        })
+    }
+
+    /// with `hand_off`, the break screen's bead takes over from this one, which goes at once
+    pub fn hide(&mut self, hand_off: bool) {
         let Some(Showing {
             animate,
             capsule_window,
@@ -367,9 +390,15 @@ impl PreBreakDialog {
         if let Some(layer) = body.layer() {
             blur_out(&layer, CONTENT_BLUR, now, HIDE_DURATION);
         }
-        // it swings to rest as it goes
-        charm.settle();
-        charm.bubble_out(now, HIDE_DURATION);
+        if hand_off {
+            // the break's bead starts from where this one is, so it holds still
+            charm.stop();
+            charm.hand_off(now, HIDE_DURATION);
+        } else {
+            // it swings to rest as it goes
+            charm.settle();
+            charm.bubble_out(now, HIDE_DURATION);
+        }
         after(self.mtm, HIDE_DURATION + 0.03, move || {
             charm.stop();
             capsule_window.orderOut(None);
@@ -393,6 +422,14 @@ fn screen_at(mtm: MainThreadMarker, point: NSPoint) -> Option<Retained<NSScreen>
         .iter()
         .find(|screen| NSPointInRect(NSPoint::new(point.x, point.y + 1.0), screen.frame()))
         .or_else(|| NSScreen::mainScreen(mtm))
+}
+
+/// where the bead hangs at rest from the menu-bar icon whose bottom centre is `anchor`
+pub fn hanging_bead(anchor: NSPoint) -> NSRect {
+    NSRect::new(
+        NSPoint::new(anchor.x - BEAD / 2.0, anchor.y - THREAD - BEAD),
+        NSSize::new(BEAD, BEAD),
+    )
 }
 
 /// "9s", or "2:05" from 100 seconds up

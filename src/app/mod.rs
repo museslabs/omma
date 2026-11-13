@@ -530,6 +530,8 @@ impl App {
         }
 
         let show_warning = warning && self.config.notification.enabled && !self.warning_dismissed;
+        // the warning's bead, read before the warning goes, for the break's bead to fly from
+        let hand_off = in_break.then(|| self.pre_break_dialog.hand_off()).flatten();
         // the global shortcuts follow the warning, whether or not its panel could open
         if show_warning != self.shown.hotkeys {
             if show_warning {
@@ -566,7 +568,7 @@ impl App {
                     .show(remaining.unwrap_or(0), buttons, target, anchor);
                 self.shown.countdown = remaining;
             } else {
-                self.pre_break_dialog.hide();
+                self.pre_break_dialog.hide(in_break);
             }
         }
 
@@ -574,11 +576,14 @@ impl App {
             if in_break {
                 let keys = self.config.keybindings;
                 let buttons = self.buttons(keys.skip, keys.postpone);
+                let anchor = self.status_anchor();
                 let built = self.break_screen.show(
                     self.core.current(),
                     remaining.unwrap_or(0),
                     buttons,
                     target,
+                    hand_off,
+                    anchor,
                 );
                 // a break gets one screen, so this runs once per break, as start_countdown_at
                 // requires. building takes time, so the countdown starts from the clock after

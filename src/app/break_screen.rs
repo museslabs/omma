@@ -1,5 +1,6 @@
-//! one fullscreen overlay per display in liquid glass style. a mati bead in the middle of each
-//! display counts the break down as its colour drains. the buttons are glass capsules.
+//! one fullscreen overlay per display in liquid glass style. the warning's mati bead flies to
+//! the middle of the display it hung on and counts the break down as its colour drains; the
+//! other displays show a bead of their own. the buttons are glass capsules.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -17,7 +18,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGAffineTransform;
 use objc2_core_graphics::CGImage;
 use objc2_core_image::{CIContext, CIImage};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSPointInRect, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, CAMediaTiming, kCAGravityResizeAspectFill};
 
 use super::bead::Bead;
@@ -26,9 +27,10 @@ use super::glass_button::{
 };
 use super::panel::{
     CROSS_FADE, FLIGHT, Fill, LabelStyle, Panel, SETTLE, after, animations_on, arrive, attach_blur,
-    blur_out, blur_radius, detach_blur_after, fade, keep_dark, make_label, make_panel, presented,
-    property, scale_about, spring, spring_y,
+    blur_out, blur_pulse, blur_radius, detach_blur_after, fade, keep_dark, make_label, make_panel,
+    presented, property, scale_about, spring, spring_y,
 };
+use super::pre_break_dialog::{HandOff, hanging_bead};
 use crate::queue::Break;
 
 /// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
@@ -42,10 +44,18 @@ const BEAD_SHARE: f64 = 0.28;
 const BEAD_GAP: f64 = 40.0;
 /// the break's name, over the bead
 const TITLE_SIZE: f64 = 34.0;
-/// the bead's blur as it materialises and as it goes
+/// the bead's blur as it materialises and as it goes, and at the fastest part of its flight
+/// in from the thread
 const BEAD_BLUR: f64 = 14.0;
-/// the bead grows from this scale as it comes, and shrinks to it as it goes
+const FLIGHT_BLUR: f64 = 7.0;
+/// how long the flight's blur lasts
+const FLIGHT_BLUR_DURATION: f64 = 0.5;
+/// a bead with no thread to fly from grows from this scale, and every bead shrinks to it
+/// as it goes
 const BEAD_REST_SCALE: f64 = 0.95;
+/// the flight starts this long after the screen is built, keeping its first frames clear of
+/// the windows coming up. the warning's bead stays under it until then
+pub const FLIGHT_DELAY: f64 = 0.08;
 /// the name's blur radius as it leaves
 const BLUR_RADIUS: f64 = 16.0;
 /// how soft a custom background image is, in points on the display, eyeballed to match the
@@ -58,7 +68,8 @@ const IMAGE_BITMAP_PIXEL: f64 = 2.0;
 const IMAGE_BLUR_ENTRANCE: f64 = 58.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
-/// the image and the bead start to resolve from blur this long after the screen appears
+/// the image, and a bead with no thread to fly from, start to resolve from blur this long
+/// after the screen appears
 const ENTRANCE_DELAY: f64 = 0.06;
 /// and take this long to come into focus
 const ENTRANCE: f64 = 0.55;
@@ -127,6 +138,15 @@ struct Overlay {
     buttons: Vec<Retained<ButtonHost>>,
 }
 
+/// what an overlay's entrance animates, besides the overlay's own views
+struct Entrance {
+    /// the custom image
+    image: Option<Retained<CALayer>>,
+    /// where the bead flies in from, in the window, and with the warning's bead, how far its
+    /// rings leaned toward the pointer
+    arrival: Option<(NSRect, Option<(f64, f64)>)>,
+}
+
 impl BreakScreen {
     pub fn new(mtm: MainThreadMarker) -> BreakScreen {
         BreakScreen {
@@ -138,14 +158,17 @@ impl BreakScreen {
         }
     }
 
-    /// covers every display with `brk`, counting down from `remaining`. None when there was
-    /// no display to show it on.
+    /// covers every display with `brk`, counting down from `remaining`. the bead flies in
+    /// from `hand_off`, the warning's bead, or else from the menu-bar icon at `anchor`, on
+    /// whichever display has it. None when there was no display to show it on.
     pub fn show(
         &mut self,
         brk: &Break,
         remaining: u64,
         buttons: Buttons,
         target: &AnyObject,
+        hand_off: Option<HandOff>,
+        anchor: Option<NSPoint>,
     ) -> Option<Built> {
         self.teardown_now();
         let mtm = self.mtm;
@@ -172,7 +195,7 @@ impl BreakScreen {
 
         // every display's views are built first, and only then animated, so the time it
         // takes to build them doesn't come out of the entrance
-        let mut images = Vec::new();
+        let mut entrances = Vec::new();
         for i in 0..screens.count() {
             let screen = screens.objectAtIndex(i);
             let frame = screen.frame();
@@ -181,6 +204,16 @@ impl BreakScreen {
             let full = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h));
             let cx = w / 2.0;
             let cy = h / 2.0;
+            let local = |rect: NSRect| {
+                NSRect::new(
+                    NSPoint::new(
+                        rect.origin.x - frame.origin.x,
+                        rect.origin.y - frame.origin.y,
+                    ),
+                    rect.size,
+                )
+            };
+            let on_this = |point: NSPoint| NSPointInRect(point, frame);
 
             let window = make_panel(mtm, frame, true);
             // white text over a black scrim, in light mode too
@@ -310,7 +343,21 @@ impl BreakScreen {
             bead.view.setFrameOrigin(NSPoint::new(cx - d / 2.0, bead_y));
             content.addSubview(&bead.view);
 
-            images.push(image_view.as_ref().and_then(|view| view.layer()));
+            let home = anchor
+                .filter(|a| on_this(NSPoint::new(a.x, a.y + 1.0)))
+                .map(|a| local(hanging_bead(a)));
+            // the warning's bead flies in on its own display; with no warning, a bead drops
+            // from the icon; elsewhere one materialises with the screen
+            let arrival = hand_off
+                .as_ref()
+                .filter(|warned| on_this(center(warned.frame)))
+                .map(|warned| (local(warned.frame), Some(warned.look)))
+                .or(home.map(|r| (r, None)));
+
+            entrances.push(Entrance {
+                image: image_view.as_ref().and_then(|view| view.layer()),
+                arrival,
+            });
             self.overlays.push(Overlay {
                 window,
                 backdrop,
@@ -322,9 +369,9 @@ impl BreakScreen {
         }
 
         let now = CACurrentMediaTime();
-        for (overlay, image) in self.overlays.iter().zip(&images) {
+        for (overlay, entrance) in self.overlays.iter().zip(&entrances) {
             if animate {
-                overlay.enter(mtm, image.as_ref(), now);
+                overlay.enter(mtm, entrance, now);
             } else {
                 // reduced motion: the screen fades up as one, and nothing moves
                 let layers = [
@@ -494,7 +541,7 @@ impl BreakScreen {
 impl Overlay {
     /// the full entrance, from `now`: the backdrop fades up and the bead leads; the name
     /// comes down onto it as it lands
-    fn enter(&self, mtm: MainThreadMarker, image: Option<&Retained<CALayer>>, now: f64) {
+    fn enter(&self, mtm: MainThreadMarker, entrance: &Entrance, now: f64) {
         let bead = &self.bead;
         if let Some(layer) = self.backdrop.layer() {
             layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, Fill::Entrance), None);
@@ -502,15 +549,35 @@ impl Overlay {
         // only the bead's colour blurs. its glass can't, and fades instead
         if let (Some(layer), Some(content)) = (bead.view.layer(), bead.content_layer()) {
             attach_unclipped_blur(&content, 0.0);
-            let begin = now + ENTRANCE_DELAY;
-            materialise(&layer, &content, begin, ENTRANCE);
-            let from = scaled(bead.view.frame(), BEAD_REST_SCALE);
-            let settled = fly_in(&bead.view, from, begin);
+            let settled = match entrance.arrival {
+                // the bead the warning showed blurs only with its speed. its count comes
+                // up as it grows, and its rings ease back from where they were looking
+                Some((from, Some((x, y)))) => {
+                    let begin = now + FLIGHT_DELAY;
+                    content.addAnimation_forKey(
+                        &blur_pulse(FLIGHT_BLUR, begin, FLIGHT_BLUR_DURATION),
+                        None,
+                    );
+                    bead.reveal_count(begin, 0.3);
+                    bead.look_away_from(x, y, begin, 0.3);
+                    fly_in(&bead.view, from, begin)
+                }
+                Some((from, None)) => {
+                    materialise(&layer, &content, now, 0.4);
+                    fly_in(&bead.view, from, now)
+                }
+                None => {
+                    let begin = now + ENTRANCE_DELAY;
+                    materialise(&layer, &content, begin, ENTRANCE);
+                    let from = scaled(bead.view.frame(), BEAD_REST_SCALE);
+                    fly_in(&bead.view, from, begin)
+                }
+            };
             detach_blur_after(mtm, content, settled - now + 0.05);
         }
         bead.flow();
         // the image sharpens to its own softness, and nothing blurs it from then on
-        if let Some(layer) = image {
+        if let Some(layer) = &entrance.image {
             attach_unclipped_blur(layer, 0.0);
             layer.addAnimation_forKey(
                 &blur_radius(

@@ -16,9 +16,10 @@ use objc2_foundation::{
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
 use super::bead::Bead;
+use super::break_screen::FLIGHT_DELAY;
 use super::panel::{
-    Fill, POP, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade, presented,
-    property, scale_about, spring, without_actions,
+    Fill, POP, after, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
+    presented, property, scale_about, spring, without_actions,
 };
 
 /// ω² of the swing, per second squared
@@ -297,6 +298,17 @@ impl Charm {
         swing.free = false;
     }
 
+    /// the bead, in the view's coordinates
+    pub fn bead_frame(&self) -> NSRect {
+        self.ivars().borrow().bead.view.frame()
+    }
+
+    /// how far the bead's rings lean toward the pointer, as `Bead::look` takes it
+    pub fn look(&self) -> (f64, f64) {
+        let look = self.ivars().borrow().look;
+        (look[0], look[1])
+    }
+
     /// what the charm animates to swell from where it hangs, or shrink back there: key path,
     /// value at rest and value when small
     fn bubble(&self, layer: &CALayer) -> [(&'static str, f64, f64); 3] {
@@ -344,6 +356,18 @@ impl Charm {
             blur_out(&content, BUBBLE_BLUR, now, duration);
             content.setMasksToBounds(false);
         }
+    }
+
+    /// the break's bead takes over from this one, which goes as that one's flight starts,
+    /// and the thread lifts
+    pub fn hand_off(&self, now: f64, duration: f64) {
+        let swing = self.ivars().borrow();
+        let bead = swing.bead.view.clone();
+        after(self.mtm(), FLIGHT_DELAY, move || bead.setHidden(true));
+        swing.thread.addAnimation_forKey(
+            &property("transform.scale.y", 1.0, 0.0, now, duration, Fill::Exit),
+            None,
+        );
     }
 }
 
