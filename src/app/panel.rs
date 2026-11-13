@@ -228,16 +228,6 @@ pub fn scale(
     property("transform.scale", from, to, begin, duration, fill)
 }
 
-pub fn slide_y(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    fill: Fill,
-) -> Retained<CABasicAnimation> {
-    property("transform.translation.y", from, to, begin, duration, fill)
-}
-
 /// for things that arrive: off the mark at once, then a long, gentle settle
 pub fn arrive() -> Retained<CAMediaTimingFunction> {
     CAMediaTimingFunction::functionWithControlPoints(0.32, 0.72, 0.0, 1.0)
@@ -306,13 +296,15 @@ pub fn attach_blur(layer: &CALayer, resting: f64) {
     }
 }
 
-/// blurs a leaving layer from sharp to `radius`, and holds the blur until the layer goes away
+/// blurs a leaving layer to `radius`, from sharp or from however blurred its entrance had
+/// left it, and holds the blur until the layer goes away. most of the blur comes in the
+/// first frames, ahead of a fade over the same time, for the layer to be seen to soften
 pub fn blur_out(layer: &CALayer, radius: f64, begin: f64, duration: f64) {
+    let from = presented(layer, "filters.blur.inputRadius").unwrap_or(0.0);
     attach_blur(layer, 0.0);
-    layer.addAnimation_forKey(
-        &blur_radius(0.0, radius, begin, duration, Fill::Exit),
-        Some(&NSString::from_str(BLUR_OUT)),
-    );
+    let blur = blur_radius(from, radius, begin, duration, Fill::Exit);
+    blur.setTimingFunction(Some(&arrive()));
+    layer.addAnimation_forKey(&blur, Some(&NSString::from_str(BLUR_OUT)));
 }
 
 /// drops a passing blur once its animation is over, so the layer renders without the

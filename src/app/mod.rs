@@ -18,12 +18,13 @@ use objc2::runtime::{AnyClass, AnyObject, NSObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSImage, NSMenu, NSMenuItem, NSScreen, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
     NSWorkspace,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
+    MainThreadMarker, NSData, NSPoint, NSPointInRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
+    NSString, NSTimer, NSURL,
 };
 
 use crate::config::{self, Config, ConfigError, DndAction, DoNotDisturb, KeySpec};
@@ -557,8 +558,9 @@ impl App {
                     self.hotkeys.held(Action::Skip),
                     self.hotkeys.held(Action::Postpone),
                 );
+                let anchor = self.status_anchor();
                 self.pre_break_dialog
-                    .show(remaining.unwrap_or(0), buttons, target);
+                    .show(remaining.unwrap_or(0), buttons, target, anchor);
                 self.shown.countdown = remaining;
             } else {
                 self.pre_break_dialog.hide();
@@ -825,6 +827,20 @@ impl App {
         item.setMenu(Some(&menu));
         self.status_item = Some(item);
         self.apply_status_icon(TrayIconState::Normal);
+    }
+
+    /// the bottom centre of the menu-bar icon in screen coordinates, which the warning sits
+    /// beside. None when the icon isn't on any display, as when the menu bar is too full
+    /// for it
+    fn status_anchor(&self) -> Option<NSPoint> {
+        let button = self.status_item.as_ref()?.button(self.mtm)?;
+        let frame = button.window()?.frame();
+        let anchor = NSPoint::new(frame.origin.x + frame.size.width / 2.0, frame.origin.y);
+        let inside = NSPoint::new(anchor.x, anchor.y + 1.0);
+        NSScreen::screens(self.mtm)
+            .iter()
+            .any(|screen| NSPointInRect(inside, screen.frame()))
+            .then_some(anchor)
     }
 
     fn add_item(

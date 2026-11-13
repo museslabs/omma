@@ -21,7 +21,7 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
 use super::glass_button::{
-    ButtonHost, Buttons, GlassButtonStyle, GlassButtonWidth, Shortcut, make_glass_button,
+    ButtonHost, Buttons, GlassButtonStyle, Shortcut, Surface, make_glass_button,
 };
 use super::panel::{
     CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
@@ -56,11 +56,10 @@ const LABEL_BEGINS: f64 = FOREGROUND_SETTLED + 0.07;
 const BUTTONS_BEGIN: f64 = LABEL_BEGINS + 0.28;
 const EXIT_DURATION: f64 = 0.32;
 const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
+    surface: Surface::Glass,
     height: BUTTON_HEIGHT,
-    width: GlassButtonWidth::Fit {
-        min_width: 120.0,
-        horizontal_padding: 48.0,
-    },
+    min_width: 120.0,
+    horizontal_padding: 48.0,
     title_font_size: 16.0,
     hint_font_size: 13.0,
 };

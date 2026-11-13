@@ -4,9 +4,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAppearanceCustomization, NSButton, NSColor, NSEvent, NSEventModifierFlags,
-    NSFont, NSFontAttributeName, NSFontWeightMedium, NSForegroundColorAttributeName,
-    NSGlassEffectView, NSGlassEffectViewStyle, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAppearanceCustomization, NSBezelStyle, NSButton, NSColor,
+    NSControlBorderShape, NSControlSize, NSEvent, NSEventModifierFlags, NSFont,
+    NSFontAttributeName, NSFontWeightMedium, NSForegroundColorAttributeName, NSGlassEffectView,
+    NSGlassEffectViewStyle, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_core_graphics::CGColor;
 use objc2_foundation::{
@@ -175,17 +176,22 @@ pub struct Button {
     pub key: Option<KeySpec>,
 }
 
-pub enum GlassButtonWidth {
-    Fixed(f64),
-    Fit {
-        min_width: f64,
-        horizontal_padding: f64,
-    },
+/// what the button is made of, for the surface it sits on
+pub enum Surface {
+    /// a capsule of the system's glass under a title. not AppKit's glass bezel, whose
+    /// hover snaps from one colour to the other
+    Glass,
+    /// a standard push button, for controls already on a surface such as the warning's
+    Fill,
 }
 
 pub struct GlassButtonStyle {
+    pub surface: Surface,
     pub height: f64,
-    pub width: GlassButtonWidth,
+    /// the button is as wide as its title plus `horizontal_padding`, and no narrower than
+    /// `min_width`
+    pub min_width: f64,
+    pub horizontal_padding: f64,
     pub title_font_size: f64,
     pub hint_font_size: f64,
 }
@@ -210,7 +216,15 @@ pub fn make_glass_button(
     let button = unsafe {
         NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
     };
-    button.setBordered(false);
+    match style.surface {
+        Surface::Glass => button.setBordered(false),
+        Surface::Fill => {
+            button.setBordered(true);
+            button.setBezelStyle(NSBezelStyle::Push);
+            button.setBorderShape(NSControlBorderShape::Capsule);
+        }
+    }
+    button.setControlSize(NSControlSize::Large);
     button.setAccessibilityLabel(Some(&title_ns));
 
     let attributed =
@@ -250,17 +264,9 @@ pub fn make_glass_button(
         _ => None,
     };
 
-    if matches!(style.width, GlassButtonWidth::Fit { .. }) {
-        button.sizeToFit();
-    }
+    button.sizeToFit();
 
-    let width = match style.width {
-        GlassButtonWidth::Fixed(width) => width,
-        GlassButtonWidth::Fit {
-            min_width,
-            horizontal_padding,
-        } => (button.frame().size.width + horizontal_padding).max(min_width),
-    };
+    let width = (button.frame().size.width + style.horizontal_padding).max(style.min_width);
     let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, style.height));
     button.setFrame(rect);
 
@@ -279,11 +285,16 @@ pub fn make_glass_button(
     // SAFETY: NSView's designated initializer, with the argument type it declares
     let host: Retained<ButtonHost> = unsafe { msg_send![super(host), initWithFrame: rect] };
     host.setWantsLayer(true);
-    let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
-    glass.setCornerRadius(style.height / 2.0);
-    glass.setStyle(NSGlassEffectViewStyle::Regular);
-    glass.setContentView(Some(&button));
-    host.addSubview(&glass);
+    match style.surface {
+        Surface::Glass => {
+            let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), rect);
+            glass.setCornerRadius(style.height / 2.0);
+            glass.setStyle(NSGlassEffectViewStyle::Regular);
+            glass.setContentView(Some(&button));
+            host.addSubview(&glass);
+        }
+        Surface::Fill => host.addSubview(&button),
+    }
     if let Some(layer) = host.layer() {
         layer.addSublayer(&glow);
     }
