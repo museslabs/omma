@@ -104,6 +104,12 @@ const BLINK_SETTLE: f64 = 0.16;
 /// spaced unevenly, the last two a double, to keep the round from reading as a beat
 const BLINK_PERIOD: f64 = 9.0;
 const BLINKS: [f64; 3] = [2.4, 5.9, 6.34];
+/// annoyed, an upper lid comes down over this share of the pupil, at its middle, and slopes
+/// by this many radians, so it reads as a frown and never as a blink. open, its edge waits
+/// this far above the pupil, as a share of it
+const LID_DROP: f64 = 0.45;
+const LID_TILT: f64 = 0.2;
+const LID_OPEN: f64 = 1.1;
 /// pressed against something above it, the bead's top gives way to a straight edge, which
 /// curves into the rest of the outline over this share of the radius, or over the press
 /// itself while that's shallower, so the top still reaches the edge
@@ -423,6 +429,8 @@ pub struct Bead {
     iris: Retained<CALayer>,
     /// the two rings, and the socket the pupil sits in, which `look` moves and `press` sinks
     discs: [Retained<CALayer>; 3],
+    /// the socket's mask, an upper lid that `annoy` lowers over the pupil
+    lid: Retained<CALayer>,
     /// the pupil, which blinks inside its socket
     pupil: Retained<CALayer>,
     /// masks for the pigment and rings, sharing one moving liquid level
@@ -555,13 +563,20 @@ impl Bead {
         iris.addSublayer(&white);
         iris.addSublayer(&sky);
         front.addSublayer(&iris);
-        // the socket takes the look and the sink, and the pupil inside blinks on its own
+        // the socket takes the look and the sink, its lid the annoyance, and the pupil
+        // inside blinks on its own
         let socket = CALayer::new();
         socket.setBounds(pupil.bounds());
         socket.setPosition(centre);
         let side = pupil.bounds().size.width;
         pupil.setPosition(NSPoint::new(side / 2.0, side / 2.0));
         socket.addSublayer(&pupil);
+        // the socket's mask while it's annoyed. whatever the mask covers shows, so the lid's
+        // edge is its top. it pivots about the middle of that edge
+        let lid = CALayer::new();
+        lid.setBounds(square(3.0 * side));
+        lid.setAnchorPoint(NSPoint::new(0.5, 1.0));
+        lid.setBackgroundColor(Some(&CGColor::new_generic_gray(0.0, 1.0)));
 
         let surface = counts.then(|| {
             let wave = || {
@@ -603,6 +618,7 @@ impl Bead {
             content,
             iris,
             discs: [white, sky, socket],
+            lid,
             pupil,
             surface,
             followers,
@@ -710,6 +726,29 @@ impl Bead {
             self.flatten(flat);
             self.iris.setAffineTransform(sink(IRIS_SINK));
             self.discs[2].setAffineTransform(sink(PUPIL_SINK));
+        });
+    }
+
+    /// lowers the upper lid over the pupil by `amount`, from open at 0 to as annoyed as it
+    /// gets at 1. `slope` 1 tips the lid down on the left, -1 on the right
+    pub fn annoy(&self, amount: f64, slope: f64) {
+        let annoyed = amount > 0.0;
+        without_actions(|| {
+            if annoyed {
+                let side = self.pupil.bounds().size.width;
+                let edge = side * (LID_OPEN - amount * (LID_OPEN - 1.0 + LID_DROP));
+                let (sin, cos) = (amount * slope * LID_TILT).sin_cos();
+                self.lid.setPosition(NSPoint::new(side / 2.0, edge));
+                self.lid.setAffineTransform(CGAffineTransform {
+                    a: cos,
+                    b: sin,
+                    c: -sin,
+                    d: cos,
+                    tx: 0.0,
+                    ty: 0.0,
+                });
+            }
+            mask_while(&self.discs[2], &self.lid, annoyed);
         });
     }
 
@@ -1042,6 +1081,15 @@ mod tests {
         assert!(reach(&DISCS[0], IRIS_SINK) < edge);
         assert!(reach(&DISCS[1], IRIS_SINK) < edge);
         assert!(reach(&DISCS[2], PUPIL_SINK) < edge);
+    }
+
+    #[test]
+    fn an_annoyed_lid_never_shuts_the_eye_and_an_open_one_clears_it() {
+        // the share of the pupil under the sloping lid's low end: well over a third shows
+        let lowest = LID_DROP + LID_TILT.tan() / 2.0;
+        assert!(lowest < 0.6);
+        // open, the lid's edge stays above the pupil
+        const { assert!(LID_OPEN > 1.0) };
     }
 
     #[test]

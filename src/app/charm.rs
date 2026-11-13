@@ -1,7 +1,8 @@
 //! the warning's bead on its thread, hanging off the menu-bar icon. it swings like a
 //! pendulum on a display link: grab it and it follows the pointer, let go and the swing keeps
 //! the release velocity. its inner rings lean toward the pointer, as if it watched you. the
-//! menu bar is a wall. pressed against it, the bead's top flattens like a drop of liquid's.
+//! menu bar is a wall. pressed against it, the bead's top flattens like a drop of liquid's,
+//! and its eye narrows in annoyance.
 
 use std::cell::RefCell;
 
@@ -58,7 +59,8 @@ const WALL_STIFFNESS: f64 = 250.0;
 const WALL_DAMPING: f64 = 20.0;
 /// a drag presses the bead into the bar less and less far, up to this many radians
 const PRESS_LIMIT: f64 = 0.18;
-/// the top flattens against the bar on a brisk spring that barely overshoots
+/// the top flattens against the bar, and the annoyed lid comes down, on a brisk spring that
+/// barely overshoots
 const BRISK: Spring = Spring {
     stiffness: 900.0,
     damping: 51.0,
@@ -67,6 +69,15 @@ const BRISK: Spring = Spring {
 const ROUNDING: Spring = Spring {
     stiffness: 300.0,
     damping: 35.0,
+};
+/// pressed this many points into the bar, the bead gets annoyed, and stays annoyed this long
+/// after
+const ANNOY_AT: f64 = 3.0;
+const ANNOY_HOLD: f64 = 0.6;
+/// the lid lifts slower than it came down, with a little bounce
+const RAISING: Spring = Spring {
+    stiffness: 300.0,
+    damping: 22.0,
 };
 
 pub struct Swing {
@@ -85,6 +96,13 @@ pub struct Swing {
     /// how many points the bead's top is pressed flat, and how fast that's changing. the
     /// bead shows only as far into the bar as this lets it
     flat: [f64; 2],
+    /// how annoyed it is, as `Bead::annoy` takes it, how fast that's changing, and how much
+    /// longer it stays annoyed
+    annoyed: [f64; 2],
+    annoyed_for: f64,
+    /// which way the lid slopes, as `Bead::annoy` takes it, set by the side the bead last hit
+    /// the bar on
+    slope: f64,
     /// lightly damped, while it hangs in a warning
     free: bool,
     /// how long it has hung still, and which way the last stir went
@@ -273,6 +291,9 @@ impl Charm {
             theta: 0.0,
             omega: 0.0,
             flat: [0.0; 2],
+            annoyed: [0.0; 2],
+            annoyed_for: 0.0,
+            slope: 1.0,
             free: false,
             still_for: 0.0,
             stir_left: false,
@@ -469,16 +490,32 @@ impl Swing {
         chase(y, vy, target[1], LOOK, dt);
     }
 
-    /// flattens the bead's top as far as the swing presses it into the bar
+    /// flattens the bead's top as far as the swing presses it into the bar, and annoys it
+    /// while it's pressed hard
     fn react(&mut self, dt: f64) {
         let radius = self.radius();
         let goal = pressed(self.theta, radius, self.length).min(radius * FLAT_MOST);
         let spring = if goal > self.flat[0] { BRISK } else { ROUNDING };
         let [depth, speed] = &mut self.flat;
         chase(depth, speed, goal, spring, dt);
+        if goal >= ANNOY_AT {
+            self.annoyed_for = ANNOY_HOLD;
+            // a bead out to the right has its thread up on its left, and frowns that way
+            self.slope = self.theta.signum();
+        } else {
+            self.annoyed_for = (self.annoyed_for - dt).max(0.0);
+        }
+        let (goal, spring) = if self.annoyed_for > 0.0 {
+            (1.0, BRISK)
+        } else {
+            (0.0, RAISING)
+        };
+        let [amount, speed] = &mut self.annoyed;
+        chase(amount, speed, goal, spring, dt);
     }
 
-    /// puts the thread and bead where the angle and look say, as flat as the bar has made it
+    /// puts the thread and bead where the angle and look say, as flat and annoyed as the
+    /// bar has made it
     fn place(&self) {
         let center = self.bead_center();
         let radius = self.radius();
@@ -486,6 +523,7 @@ impl Swing {
             .view
             .setFrameOrigin(NSPoint::new(center.x - radius, center.y - radius));
         self.bead.press(self.flat[0]);
+        self.bead.annoy(self.annoyed[0], self.slope);
         let (sin, cos) = self.shown().sin_cos();
         without_actions(|| {
             self.thread.setAffineTransform(CGAffineTransform {
@@ -570,13 +608,13 @@ mod tests {
         let near = pressed(wall + 0.05, radius, length);
         let hardest = pressed(-(wall + PRESS_LIMIT), radius, length);
         assert!(near > 0.0 && hardest > near);
-        // the hardest a drag can press flattens most of the top
-        assert!(hardest > radius / 3.0);
+        // the hardest a drag can press annoys the bead, and flattens most of its top
+        assert!(hardest > ANNOY_AT && hardest > radius / 3.0);
     }
 
     #[test]
     fn every_spring_comes_to_rest_on_its_goal_even_at_the_longest_frame() {
-        for spring in [LOOK, BRISK, ROUNDING] {
+        for spring in [LOOK, BRISK, ROUNDING, RAISING] {
             let (mut pos, mut vel) = (0.0, 0.0);
             // a second of frames as long as `step` lets one be
             for _ in 0..32 {
