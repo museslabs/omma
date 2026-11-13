@@ -21,7 +21,7 @@ use objc2_foundation::{
 use objc2_quartz_core::{
     CAAnimation, CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
     CASpringAnimation, CATransaction, kCAFillModeBackwards, kCAFillModeBoth,
-    kCAMediaTimingFunctionEaseInEaseOut,
+    kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionLinear,
 };
 
 define_class!(
@@ -247,6 +247,11 @@ pub fn scale_about(
 /// for things that arrive: off the mark at once, then a long, gentle settle
 pub fn arrive() -> Retained<CAMediaTimingFunction> {
     CAMediaTimingFunction::functionWithControlPoints(0.32, 0.72, 0.0, 1.0)
+}
+
+pub fn linear() -> Retained<CAMediaTimingFunction> {
+    // SAFETY: an immutable Core Animation constant
+    CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionLinear })
 }
 
 /// changes layer properties at once, without the implicit animation Core Animation adds

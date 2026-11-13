@@ -1,7 +1,8 @@
 //! native Liquid Glass refracts the mati's cobalt body. translucent rings, the pupil and
-//! count sit in its content view. during a break the body's outline drifts.
+//! count sit in its content view. during a break the colour drifts and drains under a slow
+//! wave, leaving the clear material and the pupil behind.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, Message};
@@ -15,7 +16,7 @@ use objc2_quartz_core::{
 };
 
 use super::flip::FlipCount;
-use super::panel::{Fill, set_fill};
+use super::panel::{Fill, linear, presented, property, set_fill, without_actions};
 
 /// sRGB and alpha
 pub type Rgba = (f64, f64, f64, f64);
@@ -107,6 +108,16 @@ const OUTLINE_POINTS: usize = 64;
 const MORPH_SWELL: f64 = 0.22;
 /// the count's digits, as a share of the diameter
 const COUNT_SIZE: f64 = 0.12;
+/// how long the liquid takes to reach the level the next second puts it at. a little over
+/// the second, to keep it flowing until a late tick gives it the next level
+const FLOW: f64 = 1.1;
+/// the wave on the liquid's surface, as shares of the diameter, and how long one wave takes
+/// to pass
+const WAVE_HEIGHT: f64 = 0.011;
+const WAVE_LENGTH: f64 = 0.8;
+const WAVE_PERIOD: f64 = 2.8;
+/// the wave layers are this many diameters wide, too wide for a passing wave to show an end
+const WAVE_SPAN: f64 = 4.0;
 
 /// linear sRGB for an oklch colour, by Björn Ottosson's matrices. out of sRGB's gamut a
 /// channel is under 0 or over 1
@@ -303,6 +314,8 @@ pub struct Bead {
     diameter: f64,
     /// the colour beneath the glass, blurred separately during entrances and exits
     content: Retained<NSView>,
+    /// masks for the pigment and rings, sharing one moving liquid level
+    surface: [Retained<CAShapeLayer>; 2],
     /// every layer shaped by the body's outline, which `drift` sets moving
     followers: Vec<Follower>,
     count: FlipCount,
@@ -335,7 +348,7 @@ impl Bead {
             follow(&layer, "shadowPath", Outline::Glass);
         }
 
-        // the material samples the colour below it
+        // the material samples the colour below it, including the moving liquid surface
         let content = NSView::initWithFrame(NSView::alloc(mtm), frame);
         content.setWantsLayer(true);
         view.addSubview(&content);
@@ -356,6 +369,10 @@ impl Bead {
         }
         let root = content.layer().expect("a view that wants a layer has one");
 
+        let liquid = CALayer::new();
+        liquid.setFrame(frame);
+        root.addSublayer(&liquid);
+
         // the pigment keeps the mati's colours; AppKit supplies its reflections and refraction
         let body = CALayer::new();
         body.setFrame(frame);
@@ -366,7 +383,7 @@ impl Bead {
         let cobalt = dome(d, BODY_LIGHT, &BODY, scale);
         cobalt.setPosition(centre);
         body.addSublayer(&cobalt);
-        root.addSublayer(&body);
+        liquid.addSublayer(&body);
 
         // the eye is content inside the native glass, with its colour showing through the rings
         let discs = DISCS.each_ref().map(|disc| {
@@ -389,9 +406,36 @@ impl Bead {
         let front = foreground
             .layer()
             .expect("a view that wants a layer has one");
-        for disc in &discs {
-            front.addSublayer(disc);
-        }
+        let iris = CALayer::new();
+        iris.setFrame(frame);
+        iris.addSublayer(&discs[0]);
+        iris.addSublayer(&discs[1]);
+        front.addSublayer(&iris);
+
+        let surface = {
+            let wave = || {
+                let layer = CAShapeLayer::new();
+                layer.setBounds(NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(WAVE_SPAN * d, 2.0 * d),
+                ));
+                layer.setAnchorPoint(NSPoint::new(0.5, 1.0));
+                layer.setPosition(NSPoint::new(r, level_y(d, 1.0)));
+                layer.setContentsScale(scale);
+                layer.setPath(Some(&wave_path(d)));
+                layer
+            };
+            // whatever the mask covers shows; its top edge is the surface
+            let mask = wave();
+            // SAFETY: the mask is a fresh layer with no superlayer of its own
+            unsafe { liquid.setMask(Some(&mask)) };
+            let iris_mask = wave();
+            // SAFETY: each masked layer owns a separate, fresh mask
+            unsafe { iris.setMask(Some(&iris_mask)) };
+
+            [mask, iris_mask]
+        };
+        front.addSublayer(&discs[2]);
 
         let count = FlipCount::new(mtm, d * COUNT_SIZE, PUPIL, centre);
         foreground.addSubview(&count.view);
@@ -400,6 +444,7 @@ impl Bead {
             view,
             diameter: d,
             content,
+            surface,
             followers,
             count,
         }
@@ -458,11 +503,121 @@ impl Bead {
     pub fn set_count(&self, text: &str, spoken: &str, flip: bool) {
         self.count.set(text, spoken, flip);
     }
+
+    /// sets the wave on the liquid's surface going, for as long as the bead lives
+    pub fn flow(&self) {
+        let r = self.diameter / 2.0;
+        let pass = property(
+            "position.x",
+            r,
+            r + self.diameter * WAVE_LENGTH,
+            0.0,
+            WAVE_PERIOD,
+            Fill::Entrance,
+        );
+        pass.setTimingFunction(Some(&linear()));
+        pass.setRepeatCount(f32::INFINITY);
+        for layer in &self.surface {
+            layer.addAnimation_forKey(&pass, Some(&NSString::from_str("wave")));
+        }
+    }
+
+    /// shows `left` (0…1) of the liquid from `begin`, a Core Animation time, flowing there
+    /// over `FLOW` from wherever it is on screen. without `animate` the level steps instead,
+    /// for reduced motion.
+    pub fn drain_to(&self, left: f64, begin: f64, animate: bool) {
+        let y = level_y(self.diameter, height_for(left.clamp(0.0, 1.0)));
+        for layer in &self.surface {
+            let from = presented(layer, "position.y").unwrap_or(layer.position().y);
+            without_actions(|| layer.setPosition(NSPoint::new(self.diameter / 2.0, y)));
+            if animate {
+                let flow = property("position.y", from, y, begin, FLOW, Fill::Entrance);
+                flow.setTimingFunction(Some(&linear()));
+                layer.addAnimation_forKey(&flow, Some(&NSString::from_str("level")));
+            }
+        }
+    }
+}
+
+/// a filled mask below a sine wave, in a `WAVE_SPAN` by two diameters box
+fn wave_path(d: f64) -> CFRetained<CGMutablePath> {
+    let (width, height) = (WAVE_SPAN * d, 2.0 * d);
+    let swell = d * WAVE_HEIGHT;
+    let y = |x: f64| height - swell + swell * (TAU * x / (d * WAVE_LENGTH)).sin();
+    let steps = (WAVE_SPAN / WAVE_LENGTH * 24.0).ceil() as usize;
+    let path = CGMutablePath::new();
+    // SAFETY: a null transform means none
+    unsafe {
+        let none = std::ptr::null();
+        CGMutablePath::move_to_point(Some(&path), none, 0.0, 0.0);
+        CGMutablePath::add_line_to_point(Some(&path), none, 0.0, y(0.0));
+        for step in 1..=steps {
+            let x = width * step as f64 / steps as f64;
+            CGMutablePath::add_line_to_point(Some(&path), none, x, y(x));
+        }
+        CGMutablePath::add_line_to_point(Some(&path), none, width, 0.0);
+        CGMutablePath::close_subpath(Some(&path));
+    }
+    path
+}
+
+/// the furthest the body's outline gets from the centre, as a share of the bead's radius
+fn liquid_reach() -> f64 {
+    LIQUID + MORPH * 1.1
+}
+
+/// where the wave's crests sit for a fill `height` (0…1 of the liquid's height), measured
+/// up from the bead's bottom. full, even the troughs clear the liquid's top wherever its
+/// outline has drifted; empty, the crests are under its bottom
+fn level_y(diameter: f64, height: f64) -> f64 {
+    let r = diameter / 2.0;
+    let liquid = r * liquid_reach();
+    let swell = 2.0 * diameter * WAVE_HEIGHT;
+    r - liquid - 2.0 + height * (2.0 * liquid + swell + 4.0)
+}
+
+/// the share of a disc's area under a level `height` (0…1 of the diameter) up from the bottom
+fn area_below(height: f64) -> f64 {
+    let d = 1.0 - 2.0 * height;
+    (d.acos() - d * (1.0 - d * d).sqrt()) / PI
+}
+
+/// the level that leaves `left` (0…1) of the disc's area coloured. the colour then drains at
+/// an even rate though the disc is wider in the middle
+fn height_for(left: f64) -> f64 {
+    if left <= 0.0 {
+        return 0.0;
+    }
+    if left >= 1.0 {
+        return 1.0;
+    }
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..32 {
+        let mid = (low + high) / 2.0;
+        if area_below(mid) < left {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (low + high) / 2.0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_level_leaves_the_asked_share_of_the_area() {
+        assert_eq!(height_for(0.0), 0.0);
+        assert_eq!(height_for(1.0), 1.0);
+        assert!((height_for(0.5) - 0.5).abs() < 1e-6);
+        for left in [0.05, 0.25, 0.6, 0.9] {
+            assert!((area_below(height_for(left)) - left).abs() < 1e-6);
+        }
+        // a sliver of colour needs more than a sliver of height, the bottom being narrow
+        assert!(height_for(0.1) > 0.1);
+    }
 
     fn close(got: [f64; 3], want: [f64; 3]) -> bool {
         got.iter()
@@ -518,19 +673,30 @@ mod tests {
     }
 
     #[test]
-    fn the_body_stays_inside_the_glass_and_around_the_rings() {
+    fn full_and_empty_leave_no_surface_in_the_liquid() {
+        let (d, r) = (300.0, 150.0);
+        let troughs = level_y(d, 1.0) - 2.0 * d * WAVE_HEIGHT;
+        assert!(troughs > r + r * liquid_reach());
+        assert!(level_y(d, 0.0) < r - r * liquid_reach());
+    }
+
+    #[test]
+    fn the_liquid_stays_inside_the_glass_and_around_the_rings() {
+        let mut furthest: f64 = 0.0;
         let mut nearest: f64 = 1.0;
         for frame in 0..360 {
             for step in 0..360 {
                 let at = |n: usize| TAU * n as f64 / 360.0;
                 let reach = outline_radius(at(step), at(frame), 1.0);
                 let glass = Outline::Glass.radius(at(step), at(frame), 1.0);
-                // the pigment stays inside the shell throughout the morph
+                // the draining pigment starts inside the shell throughout the morph
                 assert!(glass > reach && glass < 1.0);
+                furthest = furthest.max(reach);
                 nearest = nearest.min(reach);
             }
         }
-        // and always contains the pale ring
+        // the liquid fits inside the glass and always contains the pale ring
+        assert!(furthest <= liquid_reach() && liquid_reach() < 1.0);
         assert!(nearest > DISCS[0].radius);
         // and at rest it's a circle
         assert_eq!(outline_radius(1.0, 2.0, 0.0), LIQUID);

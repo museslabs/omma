@@ -1,5 +1,5 @@
 //! one fullscreen overlay per display in liquid glass style. a mati bead in the middle of each
-//! display counts the break down. the buttons are glass capsules.
+//! display counts the break down as its colour drains. the buttons are glass capsules.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -110,6 +110,8 @@ pub struct BreakScreen {
     /// true from the latest `show` until `hide` starts or the overlays are torn down. a
     /// timer from that `show` checks it, since `hide` may have run first.
     up: Rc<Cell<bool>>,
+    /// the break's length, which the bead drains against
+    total: u64,
 }
 
 struct Overlay {
@@ -132,6 +134,7 @@ impl BreakScreen {
             overlays: Vec::new(),
             animate: true,
             up: Rc::new(Cell::new(false)),
+            total: 1,
         }
     }
 
@@ -150,6 +153,7 @@ impl BreakScreen {
         let weight_semibold = unsafe { NSFontWeightSemibold };
 
         self.animate = animations_on();
+        self.total = remaining.max(1);
         let animate = self.animate;
 
         // with no display, sync tries again on its next tick
@@ -357,11 +361,12 @@ impl BreakScreen {
         let first = self.overlays.first()?;
         first.window.makeKeyWindow();
         self.up = Rc::new(Cell::new(true));
-        // the countdown starts once the screen is in focus, and the bead's outline drifts
-        // from then
+        // the countdown starts once the screen is in focus, and the bead drains from then
         let settled = if animate { SETTLED } else { CROSS_FADE };
-        if animate {
-            for overlay in &self.overlays {
+        let left = self.left(remaining);
+        for overlay in &self.overlays {
+            overlay.bead.drain_to(left, now + settled, animate);
+            if animate {
                 overlay.bead.drift(now + settled);
             }
         }
@@ -394,11 +399,20 @@ impl BreakScreen {
 
     pub fn update_countdown(&self, remaining: u64) {
         let text = fmt_count(remaining);
+        let left = self.left(remaining);
+        let now = CACurrentMediaTime();
         for overlay in &self.overlays {
             overlay
                 .bead
                 .set_count(&text, &spoken_count(remaining), self.animate);
+            overlay.bead.drain_to(left, now, self.animate);
         }
+    }
+
+    /// how much colour the bead aims for while `remaining` shows, which is where the next
+    /// second leaves it. that way the colour is gone as the break ends
+    fn left(&self, remaining: u64) -> f64 {
+        remaining.saturating_sub(1) as f64 / self.total as f64
     }
 
     pub fn hide(&mut self) {
@@ -494,6 +508,7 @@ impl Overlay {
             let settled = fly_in(&bead.view, from, begin);
             detach_blur_after(mtm, content, settled - now + 0.05);
         }
+        bead.flow();
         // the image sharpens to its own softness, and nothing blurs it from then on
         if let Some(layer) = image {
             attach_unclipped_blur(layer, 0.0);

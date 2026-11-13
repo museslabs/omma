@@ -46,10 +46,11 @@ with no Dock icon, and isn't packaged as an app bundle.
   which only closes the panel. The warning never takes keyboard focus from the
   app you're typing in.
 - **A break screen** on every display, with the break's name, a countdown in a
-  bead, optional background image, and Skip and Postpone buttons. The countdown
-  starts once the screen has faded in, so a break runs about 0.6 s longer than
-  its length, or 0.25 s with Reduce Motion on. omma never becomes the active
-  app, and your app gets the keyboard back when the break ends.
+  bead whose colour drains as the break runs, optional background image, and
+  Skip and Postpone buttons. The countdown starts once the screen has faded in,
+  so a break runs about 0.6 s longer than its length, or 0.25 s with Reduce
+  Motion on. omma never becomes the active app, and your app gets the keyboard
+  back when the break ends.
 - **A menu** with the time to the next break, items to take a break now (the
   next one, a short one or a long one), Enabled, Open config… and Quit. It also
   lists anything that needs fixing; see
