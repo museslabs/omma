@@ -68,8 +68,8 @@ const NEEDS_ACCESSIBILITY: &str =
 const ACCESSIBILITY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
-/// the repository page, which shows the README
-const HELP_URL: &str = env!("CARGO_PKG_REPOSITORY");
+/// the docs, from their first page
+const HELP_URL: &str = "https://museslabs.org/docs/omma/introduction/";
 
 /// the Pause submenu. each item's tag is its length in seconds, and 0 lasts until midnight.
 const PAUSES: [(&str, isize); 4] = [
