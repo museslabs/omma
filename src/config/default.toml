@@ -36,14 +36,12 @@ random_order = true
 enabled      = true
 idle_seconds = 60
 
-[audible_alert]
-# Sounds by name, from /System/Library/Sounds: Basso, Blow, Bottle, Frog,
-# Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine or Tink.
-enabled          = true
-pre_break        = true  # when the warning shows up
-post_break       = true  # when a break runs to its end
-pre_break_sound  = "Tink"
-post_break_sound = "Glass"
+[sounds]
+# A sound by name, case and all, from /System/Library/Sounds: Basso, Blow,
+# Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine or
+# Tink. A sound you add to ~/Library/Sounds works too. "" plays none.
+pre_break  = "Tink"   # when the warning shows up
+post_break = "Glass"  # when a break runs to its end
 
 [notification]
 # The panel that warns of a break.

@@ -493,7 +493,7 @@ impl App {
     }
 
     fn handle_event(&mut self, now: SystemTime, event: Event) {
-        let alert = &self.config.audible_alert;
+        let sounds = &self.config.sounds;
         match event {
             Event::Warn => {
                 let dnd = &self.config.do_not_disturb;
@@ -505,13 +505,13 @@ impl App {
                 if let Some(text) = &self.suppressed {
                     log!("do-not-disturb: {text}");
                     self.core.suppress(now, dnd.action);
-                } else if alert.enabled && alert.pre_break {
-                    sound::play(&alert.pre_break_sound);
+                } else if let Some(name) = &sounds.pre_break {
+                    sound::play(name);
                 }
             }
             Event::BreakEnded { completed: true } => {
-                if alert.enabled && alert.post_break {
-                    sound::play(&alert.post_break_sound);
+                if let Some(name) = &sounds.post_break {
+                    sound::play(name);
                 }
             }
             Event::BreakStarted | Event::BreakEnded { completed: false } => {}

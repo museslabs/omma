@@ -31,6 +31,9 @@ The first release.
   startup.
 - The per-break `interval` key is gone. Breaks keep their own `duration` and
   `image`.
+- `[audible_alert]` is now `[sounds]`, with two keys, `pre_break` and
+  `post_break`. Each names a sound, or is `""` for none, and a name with no
+  sound behind it is an error.
 - `shift` in a shortcut goes only with a letter, `escape`, `space`, `enter` or
   `delete`, and the `delete` key works.
 - The CLI rejects combined flags. Each command prints what it did or why it

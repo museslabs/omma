@@ -3,7 +3,7 @@
 
 mod keys;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub schedule: Settings,
-    pub audible_alert: AudibleAlert,
+    pub sounds: Sounds,
     pub notification: Notification,
     pub keybindings: Keybindings,
     pub do_not_disturb: DoNotDisturb,
@@ -48,7 +48,7 @@ struct ConfigFile {
     short_breaks: Vec<BreakEntry>,
     long_breaks: Vec<BreakEntry>,
     smart_pause: SmartPause,
-    audible_alert: AudibleAlert,
+    sounds: SoundNames,
     notification: Notification,
     keybindings: Keybindings,
     do_not_disturb: DoNotDisturb,
@@ -69,15 +69,21 @@ struct SmartPause {
     idle_seconds: IdleTime,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// sounds by name, as written; "" for none
+#[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct AudibleAlert {
-    pub enabled: bool,
-    pub pre_break: bool,
-    pub post_break: bool,
-    /// system sound name from /System/Library/Sounds
-    pub pre_break_sound: String,
-    pub post_break_sound: String,
+struct SoundNames {
+    pre_break: String,
+    post_break: String,
+}
+
+/// sounds that exist in a folder NSSound looks in; None plays nothing
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sounds {
+    /// when the warning shows up
+    pub pre_break: Option<String>,
+    /// when a break runs to its end
+    pub post_break: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -290,7 +296,7 @@ impl Default for ConfigFile {
                 "Walk over and refill your water",
             ]),
             smart_pause: SmartPause::default(),
-            audible_alert: AudibleAlert::default(),
+            sounds: SoundNames::default(),
             notification: Notification::default(),
             keybindings: Keybindings::default(),
             do_not_disturb: DoNotDisturb::default(),
@@ -318,14 +324,11 @@ impl Default for SmartPause {
     }
 }
 
-impl Default for AudibleAlert {
+impl Default for SoundNames {
     fn default() -> Self {
-        AudibleAlert {
-            enabled: true,
-            pre_break: true,
-            post_break: true,
-            pre_break_sound: "Tink".into(),
-            post_break_sound: "Glass".into(),
+        SoundNames {
+            pre_break: "Tink".into(),
+            post_break: "Glass".into(),
         }
     }
 }
@@ -421,6 +424,12 @@ impl ConfigFile {
             breaks(self.long_breaks, BreakType::Long, self.long_break_duration)?,
         )
         .ok_or("add at least one [[short_breaks]] or [[long_breaks]] entry")?;
+        let checked =
+            |key: &str, name: String| sound(name, home).map_err(|e| format!("sounds.{key}: {e}"));
+        let sounds = Sounds {
+            pre_break: checked("pre_break", self.sounds.pre_break)?,
+            post_break: checked("post_break", self.sounds.post_break)?,
+        };
 
         Ok(Config {
             schedule: Settings {
@@ -437,7 +446,7 @@ impl ConfigFile {
                 random_order: self.random_order,
                 breaks,
             },
-            audible_alert: self.audible_alert,
+            sounds,
             notification: self.notification,
             keybindings: self.keybindings,
             do_not_disturb: self.do_not_disturb,
@@ -462,6 +471,34 @@ fn image_path(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
         return Err(format!("no file at {}", resolved.display()));
     }
     Ok(resolved)
+}
+
+/// the folders NSSound looks in for a sound by name, after the user's ~/Library/Sounds
+const SOUND_FOLDERS: [&str; 2] = ["/Library/Sounds", "/System/Library/Sounds"];
+
+/// None for "", else a sound file named `name` plus an extension in one of the folders.
+/// names are case-sensitive, as NSSound's are.
+fn sound(name: String, home: Option<&Path>) -> Result<Option<String>, String> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let folders = home
+        .map(|home| home.join("Library/Sounds"))
+        .into_iter()
+        .chain(SOUND_FOLDERS.map(PathBuf::from));
+    let found = folders
+        .filter_map(|folder| std::fs::read_dir(folder).ok())
+        .flatten()
+        .flatten()
+        .any(|file| Path::new(&file.file_name()).file_stem() == Some(OsStr::new(&name)));
+    if found {
+        Ok(Some(name))
+    } else {
+        Err(format!(
+            "there's no sound named `{name}` in ~/Library/Sounds, /Library/Sounds or \
+             /System/Library/Sounds"
+        ))
+    }
 }
 
 impl Config {
@@ -731,6 +768,20 @@ mod tests {
             err.starts_with("line 3: short_breaks: unknown field `interval`"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn the_dropped_switches_are_errors() {
+        for (text, start) in [
+            ("[audible_alert]\n", "line 1: unknown field `audible_alert`"),
+            (
+                "[sounds]\nenabled = false\n",
+                "line 2: sounds: unknown field `enabled`",
+            ),
+        ] {
+            let err = rejects(text);
+            assert!(err.starts_with(start), "{err}");
+        }
     }
 
     #[test]
@@ -1018,9 +1069,44 @@ mod tests {
     }
 
     #[test]
+    fn a_sound_is_a_name_that_exists_or_empty_for_none() {
+        let sounds = |text: &str, home: &Path| {
+            Config::parse(&format!("[sounds]\n{text}\n"), Some(home)).map(|cfg| cfg.sounds)
+        };
+        assert_eq!(
+            sounds("pre_break = \"\"\npost_break = \"Ping\"", home()),
+            Ok(Sounds {
+                pre_break: None,
+                post_break: Some("Ping".into()),
+            })
+        );
+
+        let user = TempDir::new("sounds");
+        std::fs::create_dir_all(user.0.join("Library/Sounds")).unwrap();
+        std::fs::write(user.0.join("Library/Sounds/Chime.aiff"), b"").unwrap();
+        assert_eq!(
+            sounds("pre_break = \"Chime\"", &user.0).map(|s| s.pre_break),
+            Ok(Some("Chime".into()))
+        );
+
+        // NSSound plays nothing for a name in the wrong case
+        for name in ["tink", "Glas", " Tink", "Chime"] {
+            assert_eq!(
+                sounds(&format!("post_break = \"{name}\""), home())
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "sounds.post_break: there's no sound named `{name}` in ~/Library/Sounds, \
+                     /Library/Sounds or /System/Library/Sounds"
+                )
+            );
+        }
+    }
+
+    #[test]
     fn a_change_outside_the_schedule_keeps_the_countdown() {
         let before = Config::default();
-        let after = parse("[audible_alert]\npre_break_sound = \"Ping\"\n").unwrap();
+        let after = parse("[sounds]\npre_break = \"Ping\"\n").unwrap();
         assert_ne!(before, after);
         assert_eq!(before.schedule, after.schedule);
 
