@@ -13,7 +13,7 @@ long_break_interval  = 4500  # 75 min
 
 # How long a break lasts, 1 to 3600 (1 h). Each break in the lists at the end
 # can set its own.
-short_break_duration = 15
+short_break_duration = 20
 long_break_duration  = 60
 
 # The warning shows up this long before a break, 0 to 600 (10 min). 0 shows no
@@ -86,19 +86,13 @@ window_titles = []     # case-insensitive regexes, e.g. ["Zoom Meeting"]
 name = "Gently close your eyes"
 
 [[short_breaks]]
-name = "Roll your eyes a few times to each side"
+name = "Blink slowly a few times"
 
 [[short_breaks]]
-name = "Rotate your eyes in clockwise direction"
+name = "Look at something 20 feet (6 m) away"
 
 [[short_breaks]]
-name = "Rotate your eyes in counterclockwise direction"
-
-[[short_breaks]]
-name = "Blink your eyes"
-
-[[short_breaks]]
-name = "Focus on a point in the far distance"
+name = "Look far away, then at something near"
 
 [[short_breaks]]
 name = "Have some water"

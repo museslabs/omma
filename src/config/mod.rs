@@ -259,7 +259,7 @@ impl Default for ConfigFile {
         ConfigFile {
             short_break_interval: Secs(15 * MINUTE),
             long_break_interval: Secs(75 * MINUTE),
-            short_break_duration: Secs(15),
+            short_break_duration: Secs(20),
             long_break_duration: Secs(MINUTE),
             pre_break_warning: Secs(10),
             postpone_duration: Secs(5 * MINUTE),
@@ -268,11 +268,9 @@ impl Default for ConfigFile {
             random_order: true,
             short_breaks: entries(&[
                 "Gently close your eyes",
-                "Roll your eyes a few times to each side",
-                "Rotate your eyes in clockwise direction",
-                "Rotate your eyes in counterclockwise direction",
-                "Blink your eyes",
-                "Focus on a point in the far distance",
+                "Blink slowly a few times",
+                "Look at something 20 feet (6 m) away",
+                "Look far away, then at something near",
                 "Have some water",
                 "Relax your shoulders and drop them away from your ears",
                 "Stretch your neck gently from side to side",
@@ -954,7 +952,7 @@ mod tests {
     #[test]
     fn a_break_can_set_its_own_duration() {
         let cfg = parse(
-            "short_break_duration = 20\n\
+            "short_break_duration = 25\n\
              [[short_breaks]]\nname = \"Blink\"\n\
              [[short_breaks]]\nname = \"Look away\"\nduration = 40\n",
         )
@@ -967,7 +965,7 @@ mod tests {
                 secs
             })
             .collect();
-        assert_eq!(durations, [20, 40]);
+        assert_eq!(durations, [25, 40]);
     }
 
     #[test]
