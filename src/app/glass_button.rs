@@ -2,8 +2,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AnyThread, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSColor, NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightMedium,
-    NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSAccessibility, NSButton, NSColor, NSEventModifierFlags, NSFont, NSFontAttributeName,
+    NSFontWeightMedium, NSForegroundColorAttributeName, NSGlassEffectView, NSGlassEffectViewStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
@@ -82,6 +82,7 @@ pub fn make_glass_button(
         NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
     };
     button.setBordered(false);
+    button.setAccessibilityLabel(Some(&title_ns));
 
     let attributed =
         NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &full_ns);
