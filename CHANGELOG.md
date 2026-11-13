@@ -16,6 +16,9 @@ The first release.
 - Strict mode, smart pause, sounds, per-break durations and background images.
 - Do-not-disturb rules for running or frontmost apps, fullscreen windows and
   window titles. The menu and `omma --status` say which rule held a break back.
+- Pause from the menu for 30 minutes, an hour, two hours or the rest of the
+  day, and for up to 24 hours with `omma --pause 45m`. omma comes back on its
+  own.
 - A CLI to control the running instance, with an exit code for each outcome.
 - Problems show in the menu and in `omma --status`: config errors, a break image
   that can't be shown, a warning shortcut the system won't register, and window

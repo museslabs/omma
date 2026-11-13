@@ -21,12 +21,15 @@ pub enum Command {
     TakeLongBreak,
     Enable,
     Disable,
+    /// disable for this long, sent in whole seconds
+    Pause(Duration),
     Quit,
     Status,
     Reload,
 }
 
-/// each command's name on the wire. renaming one breaks CLIs talking to an older instance.
+/// the wire name of each command without an argument. renaming one breaks CLIs talking to an
+/// older instance.
 const COMMANDS: [(Command, &str); 8] = [
     (Command::TakeBreak, "take-break"),
     (Command::TakeShortBreak, "short-break"),
@@ -38,12 +41,18 @@ const COMMANDS: [(Command, &str); 8] = [
     (Command::Reload, "reload"),
 ];
 
+/// `pause <seconds>` on the wire
+const PAUSE: &str = "pause";
+
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Command::Pause(length) = self {
+            return write!(f, "{PAUSE} {}", length.as_secs());
+        }
         let (_, name) = COMMANDS
             .iter()
             .find(|(command, _)| command == self)
-            .expect("COMMANDS names every command");
+            .expect("COMMANDS names every command without an argument");
         f.write_str(name)
     }
 }
@@ -52,6 +61,15 @@ impl FromStr for Command {
     type Err = UnknownCommand;
 
     fn from_str(s: &str) -> Result<Command, UnknownCommand> {
+        if let Some(secs) = s
+            .strip_prefix(PAUSE)
+            .and_then(|rest| rest.strip_prefix(' '))
+        {
+            return secs
+                .parse()
+                .map(|secs| Command::Pause(Duration::from_secs(secs)))
+                .map_err(|_| UnknownCommand);
+        }
         COMMANDS
             .iter()
             .find(|(_, name)| *name == s)
@@ -78,7 +96,7 @@ const LOCK_FILE: &str = "omma.lock";
 const SOCKET: &str = "omma.sock";
 /// a client writes its command as soon as it connects
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
-/// a command line is cut off here. the longest command name is 11 bytes.
+/// a command line is cut off here. the longest, a pause of u64::MAX seconds, is 26 bytes.
 const MAX_LINE: u64 = 64;
 /// the main thread writes replies, and mustn't wait on a client
 const WRITE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -448,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_has_a_wire_name() {
+    fn every_command_survives_the_wire() {
         use Command::*;
         for command in [
             TakeBreak,
@@ -456,16 +474,43 @@ mod tests {
             TakeLongBreak,
             Enable,
             Disable,
+            Pause(Duration::from_secs(1800)),
             Quit,
             Status,
             Reload,
         ] {
             // a new command stops this compiling: add it to the match and to the list above
             match command {
-                TakeBreak | TakeShortBreak | TakeLongBreak | Enable | Disable | Quit | Status
-                | Reload => {}
+                TakeBreak | TakeShortBreak | TakeLongBreak | Enable | Disable | Pause(_) | Quit
+                | Status | Reload => {}
             }
-            assert!(COMMANDS.iter().any(|(c, _)| *c == command), "{command:?}");
+            let line = command.to_string();
+            assert!(line.len() as u64 <= MAX_LINE, "{line}");
+            assert_eq!(line.parse(), Ok(command), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_pause_goes_in_whole_seconds() {
+        let longest = Command::Pause(Duration::from_secs(u64::MAX));
+        assert_eq!(
+            Command::Pause(Duration::from_secs(90)).to_string(),
+            "pause 90"
+        );
+        assert_eq!(
+            "pause 3600".parse(),
+            Ok(Command::Pause(Duration::from_secs(3600)))
+        );
+        assert!(longest.to_string().len() as u64 <= MAX_LINE);
+        for line in [
+            "pause",
+            "pause ",
+            "pause x",
+            "pause -1",
+            "pause 1.5",
+            "pause 1 2",
+        ] {
+            assert_eq!(line.parse::<Command>(), Err(UnknownCommand), "{line}");
         }
     }
 

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::Parser;
 
 use crate::ipc::Command;
@@ -32,6 +34,10 @@ struct Action {
     /// enable the running instance
     #[arg(short = 'e', long)]
     enable: bool,
+
+    /// pause the running instance for DURATION, such as 30m or 2h30m (1s to 24h)
+    #[arg(long, value_name = "DURATION", value_parser = pause_length)]
+    pause: Option<Duration>,
 
     /// quit the running instance
     #[arg(short = 'q', long)]
@@ -76,19 +82,54 @@ impl Args {
             (a.status, Command::Status),
         ]
         .into_iter()
-        .find_map(|(set, command)| set.then_some(Mode::Send(command)))
-        .unwrap_or(Mode::Run)
+        .find_map(|(set, command)| set.then_some(command))
+        .or(a.pause.map(Command::Pause))
+        .map_or(Mode::Run, Mode::Send)
+    }
+}
+
+/// whole hours, minutes and seconds, each at most once and in that order, such as 2h30m
+fn pause_length(text: &str) -> Result<Duration, String> {
+    let usage = || String::from("use a length such as 90s, 30m, 1h or 2h30m");
+    let mut units = [('h', 3600), ('m', 60), ('s', 1)].as_slice();
+    let mut rest = text;
+    let mut secs: u64 = 0;
+    loop {
+        let (digits, unit) = rest
+            .char_indices()
+            .find(|(_, c)| !c.is_ascii_digit())
+            .ok_or_else(usage)?;
+        let count: u64 = rest[..digits].parse().map_err(|_| usage())?;
+        let at = units
+            .iter()
+            .position(|&(u, _)| u == unit)
+            .ok_or_else(usage)?;
+        secs = count
+            .checked_mul(units[at].1)
+            .and_then(|s| secs.checked_add(s))
+            .ok_or_else(usage)?;
+        units = &units[at + 1..];
+        rest = &rest[digits + unit.len_utf8()..];
+        if rest.is_empty() {
+            break;
+        }
+    }
+    match secs {
+        1..=86_400 => Ok(Duration::from_secs(secs)),
+        _ => Err("a pause lasts 1s to 24h; --disable turns omma off until --enable".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
 
     /// every spelling of every flag, as the README documents them
-    const FLAGS: [(&str, Mode); 15] = [
+    const FLAGS: [(&str, Mode); 16] = [
         ("-t", Mode::Send(Command::TakeBreak)),
         ("--take-break", Mode::Send(Command::TakeBreak)),
         ("-s", Mode::Send(Command::TakeShortBreak)),
@@ -99,6 +140,10 @@ mod tests {
         ("--disable", Mode::Send(Command::Disable)),
         ("-e", Mode::Send(Command::Enable)),
         ("--enable", Mode::Send(Command::Enable)),
+        (
+            "--pause=30m",
+            Mode::Send(Command::Pause(Duration::from_secs(1800))),
+        ),
         ("-q", Mode::Send(Command::Quit)),
         ("--quit", Mode::Send(Command::Quit)),
         ("--reload", Mode::Send(Command::Reload)),
@@ -127,6 +172,43 @@ mod tests {
         for (flag, expected) in FLAGS {
             assert_eq!(mode(&["omma", flag]), Ok(expected), "{flag}");
         }
+    }
+
+    #[test]
+    fn a_pause_takes_hours_minutes_and_seconds() {
+        for (text, secs) in [
+            ("90s", 90),
+            ("30m", 1800),
+            ("1h", 3600),
+            ("2h30m", 9000),
+            ("1h0m5s", 3605),
+            ("24h", 86400),
+        ] {
+            assert_eq!(pause_length(text), Ok(Duration::from_secs(secs)), "{text}");
+            assert_eq!(
+                mode(&["omma", "--pause", text]),
+                Ok(Mode::Send(Command::Pause(Duration::from_secs(secs))))
+            );
+        }
+        for text in [
+            "",
+            "30",
+            "m",
+            "1x",
+            "1.5h",
+            "-1m",
+            " 1h",
+            "1h ",
+            "30m1h",
+            "1h1h",
+            "1H",
+            "0s",
+            "24h1s",
+            "99999999999999999999h",
+        ] {
+            assert!(pause_length(text).is_err(), "{text}");
+        }
+        assert_eq!(mode(&["omma", "--pause"]), Err(ErrorKind::InvalidValue));
     }
 
     #[test]

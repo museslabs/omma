@@ -31,7 +31,10 @@ pub struct Settings {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    Disabled,
+    /// off until `until`, or until enabled again when None
+    Disabled {
+        until: Option<SystemTime>,
+    },
     /// waiting since `since` to warn about the current break. the wait is the postpone delay
     /// when `postponed`, otherwise what the current break's kind calls for.
     Waiting {
@@ -124,7 +127,12 @@ impl Core {
         let idle_away = self.settings.idle_threshold.is_some_and(|t| idle >= t);
 
         match self.phase {
-            Phase::Disabled => None,
+            Phase::Disabled { until } => {
+                if until.is_some_and(|until| now >= until) {
+                    self.resume(now);
+                }
+                None
+            }
             Phase::Paused { since } => {
                 if !idle_away {
                     let back = earlier(now, idle);
@@ -209,7 +217,7 @@ impl Core {
     /// that notices the user is back had come before the click.
     #[must_use]
     pub fn take_break(&mut self, now: SystemTime, kind: Option<BreakType>) -> Option<Event> {
-        if matches!(self.phase, Phase::Disabled | Phase::Break { .. }) {
+        if matches!(self.phase, Phase::Disabled { .. } | Phase::Break { .. }) {
             return None;
         }
         self.follow_clock(now);
@@ -222,23 +230,28 @@ impl Core {
         Some(self.start_break(now))
     }
 
-    /// disabling ends a running break uncompleted. enabling starts the schedule afresh.
+    /// enabling starts the schedule afresh. disabling is `disable_until` with no end.
     #[must_use]
     pub fn set_enabled(&mut self, now: SystemTime, on: bool) -> Option<Event> {
-        self.follow_clock(now);
-        match (on, self.phase) {
-            (true, Phase::Disabled) => {
-                self.long_since = now;
-                self.schedule(now);
-                None
-            }
-            (true, _) => None,
-            (false, phase) => {
-                self.phase = Phase::Disabled;
-                matches!(phase, Phase::Break { .. })
-                    .then_some(Event::BreakEnded { completed: false })
-            }
+        if !on {
+            return self.disable_until(now, None);
         }
+        self.follow_clock(now);
+        if !self.is_enabled() {
+            self.resume(now);
+        }
+        None
+    }
+
+    /// turns the schedule off until `until`, or until enabled again when None, and ends a
+    /// running break uncompleted. the first tick at or after `until` starts the schedule
+    /// afresh, as enabling does.
+    #[must_use]
+    pub fn disable_until(&mut self, now: SystemTime, until: Option<SystemTime>) -> Option<Event> {
+        self.follow_clock(now);
+        let event = self.interrupted();
+        self.phase = Phase::Disabled { until };
+        event
     }
 
     pub fn phase(&self) -> Phase {
@@ -250,7 +263,7 @@ impl Core {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.phase != Phase::Disabled
+        !matches!(self.phase, Phase::Disabled { .. })
     }
 
     pub fn can_skip(&self) -> bool {
@@ -273,7 +286,7 @@ impl Core {
             Phase::Break { ends_at } => {
                 Some(ceil_secs(now, ends_at).min(whole_secs(self.current.duration)))
             }
-            Phase::Disabled | Phase::Paused { .. } => None,
+            Phase::Disabled { .. } | Phase::Paused { .. } => None,
         }
     }
 
@@ -294,7 +307,11 @@ impl Core {
 
     pub fn status_text(&self, now: SystemTime) -> String {
         match self.phase {
-            Phase::Disabled => "Disabled".into(),
+            Phase::Disabled { until: None } => "Disabled".into(),
+            Phase::Disabled { until: Some(until) } => match ceil_secs(now, until) {
+                0 => "Paused, back shortly".into(),
+                secs => format!("Paused, back in {}", fmt_duration(secs)),
+            },
             Phase::Paused { .. } => "Paused (idle)".into(),
             Phase::Warning { .. } => "Break soon".into(),
             Phase::Break { .. } => "Break in progress".into(),
@@ -358,6 +375,12 @@ impl Core {
         };
     }
 
+    /// a fresh schedule, with the long cycle starting `now`
+    fn resume(&mut self, now: SystemTime) {
+        self.long_since = now;
+        self.schedule(now);
+    }
+
     fn schedule(&mut self, now: SystemTime) {
         self.current = pick(&self.settings, &self.queue, self.long_since, now);
         self.phase = Phase::Waiting {
@@ -396,8 +419,10 @@ impl Core {
         shift(&mut self.long_since);
         match &mut self.phase {
             Phase::Waiting { since, .. } | Phase::Paused { since } => shift(since),
-            Phase::Warning { break_at: t } | Phase::Break { ends_at: t } => shift(t),
-            Phase::Disabled => {}
+            Phase::Disabled { until: Some(t) }
+            | Phase::Warning { break_at: t }
+            | Phase::Break { ends_at: t } => shift(t),
+            Phase::Disabled { until: None } => {}
         }
     }
 }
@@ -447,9 +472,12 @@ fn whole_secs(d: Duration) -> u64 {
     d.as_secs() + u64::from(d.subsec_nanos() > 0)
 }
 
-fn fmt_duration(secs: u64) -> String {
-    let (m, s) = (secs / 60, secs % 60);
-    if m > 0 {
+/// in its two largest units: "1h 15m", "4m 05s" or "9s"
+pub fn fmt_duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
         format!("{m}m {s:02}s")
     } else {
         format!("{s}s")
@@ -641,7 +669,7 @@ mod tests {
         assert_eq!(core.skip(at(21)), None);
         assert_eq!(core.postpone(at(21)), None);
         core.suppress(at(21), DndAction::Skip);
-        assert_eq!(core.phase(), Phase::Disabled);
+        assert_eq!(core.phase(), Phase::Disabled { until: None });
     }
 
     #[test]
@@ -850,7 +878,7 @@ mod tests {
         let mut core = Core::new(settings(), at(0));
         assert_eq!(core.set_enabled(at(1), false), None);
         assert_eq!(core.take_break(at(2), None), None);
-        assert_eq!(core.phase(), Phase::Disabled);
+        assert_eq!(core.phase(), Phase::Disabled { until: None });
         let on = 3 * 3600;
         assert!(breaks_between(&mut core, 3, on).is_empty());
 
@@ -863,7 +891,7 @@ mod tests {
     fn disabling_during_a_break_ends_it_uncompleted() {
         let mut core = in_break();
         assert_eq!(core.set_enabled(at(63), false), BREAK_CUT);
-        assert_eq!(core.phase(), Phase::Disabled);
+        assert_eq!(core.phase(), Phase::Disabled { until: None });
         assert_eq!(core.remaining(at(63)), None);
 
         // clicks on the fading break screen while disabled
@@ -877,6 +905,105 @@ mod tests {
         assert_eq!(step(&mut core, at(160)), Some(Event::Warn));
         assert_eq!(step(&mut core, at(162)), Some(Event::BreakStarted));
         assert_eq!(step(&mut core, at(165)), BREAK_ENDED);
+    }
+
+    #[test]
+    fn a_timed_pause_resumes_at_its_deadline_with_a_full_interval() {
+        let mut core = Core::new(settings(), at(0));
+        assert_eq!(core.disable_until(at(10), Some(at(1810))), None);
+        assert!(!core.is_enabled());
+        assert_eq!(core.take_break(at(20), None), None);
+        assert!(breaks_between(&mut core, 11, 1810).is_empty());
+
+        assert_eq!(step(&mut core, at(1810)), None);
+        assert!(core.is_enabled());
+        assert_eq!(core.remaining(at(1810)), Some(60));
+        // with the long cycle restarted, no overdue long break comes first
+        assert_eq!(core.current().kind, Short);
+        assert_eq!(step(&mut core, at(1870)), Some(Event::Warn));
+    }
+
+    #[test]
+    fn sleeping_past_a_pause_deadline_resumes_on_waking_with_no_break_at_once() {
+        let mut core = Core::new(settings(), at(0));
+        assert_eq!(core.disable_until(at(10), Some(at(1810))), None);
+        assert_eq!(step(&mut core, at(100)), None);
+        // asleep from 100 to 5000
+        assert_eq!(core.tick(at(5000), Duration::ZERO), None);
+        assert!(matches!(core.phase(), Phase::Waiting { .. }));
+        assert_eq!(core.remaining(at(5000)), Some(60));
+        assert_eq!(step(&mut core, at(5060)), Some(Event::Warn));
+    }
+
+    #[test]
+    fn setting_the_clock_back_moves_the_pause_deadline_back() {
+        let mut core = Core::new(settings(), at(5000));
+        assert_eq!(core.disable_until(at(5000), Some(at(5600))), None);
+        assert_eq!(step(&mut core, at(5100)), None);
+        // the clock goes back an hour
+        assert_eq!(step(&mut core, at(1500)), None);
+        assert_eq!(
+            core.phase(),
+            Phase::Disabled {
+                until: Some(at(2000))
+            }
+        );
+        assert_eq!(step(&mut core, at(1999)), None);
+        assert!(!core.is_enabled());
+        assert_eq!(step(&mut core, at(2000)), None);
+        assert!(core.is_enabled());
+    }
+
+    #[test]
+    fn enabling_during_a_timed_pause_resumes_at_once() {
+        let mut core = Core::new(settings(), at(0));
+        assert_eq!(core.disable_until(at(10), Some(at(1810))), None);
+        assert_eq!(core.set_enabled(at(20), true), None);
+        assert!(matches!(core.phase(), Phase::Waiting { .. }));
+        assert_eq!(core.remaining(at(20)), Some(60));
+    }
+
+    #[test]
+    fn disabling_during_a_timed_pause_makes_it_indefinite() {
+        let mut core = Core::new(settings(), at(0));
+        assert_eq!(core.disable_until(at(10), Some(at(1810))), None);
+        assert_eq!(core.set_enabled(at(20), false), None);
+        assert_eq!(core.phase(), Phase::Disabled { until: None });
+        assert!(breaks_between(&mut core, 21, 4000).is_empty());
+        assert!(!core.is_enabled());
+
+        // and a pause while disabled sets when omma comes back
+        assert_eq!(core.disable_until(at(4000), Some(at(4100))), None);
+        assert_eq!(step(&mut core, at(4100)), None);
+        assert!(core.is_enabled());
+    }
+
+    #[test]
+    fn pausing_during_a_warning_drops_it_quietly() {
+        let mut core = Core::new(settings(), at(0));
+        assert_eq!(step(&mut core, at(60)), Some(Event::Warn));
+        assert_eq!(core.disable_until(at(61), Some(at(661))), None);
+        assert_eq!(core.skip(at(61)), None);
+        assert_eq!(core.postpone(at(61)), None);
+        core.suppress(at(61), DndAction::Postpone);
+        assert_eq!(
+            core.phase(),
+            Phase::Disabled {
+                until: Some(at(661))
+            }
+        );
+        assert!(breaks_between(&mut core, 62, 661).is_empty());
+        assert_eq!(step(&mut core, at(661)), None);
+        assert_eq!(core.remaining(at(661)), Some(60));
+    }
+
+    #[test]
+    fn pausing_during_a_break_ends_it_uncompleted() {
+        let mut core = in_break();
+        assert_eq!(core.disable_until(at(63), Some(at(663))), BREAK_CUT);
+        assert_eq!(core.skip(at(64)), None);
+        assert_eq!(core.postpone(at(64)), None);
+        assert!(!core.is_enabled());
     }
 
     #[test]
@@ -1356,5 +1483,20 @@ mod tests {
         assert_eq!(core.status_text(at(66)), "Paused (idle)");
         assert_eq!(core.set_enabled(at(67), false), None);
         assert_eq!(core.status_text(at(67)), "Disabled");
+        let back = 68 + 5 * 3600 + 12 * 60;
+        assert_eq!(core.disable_until(at(68), Some(at(back))), None);
+        assert_eq!(core.status_text(at(68)), "Paused, back in 5h 12m");
+        assert_eq!(core.status_text(at(back - 90)), "Paused, back in 1m 30s");
+        // a CLI request handled before the tick that ends the pause
+        assert_eq!(core.status_text(at(back)), "Paused, back shortly");
+    }
+
+    #[test]
+    fn durations_read_in_their_two_largest_units() {
+        assert_eq!(fmt_duration(59), "59s");
+        assert_eq!(fmt_duration(60), "1m 00s");
+        assert_eq!(fmt_duration(3599), "59m 59s");
+        assert_eq!(fmt_duration(3600), "1h 00m");
+        assert_eq!(fmt_duration(4500 + 59), "1h 15m");
     }
 }

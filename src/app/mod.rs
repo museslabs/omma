@@ -26,14 +26,14 @@ use objc2_app_kit::{
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSPoint, NSPointInRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
-    NSString, NSTimer, NSURL,
+    MainThreadMarker, NSCalendar, NSCalendarOptions, NSCalendarUnit, NSData, NSDate, NSPoint,
+    NSPointInRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
 use crate::config::{self, Config, ConfigError, DndAction, DoNotDisturb, KeySpec};
 use crate::ipc::{Command, Reply, Request, Server};
 use crate::queue::BreakType;
-use crate::scheduler::{Core, Event, Phase};
+use crate::scheduler::{Core, Event, Phase, fmt_duration};
 use break_screen::BreakScreen;
 use glass_button::{Button, Buttons};
 use hotkey::{Action, Hotkeys};
@@ -70,6 +70,14 @@ const ACCESSIBILITY_SETTINGS: &str =
 
 /// the repository page, which shows the README
 const HELP_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
+/// the Pause submenu. each item's tag is its length in seconds, and 0 lasts until midnight.
+const PAUSES: [(&str, isize); 4] = [
+    ("For 30 minutes", 30 * 60),
+    ("For 1 hour", 60 * 60),
+    ("For 2 hours", 2 * 60 * 60),
+    ("For the rest of the day", 0),
+];
 
 /// None if the bytes fail to decode. the status item then shows a text glyph.
 /// `description` is what VoiceOver reads for the icon.
@@ -256,6 +264,18 @@ define_class!(
             });
         }
 
+        #[unsafe(method(pauseFor:))]
+        fn pause_for(&self, sender: &NSMenuItem) {
+            let tag = sender.tag();
+            self.act(|app, now| {
+                let until = match u64::try_from(tag) {
+                    Ok(0) | Err(_) => next_midnight(now),
+                    Ok(secs) => now + Duration::from_secs(secs),
+                };
+                app.core.disable_until(now, Some(until))
+            });
+        }
+
         /// opens the file with the state unborrowed. if Launch Services ran a nested event
         /// loop, a tick inside it would borrow the state again and panic.
         #[unsafe(method(openConfig:))]
@@ -427,6 +447,13 @@ impl App {
             Command::TakeLongBreak => self.cli_take_break(now, Some(BreakType::Long)),
             Command::Enable => self.cli_set_enabled(now, true),
             Command::Disable => self.cli_set_enabled(now, false),
+            Command::Pause(length) => {
+                let event = self.core.disable_until(now, now.checked_add(length));
+                (
+                    event,
+                    Ok(format!("paused for {}", fmt_duration(length.as_secs()))),
+                )
+            }
             Command::Status => (None, Ok(self.status_report(now))),
             Command::Reload => {
                 let reply = self.reload_config();
@@ -456,7 +483,10 @@ impl App {
     }
 
     fn cli_set_enabled(&mut self, now: SystemTime, on: bool) -> (Option<Event>, Reply) {
-        let unchanged = self.core.is_enabled() == on;
+        let unchanged = match self.core.phase() {
+            Phase::Disabled { until } => !on && until.is_none(),
+            _ => on,
+        };
         let event = self.core.set_enabled(now, on);
         let state = if on { "enabled" } else { "disabled" };
         let text = if unchanged {
@@ -635,7 +665,7 @@ impl App {
             && remaining.is_some_and(|secs| secs <= INCOMING_WINDOW_SECS);
         // with reduced motion the incoming icon holds steady instead of blinking
         let lit = incoming && (!panel::animations_on() || tray_icon_blink_on(now));
-        self.sync_tray_icon(if matches!(phase, Phase::Disabled) {
+        self.sync_tray_icon(if matches!(phase, Phase::Disabled { .. }) {
             TrayIconState::Disabled
         } else if lit {
             TrayIconState::Incoming
@@ -841,6 +871,15 @@ impl App {
         self.add_item(&menu, "Take a short break", sel!(takeShortBreak:), target);
         self.add_item(&menu, "Take a long break", sel!(takeLongBreak:), target);
         menu.addItem(&NSMenuItem::separatorItem(self.mtm));
+        let pauses = NSMenu::new(self.mtm);
+        for (title, secs) in PAUSES {
+            self.add_item(&pauses, title, sel!(pauseFor:), target)
+                .setTag(secs);
+        }
+        let pause = NSMenuItem::new(self.mtm);
+        pause.setTitle(&NSString::from_str("Pause"));
+        pause.setSubmenu(Some(&pauses));
+        menu.addItem(&pause);
         self.enable_item = Some(self.add_item(&menu, "Enabled", sel!(toggleEnabled:), target));
         menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item(&menu, "Open config…", sel!(openConfig:), target);
@@ -1015,6 +1054,23 @@ fn idle_time() -> Duration {
     Duration::try_from_secs_f64(secs).unwrap_or_default()
 }
 
+/// the first midnight after `now` in the user's calendar and time zone
+fn next_midnight(now: SystemTime) -> SystemTime {
+    let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let date = NSDate::dateWithTimeIntervalSince1970(since_epoch.as_secs_f64());
+    let calendar = NSCalendar::currentCalendar();
+    let tomorrow = calendar
+        .dateByAddingUnit_value_toDate_options(
+            NSCalendarUnit::Day,
+            1,
+            &date,
+            NSCalendarOptions::empty(),
+        )
+        .expect("a calendar can add a day to any date");
+    let midnight = calendar.startOfDayForDate(&tomorrow);
+    UNIX_EPOCH + Duration::from_secs_f64(midnight.timeIntervalSince1970())
+}
+
 /// false if `url` doesn't parse or no app takes it
 fn open_url(url: &str) -> bool {
     NSURL::URLWithString(&NSString::from_str(url))
@@ -1064,6 +1120,16 @@ mod tests {
         assert_eq!(capitalized("can't show"), "Can't show");
         assert_eq!(capitalized("ένα"), "Ένα");
         assert_eq!(capitalized(""), "");
+    }
+
+    #[test]
+    fn the_rest_of_the_day_ends_at_the_next_midnight() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let midnight = next_midnight(now);
+        assert!(midnight > now);
+        assert!(midnight.duration_since(now).unwrap() <= Duration::from_secs(25 * 3600));
+        assert_eq!(next_midnight(midnight - Duration::from_secs(1)), midnight);
+        assert!(next_midnight(midnight) > midnight);
     }
 
     #[test]
