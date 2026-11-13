@@ -68,6 +68,9 @@ const NEEDS_ACCESSIBILITY: &str =
 const ACCESSIBILITY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
+/// the repository page, which shows the README
+const HELP_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
 /// None if the bytes fail to decode. the status item then shows a text glyph.
 /// `description` is what VoiceOver reads for the icon.
 fn tray_icon_image(bytes: &[u8], description: &str) -> Option<Retained<NSImage>> {
@@ -263,10 +266,15 @@ define_class!(
 
         #[unsafe(method(openAccessibilitySettings:))]
         fn open_accessibility_settings(&self, _sender: *mut AnyObject) {
-            let opened = NSURL::URLWithString(&NSString::from_str(ACCESSIBILITY_SETTINGS))
-                .is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url));
-            if !opened {
+            if !open_url(ACCESSIBILITY_SETTINGS) {
                 log!("can't open System Settings");
+            }
+        }
+
+        #[unsafe(method(openHelp:))]
+        fn open_help(&self, _sender: *mut AnyObject) {
+            if !open_url(HELP_URL) {
+                log!("can't open {HELP_URL}");
             }
         }
 
@@ -836,6 +844,9 @@ impl App {
         self.enable_item = Some(self.add_item(&menu, "Enabled", sel!(toggleEnabled:), target));
         menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item(&menu, "Open config…", sel!(openConfig:), target);
+        self.add_item(&menu, "Help…", sel!(openHelp:), target);
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm));
+        self.add_disabled_item(&menu, concat!("omma ", env!("CARGO_PKG_VERSION")));
         self.add_item(&menu, "Quit omma", sel!(quitApp:), target);
 
         item.setMenu(Some(&menu));
@@ -1002,6 +1013,12 @@ fn idle_time() -> Duration {
         CGEventType(!0), // kCGAnyInputEventType
     );
     Duration::try_from_secs_f64(secs).unwrap_or_default()
+}
+
+/// false if `url` doesn't parse or no app takes it
+fn open_url(url: &str) -> bool {
+    NSURL::URLWithString(&NSString::from_str(url))
+        .is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url))
 }
 
 /// opens the config file in the app set for it, or else in the default text editor. a
