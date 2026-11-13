@@ -23,6 +23,13 @@ cargo install omma
 cargo install --path .
 ```
 
+Or with Homebrew:
+
+```sh
+brew tap museslabs/omma
+brew install omma
+```
+
 Or download the Apple silicon build from the
 [releases page](https://github.com/museslabs/omma/releases) and unpack it. It
 isn't notarized. If macOS won't run it, clear its quarantine flag:
@@ -37,14 +44,88 @@ xattr -d com.apple.quarantine omma   # only if macOS blocks it
 Put the binary on your `PATH` to run it as `omma`. It runs as a menu-bar binary
 with no Dock icon, and isn't packaged as an app bundle.
 
+### Start at login
+
+With Homebrew:
+
+```sh
+brew services start omma
+```
+
+Otherwise, save this as `~/Library/LaunchAgents/com.museslabs.omma.plist`, with
+the full path to your `omma` binary and to a log file. launchd doesn't expand
+`~`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.museslabs.omma</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/.cargo/bin/omma</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/omma.log</string>
+</dict>
+</plist>
+```
+
+Load it, which also starts omma now:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.museslabs.omma.plist
+```
+
+To stop starting it at login:
+
+```sh
+launchctl bootout gui/$(id -u)/com.museslabs.omma
+rm ~/Library/LaunchAgents/com.museslabs.omma.plist
+```
+
+launchd restarts omma only after a crash. A second copy that finds omma already
+running exits, and stays stopped.
+
+Started by launchd, omma behaves differently in two ways:
+
+- It doesn't see your shell's environment. If you set `XDG_CONFIG_HOME`, add it
+  to the plist, or omma reads `~/.config/omma/config.toml`:
+
+  ```xml
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XDG_CONFIG_HOME</key>
+    <string>/Users/you/.config</string>
+  </dict>
+  ```
+
+- It no longer borrows your terminal's Accessibility permission. For the
+  fullscreen and window-title rules, allow omma itself in System Settings →
+  Privacy & Security → Accessibility. The menu's ⚠ item opens that list.
+
+macOS shows a "Background Items Added" notice the first time.
+
 ## What it does
 
-- **Short and long breaks** on their own intervals: by default a short break
-  every 15 minutes and a long one every 75.
+- **Short and long breaks** on their own intervals: by default a 20-second break
+  every 15 minutes and a one-minute break every 75.
 - **A warning before each break**, a bead that drops from the menu-bar icon on a
   thread and a small panel beside it with a countdown and Skip and Postpone
   buttons. In strict mode Skip becomes Dismiss, which only closes the warning.
   The warning never takes keyboard focus from the app you're typing in.
+  `pre_break_warning = 0` turns it off.
 - **A break screen** on every display, with the break's name, a countdown in a
   bead whose colour drains as the break runs, optional background image, and
   Skip and Postpone buttons. The countdown waits for the screen to fade in,
@@ -52,8 +133,9 @@ with no Dock icon, and isn't packaged as an app bundle.
   never becomes the active app, and your app gets the keyboard back when the
   break ends.
 - **A menu** with the time to the next break, items to take a break now (the
-  next one, a short one or a long one), Enabled, Open config… and Quit. It also
-  lists anything that needs fixing; see
+  next one, a short one or a long one), Pause (for 30 minutes, an hour, two
+  hours or the rest of the day), Enabled, Open config…, Help, the version and
+  Quit. It also lists anything that needs fixing; see
   [When something's wrong](#when-somethings-wrong).
 - **Sounds** before a break and after one that ran to its end.
 - **Smart pause**, which holds the schedule while you're away from the keyboard.
@@ -194,6 +276,7 @@ omma --short-break (-s)       take a short break now
 omma --long-break  (-l)       take a long break now
 omma --enable      (-e)       enable the running instance
 omma --disable     (-d)       disable the running instance
+omma --pause <DURATION>       pause for 90s, 30m, 2h30m and so on, up to 24h
 omma --quit        (-q)       quit the running instance
 omma --status                 print the running instance's status
 omma --reload                 reread the config now
@@ -211,6 +294,15 @@ it, then prints what it did or why it refused. The exit code is:
 
 The running instance holds a lock file and listens on a socket, both in
 `~/Library/Application Support/omma/`.
+
+## Credits
+
+omma's default schedule and most of its break prompts come from
+[Safe Eyes](https://github.com/slgobinath/SafeEyes). The eye prompts follow the
+[20-20-20 rule](https://www.aao.org/eye-health/diseases/what-is-eye-strain)
+instead of eye rotations, which
+[don't help](https://www.aao.org/eye-health/ask-ophthalmologist-q/why-do-patches-help-vision-not-eye-exercises),
+according to the American Academy of Ophthalmology.
 
 ## License
 
