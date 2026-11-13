@@ -27,7 +27,6 @@ pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 pub struct Config {
     pub schedule: Settings,
     pub sounds: Sounds,
-    pub notification: Notification,
     pub keybindings: Keybindings,
     pub do_not_disturb: DoNotDisturb,
 }
@@ -49,7 +48,6 @@ struct ConfigFile {
     long_breaks: Vec<BreakEntry>,
     smart_pause: SmartPause,
     sounds: SoundNames,
-    notification: Notification,
     keybindings: Keybindings,
     do_not_disturb: DoNotDisturb,
 }
@@ -84,12 +82,6 @@ pub struct Sounds {
     pub pre_break: Option<String>,
     /// when a break runs to its end
     pub post_break: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Notification {
-    pub enabled: bool,
 }
 
 /// shortcuts for Skip and Postpone; None turns one off. `skip` and `postpone` act on the
@@ -297,7 +289,6 @@ impl Default for ConfigFile {
             ]),
             smart_pause: SmartPause::default(),
             sounds: SoundNames::default(),
-            notification: Notification::default(),
             keybindings: Keybindings::default(),
             do_not_disturb: DoNotDisturb::default(),
         }
@@ -330,12 +321,6 @@ impl Default for SoundNames {
             pre_break: "Tink".into(),
             post_break: "Glass".into(),
         }
-    }
-}
-
-impl Default for Notification {
-    fn default() -> Self {
-        Notification { enabled: true }
     }
 }
 
@@ -447,7 +432,6 @@ impl ConfigFile {
                 breaks,
             },
             sounds,
-            notification: self.notification,
             keybindings: self.keybindings,
             do_not_disturb: self.do_not_disturb,
         })
@@ -774,6 +758,7 @@ mod tests {
     fn the_dropped_switches_are_errors() {
         for (text, start) in [
             ("[audible_alert]\n", "line 1: unknown field `audible_alert`"),
+            ("[notification]\n", "line 1: unknown field `notification`"),
             (
                 "[sounds]\nenabled = false\n",
                 "line 2: sounds: unknown field `enabled`",

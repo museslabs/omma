@@ -532,7 +532,10 @@ impl App {
             self.suppressed = None;
         }
 
-        let show_warning = warning && self.config.notification.enabled && !self.warning_dismissed;
+        // with pre_break_warning = 0 the warning phase still lasts a tick, to check
+        // do-not-disturb and play the sound, but shows nothing
+        let show_warning =
+            warning && !self.config.schedule.pre_break_warning.is_zero() && !self.warning_dismissed;
         // the warning's bead, read before the warning goes, for the break's bead to fly from
         let hand_off = in_break.then(|| self.pre_break_dialog.hand_off()).flatten();
         // the global shortcuts follow the warning, whether or not its panel could open
