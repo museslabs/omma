@@ -1,33 +1,40 @@
-# ὄμμα · omma
+# omma
 
-An eye-strain break reminder for macOS. It sits in the menu bar, schedules short
-and long breaks, covers the screen with a countdown for each one, and can hold
-breaks back while you're in a meeting or a fullscreen app.
+> **omma** (/'o.ma/) — from Greek *ὄμμα*: eye.
 
-omma is written in Rust with [`objc2`](https://github.com/madsmtm/objc2). Its
-`unsafe` code is the interop with macOS frameworks, and each block says why it's
-sound.
+Eye-strain break reminder for the macOS menu bar, written in Rust.
 
-## Requirements
+![example](example.gif)
 
-- macOS 26 or later. The warning and the break screen use Liquid Glass, and on
-  an older system omma exits with `omma: requires macOS 26 or later`.
-- Rust 1.89 or later, to build it.
+omma counts down to your next break from the menu bar. Just before it, a bead
+drops from the icon with a warning, then the break covers every display with a
+countdown. It can hold breaks back while you're in a meeting or a fullscreen
+app, and the schedule pauses while you're away from the keyboard.
 
-## Install and run
+omma needs macOS 26 or later. The warning and the break screen use Liquid Glass,
+and on an older system omma exits with `omma: requires macOS 26 or later`.
 
-Install it with Cargo, from crates.io or from a clone of this repo:
+## Install
 
-```sh
-cargo install omma
-cargo install --path .
-```
-
-Or with Homebrew:
+With Homebrew:
 
 ```sh
 brew tap museslabs/omma
 brew install omma
+```
+
+With cargo (Rust 1.89 or later):
+
+```sh
+cargo install omma
+```
+
+From source:
+
+```sh
+git clone https://github.com/museslabs/omma
+cd omma
+cargo build --release
 ```
 
 Or download the Apple silicon build from the
@@ -38,11 +45,12 @@ isn't notarized. If macOS won't run it, clear its quarantine flag:
 tar -xzf omma-v0.1.0-aarch64-apple-darwin.tar.gz
 cd omma-v0.1.0-aarch64-apple-darwin
 xattr -d com.apple.quarantine omma   # only if macOS blocks it
-./omma
 ```
 
-Put the binary on your `PATH` to run it as `omma`. It runs as a menu-bar binary
-with no Dock icon, and isn't packaged as an app bundle.
+omma is a single binary with no Dock icon, not an app bundle. Put it on your
+`PATH` to run it as `omma`.
+
+## Setup
 
 ### Start at login
 
@@ -111,36 +119,96 @@ Started by launchd, omma behaves differently in two ways:
   </dict>
   ```
 
-- It no longer borrows your terminal's Accessibility permission. For the
-  fullscreen and window-title rules, allow omma itself in System Settings →
-  Privacy & Security → Accessibility. The menu's ⚠ item opens that list.
+- It no longer borrows your terminal's Accessibility permission. Allow omma
+  itself for the fullscreen and window-title rules; see
+  [Accessibility](#accessibility).
 
 macOS shows a "Background Items Added" notice the first time.
 
-## What it does
+### Accessibility
 
-- **Short and long breaks** on their own intervals: by default a 20-second break
-  every 15 minutes and a one-minute break every 75.
-- **A warning before each break**, a bead that drops from the menu-bar icon on a
-  thread and a small panel beside it with a countdown and Skip and Postpone
-  buttons. In strict mode Skip becomes Dismiss, which only closes the warning.
-  The warning never takes keyboard focus from the app you're typing in.
-  `pre_break_warning = 0` turns it off.
-- **A break screen** on every display, with the break's name, a countdown in a
-  bead whose colour drains as the break runs, optional background image, and
-  Skip and Postpone buttons. The countdown waits for the screen to fade in,
-  which adds about 0.6 s to a break, or 0.25 s with Reduce Motion on. omma
-  never becomes the active app, and your app gets the keyboard back when the
-  break ends.
-- **A menu** with the time to the next break, items to take a break now (the
-  next one, a short one or a long one), Pause (for 30 minutes, an hour, two
-  hours or the rest of the day), Enabled, Open config…, Help, the version and
-  Quit. It also lists anything that needs fixing; see
-  [When something's wrong](#when-somethings-wrong).
-- **Sounds** before a break and after one that ran to its end.
-- **Smart pause**, which holds the schedule while you're away from the keyboard.
-- **Do-not-disturb rules** that hold breaks back while you're busy.
-- **A CLI** that controls the running instance.
+The fullscreen and window-title rules of [do not disturb](#do-not-disturb) need
+Accessibility permission. omma asks for it when it starts with one of them on,
+or when a save turns one on. Grant it in System Settings → Privacy & Security →
+Accessibility (Device Control and Data Access on macOS 27), and the rules work
+from the next break, with no restart. Started from a terminal, omma uses the
+terminal's permission instead of its own.
+
+Released binaries aren't signed with a Developer ID, and macOS treats each
+upgrade as a different program. After upgrading, allow omma again in the same
+list. Until then the menu shows a ⚠ item for it.
+
+## Usage
+
+Run `omma` and it shows up in the menu bar. By default a 20-second break comes
+every 15 minutes and a one-minute break every 75, and the icon blinks in the
+minute before each one.
+
+### Breaks
+
+Before each break a bead drops from the menu-bar icon on a thread, with a small
+panel beside it that counts down and has Skip and Postpone buttons. In strict
+mode Skip becomes Dismiss, which only closes the warning. The warning never
+takes keyboard focus from the app you're typing in, and `pre_break_warning = 0`
+turns it off.
+
+The break screen covers every display with the break's name, a countdown in a
+bead whose colour drains as the break runs, an optional background image, and
+Skip and Postpone buttons. The countdown waits for the screen to fade in, which
+adds about 0.6 s to a break, or 0.25 s with Reduce Motion on. omma never becomes
+the active app, and your app gets the keyboard back when the break ends.
+
+A sound plays when the warning shows up and when a break runs to its end.
+`[sounds]` in the config picks them.
+
+### The menu
+
+The menu shows the time to the next break, with items to take a break now (the
+next one, a short one or a long one), Pause (for 30 minutes, an hour, two hours
+or the rest of the day), Enabled, Open config…, Help, the version and Quit. It
+also lists anything that needs fixing; see
+[When something's wrong](#when-somethings-wrong).
+
+### CLI
+
+```text
+omma                          start the menu-bar app
+omma --take-break  (-t)       take the next break now
+omma --short-break (-s)       take a short break now
+omma --long-break  (-l)       take a long break now
+omma --enable      (-e)       enable the running instance
+omma --disable     (-d)       disable the running instance
+omma --pause <DURATION>       pause for 90s, 30m, 2h30m and so on, up to 24h
+omma --quit        (-q)       quit the running instance
+omma --status                 print the running instance's status
+omma --reload                 reread the config now
+omma --print-default-config   print the default config
+```
+
+Flags can't be combined. Each command waits for the running instance to act on
+it, then prints what it did or why it refused. The exit code is:
+
+- 0 when the command worked;
+- 1 when omma isn't running, or, when starting it, is already running;
+- 2 when the running instance refused the command (a break while omma is
+  disabled, say, or `--reload` with a broken config), or the flags are invalid;
+- 3 when anything else went wrong.
+
+The running instance holds a lock file and listens on a socket, both in
+`~/Library/Application Support/omma/`.
+
+### When something's wrong
+
+The menu lists problems under the status line, each marked ⚠. A long one is cut
+short, and hovering it shows all of it:
+
+- an error in the config file; clicking it opens the file;
+- a break image that couldn't be shown; clicking it opens the config file;
+- a warning shortcut the system wouldn't register;
+- a fullscreen or window-title rule without Accessibility permission; clicking
+  it opens System Settings at the Accessibility list.
+
+`omma --status` lists them too, and omma writes each one to stderr.
 
 ## Configuration
 
@@ -248,52 +316,8 @@ drops the break and `"postpone"` tries again after `postpone_duration`, even wit
 - Each request omma sends an app gives up after 0.25 s. An app that's hung, or
   slower than that, counts as having no matching window.
 
-The fullscreen and window-title rules need Accessibility permission. omma asks
-for it when it starts with one of them on, or when a save turns one on. Grant it
-in System Settings → Privacy & Security → Accessibility (Device Control and Data
-Access on macOS 27), and the rules work from the next break, with no restart.
-Started from a terminal, omma uses the terminal's permission instead of its own.
-
-## When something's wrong
-
-The menu lists problems under the status line, each marked ⚠. A long one is cut
-short, and hovering it shows all of it:
-
-- an error in the config file; clicking it opens the file;
-- a break image that couldn't be shown; clicking it opens the config file;
-- a warning shortcut the system wouldn't register;
-- a fullscreen or window-title rule without Accessibility permission; clicking
-  it opens System Settings at the Accessibility list.
-
-`omma --status` lists them too, and omma writes each one to stderr.
-
-## CLI
-
-```text
-omma                          start the menu-bar app
-omma --take-break  (-t)       take the next break now
-omma --short-break (-s)       take a short break now
-omma --long-break  (-l)       take a long break now
-omma --enable      (-e)       enable the running instance
-omma --disable     (-d)       disable the running instance
-omma --pause <DURATION>       pause for 90s, 30m, 2h30m and so on, up to 24h
-omma --quit        (-q)       quit the running instance
-omma --status                 print the running instance's status
-omma --reload                 reread the config now
-omma --print-default-config   print the default config
-```
-
-Flags can't be combined. Each command waits for the running instance to act on
-it, then prints what it did or why it refused. The exit code is:
-
-- 0 when the command worked;
-- 1 when omma isn't running, or, when starting it, is already running;
-- 2 when the running instance refused the command (a break while omma is
-  disabled, say, or `--reload` with a broken config), or the flags are invalid;
-- 3 when anything else went wrong.
-
-The running instance holds a lock file and listens on a socket, both in
-`~/Library/Application Support/omma/`.
+The fullscreen and window-title rules need Accessibility permission; see
+[Accessibility](#accessibility).
 
 ## Credits
 
@@ -303,6 +327,9 @@ omma's default schedule and most of its break prompts come from
 instead of eye rotations, which
 [don't help](https://www.aao.org/eye-health/ask-ophthalmologist-q/why-do-patches-help-vision-not-eye-exercises),
 according to the American Academy of Ophthalmology.
+
+omma talks to macOS through [`objc2`](https://github.com/madsmtm/objc2). Its
+`unsafe` code is that interop, and each block says why it's sound.
 
 ## License
 
