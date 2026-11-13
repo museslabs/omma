@@ -3,13 +3,14 @@
 //! wave, leaving the clear material and the pupil behind. when the user asks for solid
 //! surfaces, a flat disc stands in for the glass.
 
+use std::cell::Cell;
 use std::f64::consts::{PI, TAU};
 
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, Message};
 use objc2_app_kit::{NSColor, NSGlassEffectView, NSGlassEffectViewStyle, NSView};
-use objc2_core_foundation::{CFArray, CFRetained, CGSize};
-use objc2_core_graphics::{CGColor, CGMutablePath};
+use objc2_core_foundation::{CFArray, CFRetained, CGAffineTransform, CGSize};
+use objc2_core_graphics::{CGColor, CGMutablePath, CGPath};
 use objc2_foundation::{MainThreadMarker, NSArray, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{
     CAGradientLayer, CAKeyframeAnimation, CALayer, CAMediaTiming, CAShapeLayer,
@@ -103,6 +104,17 @@ const BLINK_SETTLE: f64 = 0.16;
 /// spaced unevenly, the last two a double, to keep the round from reading as a beat
 const BLINK_PERIOD: f64 = 9.0;
 const BLINKS: [f64; 3] = [2.4, 5.9, 6.34];
+/// pressed against something above it, the bead's top gives way to a straight edge, which
+/// curves into the rest of the outline over this share of the radius, or over the press
+/// itself while that's shallower, so the top still reaches the edge
+const FLAT_ROUNDING: f64 = 0.25;
+/// the top flattens no further than this share of the radius, past which the rings would
+/// reach its edge
+pub const FLAT_MOST: f64 = 0.4;
+/// as the top flattens, the rings sink by this much of the press and the pupil by more, as if
+/// pushed down through the liquid, so they stay clear of the edge
+const IRIS_SINK: f64 = 0.5;
+const PUPIL_SINK: f64 = 0.6;
 
 /// the cobalt: deep and saturated, lightest where the light falls on it at the top left and
 /// darkening to its far edge. its hue turns toward violet as it darkens, which keeps the
@@ -273,6 +285,8 @@ fn outline_radius(angle: f64, phase: f64, swell: f64) -> f64 {
 enum Outline {
     Pigment,
     Glass,
+    /// the bead's own edge, where the native glass ends
+    Rim,
 }
 
 impl Outline {
@@ -281,21 +295,49 @@ impl Outline {
         match self {
             Self::Pigment => pigment,
             Self::Glass => GLASS + GLASS_MORPH * (pigment - LIQUID),
+            Self::Rim => 1.0,
         }
+    }
+
+    /// how far the top is from the centre at rest, as a share of the radius
+    fn top(self) -> f64 {
+        self.radius(PI / 2.0, 0.0, 0.0)
     }
 }
 
-/// adds the outline to `path` as a closed curve through `OUTLINE_POINTS` points, for a bead
-/// of diameter `d`. every outline has the same points in the same order, which lets Core
-/// Animation move one into another
-fn add_outline(path: &CGMutablePath, d: f64, shape: Outline, phase: f64, swell: f64) {
+/// the lower of `a` and `b`, rounded off where they come within `k` (above 0) of each other
+fn soft_min(a: f64, b: f64, k: f64) -> f64 {
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    a.min(b) - h * h * k / 4.0
+}
+
+/// point `i` of the outline's `OUTLINE_POINTS`, going round from the right, for a bead of
+/// diameter `d`. a `flat` above 0 (a share of the radius) cuts the top off straight that far
+/// below where it is at rest, and rounds the cut into the curve either side
+fn outline_point(
+    i: usize,
+    d: f64,
+    shape: Outline,
+    (phase, swell): (f64, f64),
+    flat: f64,
+) -> (f64, f64) {
     let r = d / 2.0;
-    let point = |i: usize| {
-        let turn = (i % OUTLINE_POINTS) as f64 / OUTLINE_POINTS as f64;
-        let angle = TAU * turn;
-        let reach = r * shape.radius(angle, phase, swell);
-        (r + reach * angle.cos(), r + reach * angle.sin())
-    };
+    let turn = (i % OUTLINE_POINTS) as f64 / OUTLINE_POINTS as f64;
+    let angle = TAU * turn;
+    let reach = r * shape.radius(angle, phase, swell);
+    let mut y = reach * angle.sin();
+    // a drifting outline rises past its resting top, so only a press cuts it
+    if flat > 0.0 {
+        y = soft_min(y, r * (shape.top() - flat), r * flat.min(FLAT_ROUNDING));
+    }
+    (r + reach * angle.cos(), r + y)
+}
+
+/// adds the outline to `path` as a closed curve through `OUTLINE_POINTS` points, for a bead
+/// of diameter `d`, `flat` as `outline_point` takes it. every outline has the same points in
+/// the same order, which lets Core Animation move one into another
+fn add_outline(path: &CGMutablePath, d: f64, shape: Outline, drift: (f64, f64), flat: f64) {
+    let point = |i: usize| outline_point(i, d, shape, drift, flat);
     let between = |a: (f64, f64), b: (f64, f64)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
     // each point pulls the curve toward it between the midpoints either side, which makes
     // one smooth line with no corner anywhere
@@ -312,9 +354,17 @@ fn add_outline(path: &CGMutablePath, d: f64, shape: Outline, phase: f64, swell: 
     }
 }
 
-fn outline_path(d: f64, shape: Outline, phase: f64, swell: f64) -> CFRetained<CGMutablePath> {
+/// the outline `phase` (0…τ) of the way round its drift, `swell` (0…1) grown from a circle,
+/// and with its top `flat` as `outline_point` takes it
+fn outline_path(
+    d: f64,
+    shape: Outline,
+    phase: f64,
+    swell: f64,
+    flat: f64,
+) -> CFRetained<CGMutablePath> {
     let path = CGMutablePath::new();
-    add_outline(&path, d, shape, phase, swell);
+    add_outline(&path, d, shape, (phase, swell), flat);
     path
 }
 
@@ -323,7 +373,7 @@ fn outlined(d: f64, shape: Outline, scale: f64) -> Retained<CAShapeLayer> {
     let layer = CAShapeLayer::new();
     layer.setFrame(square(d));
     layer.setContentsScale(scale);
-    layer.setPath(Some(&outline_path(d, shape, 0.0, 0.0)));
+    layer.setPath(Some(&outline_path(d, shape, 0.0, 0.0, 0.0)));
     layer
 }
 
@@ -333,13 +383,48 @@ struct Follower {
     shape: Outline,
 }
 
+/// puts `mask` on `layer` while `on` and takes it off otherwise, so a layer that's masked
+/// only now and then doesn't pay for the mask the rest of the time. `layer` has no other
+/// mask; AppKit puts none on the native glass
+fn mask_while(layer: &CALayer, mask: &CALayer, on: bool) {
+    if on != layer.mask().is_some() {
+        // SAFETY: `mask` is only ever this layer's mask, and has no superlayer of its own
+        unsafe { layer.setMask(on.then_some(mask)) };
+    }
+}
+
+impl Follower {
+    /// gives the layer `path` to keep while no animation runs
+    fn hold(&self, path: &CGPath) {
+        if self.key == "shadowPath" {
+            self.layer.setShadowPath(Some(path));
+        } else {
+            self.layer
+                .downcast_ref::<CAShapeLayer>()
+                .expect("a layer that follows by its path is a shape layer")
+                .setPath(Some(path));
+        }
+    }
+}
+
 pub struct Bead {
     /// what goes in the view hierarchy, `diameter` square
     pub view: Retained<NSView>,
+    /// the native glass's layer, which `rim` cuts flat while the top is pressed. None with
+    /// no glass, or with a glass that keeps a mask of its own because its outline drifts
+    glass: Option<Retained<CALayer>>,
+    rim: Retained<CAShapeLayer>,
+    /// how flat `press` last left the top, as a share of the radius
+    flat: Cell<f64>,
     diameter: f64,
     /// the colour beneath the glass, blurred separately during entrances and exits
     content: Retained<NSView>,
+    /// the two rings, which sink as the top flattens
+    iris: Retained<CALayer>,
+    /// the two rings, and the socket the pupil sits in, which `look` moves and `press` sinks
     discs: [Retained<CALayer>; 3],
+    /// the pupil, which blinks inside its socket
+    pupil: Retained<CALayer>,
     /// masks for the pigment and rings, sharing one moving liquid level
     surface: Option<[Retained<CAShapeLayer>; 2]>,
     /// every layer shaped by the body's outline, which `drift` sets moving
@@ -371,8 +456,22 @@ impl Bead {
             layer.setShadowOpacity(0.20);
             layer.setShadowRadius(d * 0.035);
             layer.setShadowOffset(CGSize::new(0.0, -d * 0.025));
-            layer.setShadowPath(Some(&outline_path(d, Outline::Glass, 0.0, 0.0)));
+            layer.setShadowPath(Some(&outline_path(d, Outline::Glass, 0.0, 0.0, 0.0)));
             follow(&layer, "shadowPath", Outline::Glass);
+        }
+
+        let solid = solid_surfaces();
+        if solid {
+            // a shape rather than a rounded layer, so a press flattens the disc, border and all
+            let disc = outlined(d, Outline::Rim, scale);
+            disc.setFillColor(Some(&CGColor::new_generic_gray(0.14, 1.0)));
+            disc.setStrokeColor(Some(&CGColor::new_generic_gray(1.0, 0.35)));
+            disc.setLineWidth(1.0);
+            follow(&disc, "path", Outline::Rim);
+            let host = NSView::initWithFrame(NSView::alloc(mtm), frame);
+            host.setLayer(Some(&disc));
+            host.setWantsLayer(true);
+            view.addSubview(&host);
         }
 
         // the material samples the colour below it, including the moving liquid surface
@@ -381,14 +480,8 @@ impl Bead {
         view.addSubview(&content);
         let foreground = NSView::initWithFrame(NSView::alloc(mtm), frame);
         foreground.setWantsLayer(true);
-        let solid = solid_surfaces();
+        let mut cuttable = None;
         if solid {
-            if let Some(layer) = view.layer() {
-                layer.setCornerRadius(r);
-                layer.setBackgroundColor(Some(&CGColor::new_generic_gray(0.14, 1.0)));
-                layer.setBorderWidth(1.0);
-                layer.setBorderColor(Some(&CGColor::new_generic_gray(1.0, 0.35)));
-            }
             view.addSubview(&foreground);
         } else {
             let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
@@ -398,11 +491,14 @@ impl Bead {
             glass.setContentView(Some(&foreground));
             view.addSubview(&glass);
             glass.setWantsLayer(true);
-            if counts && let Some(layer) = glass.layer() {
+            let layer = glass.layer().expect("a view that wants a layer has one");
+            if counts {
                 let outline = outlined(d, Outline::Glass, scale);
                 follow(&outline, "path", Outline::Glass);
                 // SAFETY: the mask is a fresh layer with no superlayer of its own
                 unsafe { layer.setMask(Some(&outline)) };
+            } else {
+                cuttable = Some(layer);
             }
         }
         let root = content.layer().expect("a view that wants a layer has one");
@@ -450,14 +546,22 @@ impl Bead {
             layer.setPosition(centre);
             layer
         });
+        let [white, sky, pupil] = discs;
         let front = foreground
             .layer()
             .expect("a view that wants a layer has one");
         let iris = CALayer::new();
         iris.setFrame(frame);
-        iris.addSublayer(&discs[0]);
-        iris.addSublayer(&discs[1]);
+        iris.addSublayer(&white);
+        iris.addSublayer(&sky);
         front.addSublayer(&iris);
+        // the socket takes the look and the sink, and the pupil inside blinks on its own
+        let socket = CALayer::new();
+        socket.setBounds(pupil.bounds());
+        socket.setPosition(centre);
+        let side = pupil.bounds().size.width;
+        pupil.setPosition(NSPoint::new(side / 2.0, side / 2.0));
+        socket.addSublayer(&pupil);
 
         let surface = counts.then(|| {
             let wave = || {
@@ -482,7 +586,7 @@ impl Bead {
 
             [mask, iris_mask]
         });
-        front.addSublayer(&discs[2]);
+        front.addSublayer(&socket);
 
         let count = counts.then(|| {
             let count = FlipCount::new(mtm, d * COUNT_SIZE, PUPIL, centre);
@@ -492,9 +596,14 @@ impl Bead {
 
         Bead {
             view,
+            glass: cuttable,
+            rim: outlined(d, Outline::Rim, scale),
+            flat: Cell::new(0.0),
             diameter: d,
             content,
-            discs,
+            iris,
+            discs: [white, sky, socket],
+            pupil,
             surface,
             followers,
             count,
@@ -506,6 +615,10 @@ impl Bead {
     pub fn drift(&self, begin: f64) {
         let d = self.diameter;
         for Follower { layer, key, shape } in &self.followers {
+            // the rim is a circle whatever the drift does
+            if matches!(shape, Outline::Rim) {
+                continue;
+            }
             let round = |swells: bool| {
                 let paths: Vec<_> = (0..=MORPH_FRAMES)
                     .map(|frame| {
@@ -516,7 +629,7 @@ impl Bead {
                         } else {
                             1.0
                         };
-                        outline_path(d, *shape, TAU * along, swell)
+                        outline_path(d, *shape, TAU * along, swell, 0.0)
                     })
                     .collect();
                 let paths = CFArray::from_retained_objects(&paths);
@@ -577,6 +690,45 @@ impl Bead {
         });
     }
 
+    /// presses the top flat, `depth` points down from where it is at rest, as against a wall
+    /// above, up to `FLAT_MOST` of the radius. the eye sinks as the top flattens
+    pub fn press(&self, depth: f64) {
+        let r = self.diameter / 2.0;
+        let flat = depth.max(0.0) / r;
+        if flat == self.flat.replace(flat) {
+            return;
+        }
+        let sink = |by: f64| CGAffineTransform {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: -by * flat * r,
+        };
+        without_actions(|| {
+            self.flatten(flat);
+            self.iris.setAffineTransform(sink(IRIS_SINK));
+            self.discs[2].setAffineTransform(sink(PUPIL_SINK));
+        });
+    }
+
+    /// reshapes every outline with its top `flat`, a share of the radius. the rim cuts the
+    /// glass only while it's flat, and leaves its edge alone the rest of the time
+    fn flatten(&self, flat: f64) {
+        let d = self.diameter;
+        for follower in &self.followers {
+            follower.hold(&outline_path(d, follower.shape, 0.0, 0.0, flat));
+        }
+        if let Some(glass) = &self.glass {
+            if flat > 0.0 {
+                self.rim
+                    .setPath(Some(&outline_path(d, Outline::Rim, 0.0, 0.0, flat)));
+            }
+            mask_while(glass, &self.rim, flat > 0.0);
+        }
+    }
+
     /// sets the pupil blinking, for as long as the bead lives: now and then it squashes
     /// flat about its own centre, wherever it's looking, and bounces open again
     pub fn blink(&self) {
@@ -620,7 +772,8 @@ impl Bead {
             anim.setTimingFunctions(Some(&NSArray::from_retained_slice(&timings)));
             anim.setDuration(BLINK_PERIOD);
             anim.setRepeatCount(f32::INFINITY);
-            self.discs[2].addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
+            self.pupil
+                .addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
         }
     }
 
@@ -830,6 +983,65 @@ mod tests {
             assert!(inner.depth.0 - outer.depth.0 < room);
             assert!(inner.depth.1 - outer.depth.1 < room);
         }
+    }
+
+    #[test]
+    fn a_pressed_outline_runs_straight_along_the_top_and_keeps_the_rest() {
+        let (d, r) = (64.0, 32.0);
+        let at = |i: usize, shape: Outline, flat: f64| outline_point(i, d, shape, (0.0, 0.0), flat);
+        for shape in [Outline::Pigment, Outline::Glass, Outline::Rim] {
+            let cut = r + r * (shape.top() - FLAT_MOST);
+            for i in 0..OUTLINE_POINTS {
+                let angle = TAU * i as f64 / OUTLINE_POINTS as f64;
+                let reach = r * shape.radius(angle, 0.0, 0.0);
+                let round = (r + reach * angle.cos(), r + reach * angle.sin());
+                // unpressed, it's the circle
+                assert_eq!(at(i, shape, 0.0), round);
+                // pressed, nothing reaches above the cut or moves sideways, and the lower
+                // half stays as it was
+                let pressed = at(i, shape, FLAT_MOST);
+                assert!(pressed.1 <= cut + 1e-9);
+                assert_eq!(pressed.0, round.0);
+                if round.1 <= r {
+                    assert_eq!(pressed, round);
+                }
+                // over the middle third it's a straight line along the cut
+                if (pressed.0 - r).abs() < d / 6.0 && pressed.1 > r {
+                    assert!((pressed.1 - cut).abs() < 1e-9);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unpressed_outline_drifts_past_its_resting_top_uncut() {
+        let (d, r) = (64.0, 32.0);
+        let mut highest: f64 = 0.0;
+        for shape in [Outline::Pigment, Outline::Glass] {
+            for frame in 0..MORPH_FRAMES {
+                let phase = TAU * frame as f64 / MORPH_FRAMES as f64;
+                for i in 0..OUTLINE_POINTS {
+                    let angle = TAU * i as f64 / OUTLINE_POINTS as f64;
+                    let reach = r * shape.radius(angle, phase, 1.0);
+                    let free = (r + reach * angle.cos(), r + reach * angle.sin());
+                    assert_eq!(outline_point(i, d, shape, (phase, 1.0), 0.0), free);
+                    highest = highest.max((free.1 - r) / r - shape.top());
+                }
+            }
+        }
+        // the drift does rise above the resting top, so a cut there would show
+        assert!(highest > 0.0);
+    }
+
+    #[test]
+    fn the_eye_sinks_clear_of_a_flattened_top() {
+        // shares of the radius above the centre, at the flattest press: the rings and pupil
+        // sink in step with the press, so if they're clear there they're clear all the way
+        let edge = Outline::Pigment.top() - FLAT_MOST;
+        let reach = |disc: &Disc, sink: f64| disc.radius + 2.0 * disc.depth.1 - sink * FLAT_MOST;
+        assert!(reach(&DISCS[0], IRIS_SINK) < edge);
+        assert!(reach(&DISCS[1], IRIS_SINK) < edge);
+        assert!(reach(&DISCS[2], PUPIL_SINK) < edge);
     }
 
     #[test]

@@ -46,8 +46,8 @@ const CAPSULE_GAP: f64 = 46.0;
 const CAPSULE_DROP: f64 = 12.0;
 const THREAD: f64 = 42.0;
 const BEAD: f64 = 64.0;
-/// the charm's panel: wide enough for the swing, rubber band included, and deep enough for
-/// thread and bead
+/// the charm's panel: wide enough for the swing out to the menu bar and a little into it as
+/// the bead flattens, and deep enough for thread and bead
 const CHARM_W: f64 = 240.0;
 const CHARM_H: f64 = THREAD + BEAD + 18.0;
 /// the capsule's corners, concentric with its buttons': theirs, plus the padding between

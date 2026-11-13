@@ -1,6 +1,7 @@
 //! the warning's bead on its thread, hanging off the menu-bar icon. it swings like a
 //! pendulum on a display link: grab it and it follows the pointer, let go and the swing keeps
-//! the release velocity. its inner rings lean toward the pointer, as if it watched you.
+//! the release velocity. its inner rings lean toward the pointer, as if it watched you. the
+//! menu bar is a wall. pressed against it, the bead's top flattens like a drop of liquid's.
 
 use std::cell::RefCell;
 
@@ -15,10 +16,10 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
-use super::bead::Bead;
+use super::bead::{Bead, FLAT_MOST};
 use super::break_screen::FLIGHT_DELAY;
 use super::panel::{
-    Fill, POP, after, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
+    Fill, POP, Spring, after, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
     presented, property, scale_about, spring, without_actions,
 };
 
@@ -41,15 +42,32 @@ const STILL_SPEED: f64 = 0.2;
 /// to it. the bead's colour blurs this much as it does
 const BUBBLE_FROM: f64 = 0.95;
 const BUBBLE_BLUR: f64 = 8.0;
-/// past this angle a drag meets more and more resistance instead of a hard stop
-const SWING_LIMIT: f64 = 1.15;
 /// how much of a grab around the bead counts, beyond its edge
 const GRAB_SLOP: f64 = 6.0;
-/// the look's springs: stiffness and damping, critically damped
-const LOOK_STIFFNESS: f64 = 190.0;
-const LOOK_DAMPING: f64 = 27.0;
+/// the look's springs, critically damped
+const LOOK: Spring = Spring {
+    stiffness: 190.0,
+    damping: 27.0,
+};
 /// the pointer this far from the bead, or further, makes it look all the way over
 const LOOK_REACH: f64 = 140.0;
+/// how hard the menu bar pushes back on a bead swung into it, per radian past where they
+/// meet, and how much of the swing it soaks up. the bead drags against the bar and comes
+/// off at well under half the speed it hit
+const WALL_STIFFNESS: f64 = 250.0;
+const WALL_DAMPING: f64 = 20.0;
+/// a drag presses the bead into the bar less and less far, up to this many radians
+const PRESS_LIMIT: f64 = 0.18;
+/// the top flattens against the bar on a brisk spring that barely overshoots
+const BRISK: Spring = Spring {
+    stiffness: 900.0,
+    damping: 51.0,
+};
+/// the top rounds out again slower, as a drop of liquid would, and never past round
+const ROUNDING: Spring = Spring {
+    stiffness: 300.0,
+    damping: 35.0,
+};
 
 pub struct Swing {
     bead: Bead,
@@ -58,8 +76,15 @@ pub struct Swing {
     pivot: NSPoint,
     /// from the pivot to the bead's centre
     length: f64,
+    /// the angle, either side, at which the bead's top meets the menu bar. the pivot hangs
+    /// on the bar's bottom edge, the view's top
+    wall: f64,
+    /// where the swing has the bead, which past `wall` is pressed into the bar
     theta: f64,
     omega: f64,
+    /// how many points the bead's top is pressed flat, and how fast that's changing. the
+    /// bead shows only as far into the bar as this lets it
+    flat: [f64; 2],
     /// lightly damped, while it hangs in a warning
     free: bool,
     /// how long it has hung still, and which way the last stir went
@@ -133,10 +158,11 @@ define_class!(
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             let mut swing = self.ivars().borrow_mut();
             let angle = swing.angle_at(point);
+            let wall = swing.wall;
             let Some(drag) = &mut swing.drag else {
                 return;
             };
-            let theta = rubber_band(angle - drag.offset);
+            let theta = press(angle - drag.offset, wall);
             drag.history.push((event.timestamp(), theta));
             drag.history.retain(|(time, _)| event.timestamp() - time <= 0.10);
             swing.theta = theta;
@@ -174,10 +200,17 @@ define_class!(
                 } else {
                     DAMPING_SETTLE
                 };
-                swing.omega += (-STIFFNESS * swing.theta - damping * swing.omega) * dt;
+                let mut accel = -STIFFNESS * swing.theta - damping * swing.omega;
+                let over = swing.theta.abs() - swing.wall;
+                if over > 0.0 {
+                    accel -= WALL_STIFFNESS * over * swing.theta.signum()
+                        + WALL_DAMPING * swing.omega;
+                }
+                swing.omega += accel * dt;
                 swing.theta += swing.omega * dt;
                 swing.stir(dt);
             }
+            swing.react(dt);
             let mut takes_clicks = swing.drag.is_some();
             if let Some(origin) = screen_origin {
                 let mouse = NSEvent::mouseLocation();
@@ -230,13 +263,16 @@ impl Charm {
         thread.setShadowOffset(CGSize::new(0.0, 0.0));
         thread_root.addSublayer(&thread);
 
+        let length = thread_length + bead / 2.0;
         let swing = Swing {
             bead: Bead::new(mtm, bead, scale, false),
             thread,
             pivot,
-            length: thread_length + bead / 2.0,
+            length,
+            wall: (bead / 2.0 / length).acos(),
             theta: 0.0,
             omega: 0.0,
+            flat: [0.0; 2],
             free: false,
             still_for: 0.0,
             stir_left: false,
@@ -372,10 +408,23 @@ impl Charm {
 }
 
 impl Swing {
+    fn radius(&self) -> f64 {
+        self.bead.view.frame().size.width / 2.0
+    }
+
+    /// the angle the bead shows at. it goes into the bar only as far as its top has
+    /// flattened, so the flat stays on the bar and the rest of the bead never crosses it
+    fn shown(&self) -> f64 {
+        let reach = ((self.radius() - self.flat[0]) / self.length).acos();
+        self.theta.clamp(-reach, reach)
+    }
+
+    /// where the bead's centre shows, in the view
     fn bead_center(&self) -> NSPoint {
+        let (sin, cos) = self.shown().sin_cos();
         NSPoint::new(
-            self.pivot.x + self.length * self.theta.sin(),
-            self.pivot.y - self.length * self.theta.cos(),
+            self.pivot.x + self.length * sin,
+            self.pivot.y - self.length * cos,
         )
     }
 
@@ -416,20 +465,28 @@ impl Swing {
         let reach = (distance / LOOK_REACH).min(1.0);
         let target = [dx / distance * reach, dy / distance * reach];
         let [x, y, vx, vy] = &mut self.look;
-        for (pos, vel, goal) in [(x, vx, target[0]), (y, vy, target[1])] {
-            *vel += (LOOK_STIFFNESS * (goal - *pos) - LOOK_DAMPING * *vel) * dt;
-            *pos += *vel * dt;
-        }
+        chase(x, vx, target[0], LOOK, dt);
+        chase(y, vy, target[1], LOOK, dt);
     }
 
-    /// puts the thread and bead where the angle and look say
+    /// flattens the bead's top as far as the swing presses it into the bar
+    fn react(&mut self, dt: f64) {
+        let radius = self.radius();
+        let goal = pressed(self.theta, radius, self.length).min(radius * FLAT_MOST);
+        let spring = if goal > self.flat[0] { BRISK } else { ROUNDING };
+        let [depth, speed] = &mut self.flat;
+        chase(depth, speed, goal, spring, dt);
+    }
+
+    /// puts the thread and bead where the angle and look say, as flat as the bar has made it
     fn place(&self) {
         let center = self.bead_center();
-        let radius = self.bead.view.frame().size.width / 2.0;
+        let radius = self.radius();
         self.bead
             .view
             .setFrameOrigin(NSPoint::new(center.x - radius, center.y - radius));
-        let (sin, cos) = self.theta.sin_cos();
+        self.bead.press(self.flat[0]);
+        let (sin, cos) = self.shown().sin_cos();
         without_actions(|| {
             self.thread.setAffineTransform(CGAffineTransform {
                 a: cos,
@@ -444,13 +501,38 @@ impl Swing {
     }
 }
 
-/// past `SWING_LIMIT` each further radian of drag moves the bead less, toward a soft ceiling
-fn rubber_band(angle: f64) -> f64 {
-    let over = angle.abs() - SWING_LIMIT;
+/// a drag to `angle`, with the bar at `wall`. past the bar, each further radian presses the
+/// bead in less, toward `PRESS_LIMIT`
+fn press(angle: f64, wall: f64) -> f64 {
+    let over = angle.abs() - wall;
     if over <= 0.0 {
         return angle;
     }
-    angle.signum() * (SWING_LIMIT + over * 0.55 / (1.0 + 1.1 * over))
+    angle.signum() * (wall + PRESS_LIMIT * over / (PRESS_LIMIT + over))
+}
+
+/// how many points a bead of `radius` on a swing `length` long, at `theta`, reaches past the
+/// pivot's height. the swing never nears half a turn, where this would stop holding
+fn pressed(theta: f64, radius: f64, length: f64) -> f64 {
+    (radius - length * theta.cos()).max(0.0)
+}
+
+/// moves `pos`, going at `vel`, `dt` seconds on toward `goal` on a spring of unit mass. it
+/// steps a 240th of a second at a time at most. in one long step after a dropped frame, a
+/// spring as stiff as `BRISK` would overshoot more each step instead of settling. once it's
+/// within a thousandth of `goal` and nearly still, it stops there exactly, so whatever it
+/// drives can tell it has stopped changing
+fn chase(pos: &mut f64, vel: &mut f64, goal: f64, spring: Spring, dt: f64) {
+    let steps = (dt * 240.0).ceil().max(1.0);
+    let step = dt / steps;
+    for _ in 0..steps as usize {
+        *vel += (spring.stiffness * (goal - *pos) - spring.damping * *vel) * step;
+        *pos += *vel * step;
+    }
+    if (goal - *pos).abs() < 1e-3 && vel.abs() < 1e-2 {
+        *pos = goal;
+        *vel = 0.0;
+    }
 }
 
 #[cfg(test)]
@@ -467,12 +549,50 @@ mod tests {
     }
 
     #[test]
-    fn the_rubber_band_gives_way_less_the_further_it_goes() {
-        assert_eq!(rubber_band(0.5), 0.5);
-        assert_eq!(rubber_band(-SWING_LIMIT), -SWING_LIMIT);
-        let a = rubber_band(SWING_LIMIT + 0.5) - SWING_LIMIT;
-        let b = rubber_band(SWING_LIMIT + 1.0) - rubber_band(SWING_LIMIT + 0.5);
+    fn a_drag_presses_into_the_bar_less_the_further_it_goes() {
+        let wall = 1.1;
+        assert_eq!(press(0.5, wall), 0.5);
+        assert_eq!(press(-wall, wall), -wall);
+        let a = press(wall + 0.5, wall) - wall;
+        let b = press(wall + 1.0, wall) - press(wall + 0.5, wall);
         assert!(a > 0.0 && b > 0.0 && b < a);
-        assert_eq!(rubber_band(-2.0), -rubber_band(2.0));
+        assert!(press(wall + 100.0, wall) < wall + PRESS_LIMIT);
+        assert_eq!(press(-2.0, wall), -press(2.0, wall));
+    }
+
+    #[test]
+    fn the_bead_reaches_into_the_bar_only_past_the_wall() {
+        let (radius, length): (f64, f64) = (32.0, 74.0);
+        let wall = (radius / length).acos();
+        assert_eq!(pressed(0.0, radius, length), 0.0);
+        assert_eq!(pressed(wall - 0.01, radius, length), 0.0);
+        assert!(pressed(wall, radius, length) < 1e-9);
+        let near = pressed(wall + 0.05, radius, length);
+        let hardest = pressed(-(wall + PRESS_LIMIT), radius, length);
+        assert!(near > 0.0 && hardest > near);
+        // the hardest a drag can press flattens most of the top
+        assert!(hardest > radius / 3.0);
+    }
+
+    #[test]
+    fn every_spring_comes_to_rest_on_its_goal_even_at_the_longest_frame() {
+        for spring in [LOOK, BRISK, ROUNDING] {
+            let (mut pos, mut vel) = (0.0, 0.0);
+            // a second of frames as long as `step` lets one be
+            for _ in 0..32 {
+                chase(&mut pos, &mut vel, 1.0, spring, 0.032);
+            }
+            assert_eq!((pos, vel), (1.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn the_top_rounds_out_without_dipping_past_round() {
+        let (mut depth, mut speed) = (12.0, 0.0);
+        for _ in 0..120 {
+            chase(&mut depth, &mut speed, 0.0, ROUNDING, 1.0 / 120.0);
+            assert!(depth >= 0.0);
+        }
+        assert_eq!(depth, 0.0);
     }
 }
