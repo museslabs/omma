@@ -41,6 +41,10 @@ const TRAY_ICON_INCOMING_SVG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tray-icon-incoming.svg"
 ));
+const TRAY_ICON_DISABLED_SVG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tray-icon-disabled.svg"
+));
 
 const TRAY_ICON_SIZE: f64 = 18.0;
 /// the tray icon blinks, and the timer ticks fast, this many seconds before the warning
@@ -78,6 +82,7 @@ enum TrayIconState {
     #[default]
     Normal,
     Incoming,
+    Disabled,
 }
 
 /// what stands in for a config file with an error
@@ -163,6 +168,7 @@ struct App {
     status_item: Option<Retained<NSStatusItem>>,
     tray_icon: Option<Retained<NSImage>>,
     tray_icon_incoming: Option<Retained<NSImage>>,
+    tray_icon_disabled: Option<Retained<NSImage>>,
     enable_item: Option<Retained<NSMenuItem>>,
     status_item_label: Option<Retained<NSMenuItem>>,
     /// why do-not-disturb held off the last break. hidden while there's no reason
@@ -331,6 +337,7 @@ impl App {
         }
         let tray_icon = tray_icon_image(TRAY_ICON_SVG);
         let tray_icon_incoming = tray_icon_image(TRAY_ICON_INCOMING_SVG);
+        let tray_icon_disabled = tray_icon_image(TRAY_ICON_DISABLED_SVG);
         let break_screen = BreakScreen::new(mtm);
         let pre_break_dialog = PreBreakDialog::new(mtm);
 
@@ -350,6 +357,7 @@ impl App {
             status_item: None,
             tray_icon,
             tray_icon_incoming,
+            tray_icon_disabled,
             enable_item: None,
             status_item_label: None,
             suppressed_item: None,
@@ -601,7 +609,9 @@ impl App {
 
         let incoming = matches!(phase, Phase::Waiting { .. })
             && remaining.is_some_and(|secs| secs <= INCOMING_WINDOW_SECS);
-        self.sync_tray_icon(if incoming && tray_icon_blink_on(now) {
+        self.sync_tray_icon(if matches!(phase, Phase::Disabled) {
+            TrayIconState::Disabled
+        } else if incoming && tray_icon_blink_on(now) {
             TrayIconState::Incoming
         } else {
             TrayIconState::Normal
@@ -868,6 +878,7 @@ impl App {
         let image = match state {
             TrayIconState::Normal => self.tray_icon.as_ref(),
             TrayIconState::Incoming => self.tray_icon_incoming.as_ref().or(self.tray_icon.as_ref()),
+            TrayIconState::Disabled => self.tray_icon_disabled.as_ref().or(self.tray_icon.as_ref()),
         };
         match image {
             Some(image) => {
