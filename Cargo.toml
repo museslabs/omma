@@ -43,6 +43,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "libc",
     "objc2-core-foundation",
+    "objc2-core-graphics",
     "objc2-quartz-core",
     "NSAccessibility",
     "NSAccessibilityProtocols",
@@ -59,7 +60,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSFontDescriptor",
     "NSGlassEffectView",
     "NSGraphics",
+    "NSGraphicsContext",
     "NSImage",
+    "NSImageRep",
     "NSMenu",
     "NSMenuItem",
     "NSPanel",
@@ -86,10 +89,18 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "CAMediaTiming",
     "CAMediaTimingFunction",
 ] }
-objc2-core-image = { version = "0.3", default-features = false, features = ["std", "CIFilter"] }
+objc2-core-image = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "CIContext",
+    "CIFilter",
+    "CIImage",
+] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "CFArray",
+    "CFCGTypes",
     "CFData",
     "CFDictionary",
     "CFNumber",
@@ -106,6 +117,7 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGEventSource",
     "CGEventTypes",
+    "CGImage",
 ] }
 
 [profile.release]

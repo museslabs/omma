@@ -14,6 +14,9 @@ use objc2_app_kit::{
     NSScreen, NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
+use objc2_core_foundation::CGAffineTransform;
+use objc2_core_graphics::CGImage;
+use objc2_core_image::{CIContext, CIImage};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
 
@@ -31,10 +34,14 @@ const SCRIM_ALPHA: f64 = 0.25;
 const BUTTON_HEIGHT: f64 = 46.0;
 /// the foreground's blur radius as it enters and leaves
 const BLUR_RADIUS: f64 = 16.0;
-/// resting blur on a custom background image, eyeballed to match the FullScreenUI desktop blur
-const IMAGE_BLUR_RADIUS_RESTING: f64 = 16.0;
-/// the image enters at this radius and sharpens to the resting one with the foreground
-const IMAGE_BLUR_RADIUS_START: f64 = 60.0;
+/// how soft a custom background image is, in points on the display, eyeballed to match the
+/// FullScreenUI desktop blur. the image is blurred this much once, into a bitmap
+const IMAGE_SOFTNESS: f64 = 16.0;
+/// a pixel of that bitmap covers this many points, which a blur that wide hides
+const IMAGE_BITMAP_PIXEL: f64 = 2.0;
+/// the image enters with this much blur on top, 60 in all, and sharpens to its own softness
+/// as the screen settles
+const IMAGE_BLUR_ENTRANCE: f64 = 58.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
 /// the foreground starts to resolve from blur this long after the screen appears
@@ -124,13 +131,10 @@ impl BreakScreen {
         if screens.count() == 0 {
             return None;
         }
-        let (image, loaded) = if let Some(path) = brk.image.as_deref() {
+        let (image, mut loaded) = if let Some(path) = brk.image.as_deref() {
             match load_image(path) {
                 Some(image) => (Some(image), Some(Ok(()))),
-                None => {
-                    let why = format!("can't show {} as an image", path.display());
-                    (None, Some(Err(why)))
-                }
+                None => (None, Some(Err(cant_show(path)))),
             }
         } else {
             (None, None)
@@ -163,13 +167,18 @@ impl BreakScreen {
             blur.setState(NSVisualEffectState::Active);
             backdrop.addSubview(&blur);
 
-            // optional custom image, between blur and scrim. a permanent gaussian blur keeps it a
-            // soft backdrop instead of a sharp photo.
+            // optional custom image, between blur and scrim, blurred into a soft backdrop
+            // instead of a sharp photo
             let image_view = image
                 .as_deref()
-                .and_then(|image| make_image_view(mtm, image, full, screen.backingScaleFactor()));
+                .and_then(|image| make_image_view(mtm, image, full));
             if let Some(view) = &image_view {
                 backdrop.addSubview(view);
+            } else if image.is_some()
+                && let Some(path) = brk.image.as_deref()
+            {
+                // Core Image couldn't soften it
+                loaded = Some(Err(cant_show(path)));
             }
 
             let scrim = NSBox::initWithFrame(NSBox::alloc(mtm), full);
@@ -278,19 +287,20 @@ impl BreakScreen {
                     // drop the transition blur once the entrance settles so the break renders crisp
                     detach_blur_after(mtm, layer, FOREGROUND_SETTLED + 0.14);
                 }
-                // image holds at its resting radius after the sharpen-in, no detach
+                // the image sharpens to its own softness, and nothing blurs it from then on
                 if let Some(layer) = image_view.as_ref().and_then(|v| v.layer()) {
-                    let begin = now + FOREGROUND_DELAY;
+                    attach_unclipped_blur(&layer, 0.0);
                     layer.addAnimation_forKey(
                         &blur_radius(
-                            IMAGE_BLUR_RADIUS_START,
-                            IMAGE_BLUR_RADIUS_RESTING,
-                            begin,
+                            IMAGE_BLUR_ENTRANCE,
+                            0.0,
+                            now + FOREGROUND_DELAY,
                             FOREGROUND_ENTRANCE,
                             Fill::Entrance,
                         ),
                         None,
                     );
+                    detach_blur_after(mtm, layer, FOREGROUND_SETTLED + 0.05);
                 }
                 if let Some(layer) = name_label.layer() {
                     animate_delayed_entrance(mtm, layer, 28.0, now + LABEL_BEGINS, now);
@@ -421,32 +431,76 @@ impl BreakScreen {
     }
 }
 
-/// None when the file isn't an image AppKit can read
-fn load_image(path: &Path) -> Option<Retained<NSImage>> {
-    let path = NSString::from_str(path.to_str()?);
-    NSImage::initWithContentsOfFile(NSImage::alloc(), &path)
+/// the problem a break reports for an image it can't show
+fn cant_show(path: &Path) -> String {
+    format!("can't show {} as an image", path.display())
 }
 
+/// None when the file isn't an image AppKit can read
+fn load_image(path: &Path) -> Option<Retained<CGImage>> {
+    let path = NSString::from_str(path.to_str()?);
+    let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &path)?;
+    // SAFETY: a null rect asks for the image at its own size, and it needs no context or
+    // hints for that
+    unsafe { image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }
+}
+
+/// `image`, softened, filling `frame`. None when Core Image can't render it
 fn make_image_view(
     mtm: MainThreadMarker,
-    image: &NSImage,
+    image: &CGImage,
     frame: NSRect,
-    backing_scale: f64,
 ) -> Option<Retained<NSView>> {
+    let soft = soften(image, frame.size)?;
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
     view.setWantsLayer(true);
     let layer = view.layer()?;
-    let image_obj: &AnyObject = image;
-    // SAFETY: a layer's contents can be an NSImage, and the gravity is an immutable Core
+    let contents: &AnyObject = soft.as_ref();
+    // SAFETY: a layer's contents can be a CGImage, and the gravity is an immutable Core
     // Animation constant
     unsafe {
-        layer.setContents(Some(image_obj));
+        layer.setContents(Some(contents));
         layer.setContentsGravity(kCAGravityResizeAspectFill);
     }
-    layer.setContentsScale(backing_scale);
     layer.setOpacity(IMAGE_OPACITY);
-    attach_unclipped_blur(&layer, IMAGE_BLUR_RADIUS_RESTING);
     Some(view)
+}
+
+/// `image` blurred once, to look `IMAGE_SOFTNESS` points soft when it fills a display of
+/// `size`. no filter then has to blur it for as long as the break lasts. the bitmap is only
+/// as fine as that softness can show.
+fn soften(image: &CGImage, size: NSSize) -> Option<Retained<CGImage>> {
+    let width = CGImage::width(Some(image)) as f64;
+    let height = CGImage::height(Some(image)) as f64;
+    if width < 1.0 || height < 1.0 {
+        return None;
+    }
+    let (shrink, sigma) = bitmap_for(width, height, size);
+    // SAFETY: the image is a valid CGImage, and Core Image only reads it. clamping repeats
+    // its edge outward, so the blur doesn't fade the edges into nothing
+    unsafe {
+        let small = CIImage::imageWithCGImage(image).imageByApplyingTransform(CGAffineTransform {
+            a: shrink,
+            b: 0.0,
+            c: 0.0,
+            d: shrink,
+            tx: 0.0,
+            ty: 0.0,
+        });
+        let blurred = small
+            .imageByClampingToExtent()
+            .imageByApplyingGaussianBlurWithSigma(sigma);
+        CIContext::context().createCGImage_fromRect(&blurred, small.extent())
+    }
+}
+
+/// how much to shrink a `width` by `height` image for its softened bitmap, and the blur to
+/// give that bitmap, in its pixels
+fn bitmap_for(width: f64, height: f64, size: NSSize) -> (f64, f64) {
+    // points on the display to a pixel of the image, once it fills the display
+    let shown = (size.width / width).max(size.height / height);
+    let shrink = (shown / IMAGE_BITMAP_PIXEL).min(1.0);
+    (shrink, IMAGE_SOFTNESS / shown * shrink)
 }
 
 /// `attach_blur`, letting the blur bleed past the layer's edge instead of being clipped
@@ -510,4 +564,43 @@ fn animate_countdown_swap(
         detach_blur_after(mtm, layer, 0.34);
     }
     after(mtm, 0.34, move || outgoing.removeFromSuperview());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_large_image_shrinks_to_a_bitmap_of_two_point_pixels() {
+        let display = NSSize::new(1440.0, 900.0);
+        // twice the display each way: half a point to a pixel, so it shrinks to a quarter
+        let (shrink, sigma) = bitmap_for(2880.0, 1800.0, display);
+        assert_eq!(shrink, 0.25);
+        assert_eq!(sigma, IMAGE_SOFTNESS / IMAGE_BITMAP_PIXEL);
+        // a small one is left as it is, and blurred by as many of its pixels as make up
+        // the softness
+        let (shrink, sigma) = bitmap_for(360.0, 225.0, display);
+        assert_eq!(shrink, 1.0);
+        assert_eq!(sigma, IMAGE_SOFTNESS / 4.0);
+    }
+
+    #[test]
+    fn an_image_file_softens_to_a_bitmap() {
+        // a one pixel png
+        const PNG: [u8; 70] = [
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 100, 96,
+            248, 95, 15, 0, 2, 135, 1, 128, 235, 71, 186, 146, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let path = std::env::temp_dir().join(format!("omma-soften-{}.png", std::process::id()));
+        std::fs::write(&path, PNG).unwrap();
+        let image = load_image(&path);
+        std::fs::remove_file(&path).unwrap();
+        let soft = soften(&image.unwrap(), NSSize::new(100.0, 50.0)).unwrap();
+        assert_eq!(
+            (CGImage::width(Some(&soft)), CGImage::height(Some(&soft))),
+            (1, 1)
+        );
+    }
 }
