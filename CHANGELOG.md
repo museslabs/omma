@@ -35,6 +35,9 @@ The first release.
   `post_break`. Each names a sound, or is `""` for none, and a name with no
   sound behind it is an error.
 - `[notification]` is gone. `pre_break_warning = 0` turns the warning off.
+- `[do_not_disturb]` loses `enabled`, since empty rules hold nothing back. Its
+  rules are now `apps_running`, `apps_in_front`, `fullscreen` and
+  `window_titles`.
 - `shift` in a shortcut goes only with a letter, `escape`, `space`, `enter` or
   `delete`, and the `delete` key works.
 - The CLI rejects combined flags. Each command prints what it did or why it

@@ -99,17 +99,17 @@ pub struct Keybindings {
     pub warning_postpone: Option<KeySpec>,
 }
 
+/// rules that hold a break back. none holds while they're all empty or false
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DoNotDisturb {
-    pub enabled: bool,
-    pub skip_when_app_running: Vec<AppName>,
+    pub apps_running: Vec<AppName>,
     /// the same, for the frontmost app only
-    pub skip_when_app_active: Vec<AppName>,
+    pub apps_in_front: Vec<AppName>,
     /// needs Accessibility permission
-    pub skip_when_fullscreen: bool,
+    pub fullscreen: bool,
     /// matched against on-screen window titles. needs Accessibility permission
-    pub window_title_matches: Vec<TitlePattern>,
+    pub window_titles: Vec<TitlePattern>,
     /// `skip` advances to the next break, `postpone` retries after the postpone delay
     pub action: DndAction,
 }
@@ -117,7 +117,7 @@ pub struct DoNotDisturb {
 impl DoNotDisturb {
     /// whether a rule reads other apps' windows, which needs Accessibility permission
     pub fn needs_accessibility(&self) -> bool {
-        self.enabled && (self.skip_when_fullscreen || !self.window_title_matches.is_empty())
+        self.fullscreen || !self.window_titles.is_empty()
     }
 }
 
@@ -338,11 +338,10 @@ impl Default for Keybindings {
 impl Default for DoNotDisturb {
     fn default() -> Self {
         DoNotDisturb {
-            enabled: true,
-            skip_when_app_running: vec![],
-            skip_when_app_active: vec![],
-            skip_when_fullscreen: false,
-            window_title_matches: vec![],
+            apps_running: vec![],
+            apps_in_front: vec![],
+            fullscreen: false,
+            window_titles: vec![],
             action: DndAction::Skip,
         }
     }
@@ -564,7 +563,8 @@ impl ConfigError {
                 key
             }
         });
-        let message = if unknown && let Some(place) = place_of(at) {
+        let in_table = key.as_deref().is_some_and(|key| key.contains('.'));
+        let message = if unknown && let Some(place) = place_of(at, in_table) {
             format!("{at} can't go here; it belongs {place}")
         } else {
             match shown {
@@ -610,8 +610,10 @@ fn value_has(value: &Spanned<DeValue<'_>>, at: usize, path: &mut Vec<String>) ->
 /// the keys of a break entry. the default file has only names, so `place_of` needs these.
 const BREAK_KEYS: [&str; 3] = ["name", "duration", "image"];
 
-/// where the default config has `key`, if in just one place
-fn place_of(key: &str) -> Option<String> {
+/// where the default config has `key`, if in just one place. a key under one [table] gets
+/// no hint toward another: there it's more likely a key that table lacks, as `enabled`
+/// under [sounds] would be, and the error's list of the table's keys says more.
+fn place_of(key: &str, in_table: bool) -> Option<String> {
     let defaults: toml::Table = DEFAULT_CONFIG.parse().ok()?;
     let mut places = Vec::new();
     if defaults.get(key).is_some_and(|v| !v.is_table()) {
@@ -621,7 +623,7 @@ fn place_of(key: &str) -> Option<String> {
         places.push("in a [[short_breaks]] or [[long_breaks]] entry".to_owned());
     }
     for (name, value) in &defaults {
-        if value.as_table().is_some_and(|t| t.contains_key(key)) {
+        if !in_table && value.as_table().is_some_and(|t| t.contains_key(key)) {
             places.push(format!("in [{name}]"));
         }
     }
@@ -734,8 +736,6 @@ mod tests {
             "line 2: image can't go here; it belongs in a [[short_breaks]] or [[long_breaks]] \
              entry"
         );
-        // in several tables, so no hint
-        assert!(rejects("enabled = true\n").starts_with("line 1: unknown field `enabled`"));
     }
 
     #[test]
@@ -762,6 +762,14 @@ mod tests {
             (
                 "[sounds]\nenabled = false\n",
                 "line 2: sounds: unknown field `enabled`",
+            ),
+            (
+                "[do_not_disturb]\nenabled = false\n",
+                "line 2: do_not_disturb: unknown field `enabled`",
+            ),
+            (
+                "[do_not_disturb]\nskip_when_app_running = []\n",
+                "line 2: do_not_disturb: unknown field `skip_when_app_running`",
             ),
         ] {
             let err = rejects(text);
@@ -834,8 +842,8 @@ mod tests {
             "line 1: short_breaks.duration: must be 1 to 3600 seconds, got 0"
         );
         assert_eq!(
-            rejects("[do_not_disturb]\nskip_when_app_active = [\n  \"a\",\n  3,\n]\n"),
-            "line 4: do_not_disturb.skip_when_app_active: invalid type: integer `3`, expected a \
+            rejects("[do_not_disturb]\napps_in_front = [\n  \"a\",\n  3,\n]\n"),
+            "line 4: do_not_disturb.apps_in_front: invalid type: integer `3`, expected a \
              string"
         );
         assert_eq!(
@@ -964,11 +972,10 @@ mod tests {
 
     #[test]
     fn title_patterns_compile_at_load_and_ignore_case() {
-        let dnd =
-            parse("[do_not_disturb]\nwindow_title_matches = [\"zoom meeting\", \"^πλάνο\"]\n")
-                .unwrap()
-                .do_not_disturb;
-        let [zoom, greek] = &dnd.window_title_matches[..] else {
+        let dnd = parse("[do_not_disturb]\nwindow_titles = [\"zoom meeting\", \"^πλάνο\"]\n")
+            .unwrap()
+            .do_not_disturb;
+        let [zoom, greek] = &dnd.window_titles[..] else {
             panic!("{dnd:?}");
         };
         assert!(zoom.is_match("Zoom Meeting - 3 people"));
@@ -976,31 +983,26 @@ mod tests {
         assert!(!greek.is_match("Το πλάνο"));
 
         assert_eq!(
-            rejects("[do_not_disturb]\nwindow_title_matches = [\"(foo\"]\n"),
-            "line 2: do_not_disturb.window_title_matches: `(foo` isn't a valid regex: unclosed group"
+            rejects("[do_not_disturb]\nwindow_titles = [\"(foo\"]\n"),
+            "line 2: do_not_disturb.window_titles: `(foo` isn't a valid regex: unclosed group"
         );
         assert_eq!(
-            rejects("[do_not_disturb]\nwindow_title_matches = [\"\"]\n"),
-            "line 2: do_not_disturb.window_title_matches: an empty pattern would match every window"
+            rejects("[do_not_disturb]\nwindow_titles = [\"\"]\n"),
+            "line 2: do_not_disturb.window_titles: an empty pattern would match every window"
         );
     }
 
     #[test]
     fn app_names_are_trimmed_and_lowercased_and_must_not_be_empty() {
-        let dnd =
-            parse("[do_not_disturb]\nskip_when_app_active = [\"Zoom\", \" com.Tinyspeck \"]\n")
-                .unwrap()
-                .do_not_disturb;
-        let names: Vec<_> = dnd
-            .skip_when_app_active
-            .iter()
-            .map(AppName::as_str)
-            .collect();
+        let dnd = parse("[do_not_disturb]\napps_in_front = [\"Zoom\", \" com.Tinyspeck \"]\n")
+            .unwrap()
+            .do_not_disturb;
+        let names: Vec<_> = dnd.apps_in_front.iter().map(AppName::as_str).collect();
         assert_eq!(names, ["zoom", "com.tinyspeck"]);
 
         assert_eq!(
-            rejects("[do_not_disturb]\nskip_when_app_running = [\" \"]\n"),
-            "line 2: do_not_disturb.skip_when_app_running: an empty app name would match every app"
+            rejects("[do_not_disturb]\napps_running = [\" \"]\n"),
+            "line 2: do_not_disturb.apps_running: an empty app name would match every app"
         );
     }
 
@@ -1012,10 +1014,9 @@ mod tests {
                 .do_not_disturb
         };
         assert!(!DoNotDisturb::default().needs_accessibility());
-        assert!(!dnd("skip_when_app_running = [\"zoom\"]").needs_accessibility());
-        assert!(dnd("skip_when_fullscreen = true").needs_accessibility());
-        assert!(dnd("window_title_matches = [\"Zoom\"]").needs_accessibility());
-        assert!(!dnd("window_title_matches = [\"Zoom\"]\nenabled = false").needs_accessibility());
+        assert!(!dnd("apps_running = [\"zoom\"]").needs_accessibility());
+        assert!(dnd("fullscreen = true").needs_accessibility());
+        assert!(dnd("window_titles = [\"Zoom\"]").needs_accessibility());
     }
 
     #[test]

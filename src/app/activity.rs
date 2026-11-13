@@ -46,22 +46,19 @@ impl fmt::Display for Reason {
 /// the first rule that holds now. permission for the window rules is checked each time, so
 /// a grant while omma runs counts at once.
 pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
-    if !dnd.enabled {
-        return None;
-    }
     let workspace = NSWorkspace::sharedWorkspace();
 
-    if !dnd.skip_when_app_active.is_empty()
+    if !dnd.apps_in_front.is_empty()
         && let Some(front) = workspace.frontmostApplication()
-        && running_app_matches(&front, &dnd.skip_when_app_active)
+        && running_app_matches(&front, &dnd.apps_in_front)
     {
         return Some(Reason::Frontmost(app_name(&front)));
     }
-    if !dnd.skip_when_app_running.is_empty()
+    if !dnd.apps_running.is_empty()
         && let Some(app) = workspace
             .runningApplications()
             .iter()
-            .find(|app| running_app_matches(app, &dnd.skip_when_app_running))
+            .find(|app| running_app_matches(app, &dnd.apps_running))
     {
         return Some(Reason::Running(app_name(&app)));
     }
@@ -70,12 +67,12 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
         return None;
     }
     limit_ax_wait();
-    if dnd.skip_when_fullscreen
+    if dnd.fullscreen
         && let Some(front) = fullscreen_app(&workspace)
     {
         return Some(Reason::Fullscreen(app_name(&front)));
     }
-    matching_title(&workspace, &dnd.window_title_matches).map(Reason::Window)
+    matching_title(&workspace, &dnd.window_titles).map(Reason::Window)
 }
 
 /// whether omma has Accessibility permission. it can change while omma runs.

@@ -61,19 +61,18 @@ warning_skip     = ""
 warning_postpone = ""
 
 [do_not_disturb]
-# Holds breaks back while you're busy. action = "skip" drops the break, and
-# "postpone" tries again after postpone_duration.
-enabled = true
-action  = "skip"
+# Holds a break back while a rule below holds. action = "skip" drops the break,
+# and "postpone" tries again after postpone_duration.
+action = "skip"
 
 # Apps, matched case-insensitively against part of the app's name or bundle id,
 # for example ["zoom"].
-skip_when_app_running = []
-skip_when_app_active  = []  # only while the app is frontmost
+apps_running  = []
+apps_in_front = []  # only while the app is frontmost
 
 # These two need Accessibility permission.
-skip_when_fullscreen = false  # while the frontmost window is fullscreen
-window_title_matches = []     # case-insensitive regexes, e.g. ["Zoom Meeting"]
+fullscreen    = false  # while the frontmost window is fullscreen
+window_titles = []     # case-insensitive regexes, e.g. ["Zoom Meeting"]
 
 # The breaks. Each has a name, and can set its own duration and a background
 # image: an existing file at an absolute path, or at one starting with ~/.

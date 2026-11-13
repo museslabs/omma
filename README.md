@@ -139,16 +139,15 @@ Mac never brings on a break at once.
 
 ```toml
 [do_not_disturb]
-enabled = true
-action  = "skip"     # or "postpone"
+action = "skip"   # or "postpone"
 
 # need no permission
-skip_when_app_running = ["zoom"]
-skip_when_app_active  = []          # only while the app is frontmost
+apps_running  = ["zoom"]
+apps_in_front = []        # only while the app is frontmost
 
 # need Accessibility permission
-skip_when_fullscreen = false        # while the frontmost window is fullscreen
-window_title_matches = ["Zoom Meeting", '\bPlain\b']
+fullscreen    = false     # while the frontmost window is fullscreen
+window_titles = ["Zoom Meeting", '\bPlain\b']
 ```
 
 omma checks the rules when a break comes due. When one holds, `action = "skip"`
@@ -156,9 +155,9 @@ drops the break and `"postpone"` tries again after `postpone_duration`, even wit
 `allow_postpone` off or `strict_break` on. The menu then says why, for example
 "Skipped the last break: Zoom is running", while omma waits for the next break.
 
-- `skip_when_app_running` and `skip_when_app_active` match part of an app's name
-  or bundle id, ignoring case. `"zoom"` covers Zoom being open at all.
-- `window_title_matches` holds a break while a window on screen has a matching
+- `apps_running` and `apps_in_front` match part of an app's name or bundle id,
+  ignoring case. `"zoom"` covers Zoom being open at all.
+- `window_titles` holds a break while a window on screen has a matching
   title. Minimized windows and hidden apps don't count. Each entry is a regex
   that ignores case, so a plain word matches anywhere in a title: `"Plain"`
   also matches "explain". A TOML literal string with word boundaries,
