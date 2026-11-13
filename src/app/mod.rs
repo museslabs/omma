@@ -609,9 +609,11 @@ impl App {
 
         let incoming = matches!(phase, Phase::Waiting { .. })
             && remaining.is_some_and(|secs| secs <= INCOMING_WINDOW_SECS);
+        // with reduced motion the incoming icon holds steady instead of blinking
+        let lit = incoming && (!panel::animations_on() || tray_icon_blink_on(now));
         self.sync_tray_icon(if matches!(phase, Phase::Disabled) {
             TrayIconState::Disabled
-        } else if incoming && tray_icon_blink_on(now) {
+        } else if lit {
             TrayIconState::Incoming
         } else {
             TrayIconState::Normal
