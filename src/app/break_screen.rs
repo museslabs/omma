@@ -351,8 +351,10 @@ impl BreakScreen {
             bead.view.setFrameOrigin(NSPoint::new(cx - d / 2.0, bead_y));
             content.addSubview(&bead.view);
 
+            // under a bar that hides itself the anchor is the display's top edge, which
+            // NSPointInRect counts as outside it
             let home = anchor
-                .filter(|a| on_this(NSPoint::new(a.x, a.y + 1.0)))
+                .filter(|a| on_this(NSPoint::new(a.x, a.y - 1.0)))
                 .map(|a| local(hanging_bead(a)));
             // the warning's bead flies in on its own display; with no warning, a bead drops
             // from the icon; elsewhere one materialises with the screen

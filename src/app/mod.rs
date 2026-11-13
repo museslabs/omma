@@ -837,18 +837,24 @@ impl App {
         self.apply_status_icon(TrayIconState::Normal);
     }
 
-    /// the bottom centre of the menu-bar icon in screen coordinates, where the warning's bead
-    /// hangs from. None when the icon isn't on any display, as when the menu bar is too full
-    /// for it
+    /// under the menu-bar icon, on the bar's bottom edge, in screen coordinates: where the
+    /// warning's bead hangs from. None when the icon isn't on any display, as when the menu
+    /// bar is too full for it
     fn status_anchor(&self) -> Option<NSPoint> {
         let button = self.status_item.as_ref()?.button(self.mtm)?;
         let frame = button.window()?.frame();
-        let anchor = NSPoint::new(frame.origin.x + frame.size.width / 2.0, frame.origin.y);
-        let inside = NSPoint::new(anchor.x, anchor.y + 1.0);
-        NSScreen::screens(self.mtm)
+        let middle = NSPoint::new(
+            frame.origin.x + frame.size.width / 2.0,
+            frame.origin.y + frame.size.height / 2.0,
+        );
+        // the icon's window overhangs the bar, so the edge comes from the display
+        let screen = NSScreen::screens(self.mtm)
             .iter()
-            .any(|screen| NSPointInRect(inside, screen.frame()))
-            .then_some(anchor)
+            .find(|screen| NSPointInRect(middle, screen.frame()))?;
+        Some(NSPoint::new(
+            middle.x,
+            pre_break_dialog::menu_bar_edge(&screen),
+        ))
     }
 
     fn add_item(

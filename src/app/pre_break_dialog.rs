@@ -61,8 +61,6 @@ const CONTENT_BLUR: f64 = 4.0;
 const SHOW_DELAY: f64 = 0.10;
 const SHOW_DURATION: f64 = 0.22;
 const HIDE_DURATION: f64 = 0.18;
-/// the menu bar's height, for placing the warning when the icon can't be found
-const MENU_BAR: f64 = 24.0;
 const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     surface: Surface::Fill,
     height: BUTTON_H,
@@ -104,8 +102,8 @@ impl PreBreakDialog {
         PreBreakDialog { mtm, shown: None }
     }
 
-    /// `anchor` is the bottom centre of the menu-bar icon, in screen coordinates; without it
-    /// the warning hangs at the top right of the main display. a skip or postpone key is a
+    /// `anchor` is under the menu-bar icon on the bar's bottom edge, in screen coordinates;
+    /// without it the warning hangs at the top right of the main display. a skip or postpone key is a
     /// global shortcut, held by `Hotkeys`; the button only shows its hint. without skip, the
     /// warning offers Dismiss.
     pub fn show(
@@ -431,22 +429,31 @@ impl PreBreakDialog {
 
 /// under the menu bar at the top right of the main display, where a status item sits
 fn fallback_anchor(mtm: MainThreadMarker) -> Option<NSPoint> {
-    let frame = NSScreen::mainScreen(mtm)?.frame();
+    let screen = NSScreen::mainScreen(mtm)?;
+    let frame = screen.frame();
     Some(NSPoint::new(
         frame.origin.x + frame.size.width - 120.0,
-        frame.origin.y + frame.size.height - MENU_BAR,
+        menu_bar_edge(&screen),
     ))
 }
 
-/// the display the menu bar at `point` is on, or the main one
+/// the height of the menu bar's bottom edge on `screen`, which is the top of the area the
+/// bar keeps clear. a bar that hides itself keeps none, and this is the screen's top
+pub fn menu_bar_edge(screen: &NSScreen) -> f64 {
+    let visible = screen.visibleFrame();
+    visible.origin.y + visible.size.height
+}
+
+/// the display under the menu-bar edge at `point`, or the main one. under a bar that hides
+/// itself, `point` is the display's top edge, which NSPointInRect counts as outside it
 fn screen_at(mtm: MainThreadMarker, point: NSPoint) -> Option<Retained<NSScreen>> {
     NSScreen::screens(mtm)
         .iter()
-        .find(|screen| NSPointInRect(NSPoint::new(point.x, point.y + 1.0), screen.frame()))
+        .find(|screen| NSPointInRect(NSPoint::new(point.x, point.y - 1.0), screen.frame()))
         .or_else(|| NSScreen::mainScreen(mtm))
 }
 
-/// where the bead hangs at rest from the menu-bar icon whose bottom centre is `anchor`
+/// where the bead hangs at rest from the menu bar at `anchor`, under the icon
 pub fn hanging_bead(anchor: NSPoint) -> NSRect {
     NSRect::new(
         NSPoint::new(anchor.x - BEAD / 2.0, anchor.y - THREAD - BEAD),
