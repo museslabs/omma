@@ -2,7 +2,9 @@
 //! and the timer, and owns the App state in a RefCell ivar.
 
 mod activity;
+mod bead;
 mod break_screen;
+mod flip;
 mod glass_button;
 mod hotkey;
 mod panel;

@@ -1,5 +1,5 @@
-//! one fullscreen overlay per display in liquid glass style. buttons are
-//! NSGlassEffectView capsules wrapping a borderless NSButton.
+//! one fullscreen overlay per display in liquid glass style. a mati bead in the middle of each
+//! display counts the break down. the buttons are glass capsules.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -10,29 +10,43 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSColor, NSFont, NSFontWeightHeavy, NSFontWeightRegular, NSImage, NSScreen,
-    NSTextAlignment, NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSBox, NSBoxType, NSColor, NSFont, NSFontWeightSemibold, NSImage, NSScreen, NSTextAlignment,
+    NSTextField, NSTitlePosition, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView,
 };
 use objc2_core_foundation::CGAffineTransform;
 use objc2_core_graphics::CGImage;
 use objc2_core_image::{CIContext, CIImage};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::{CACurrentMediaTime, CALayer, kCAGravityResizeAspectFill};
+use objc2_quartz_core::{CACurrentMediaTime, CALayer, CAMediaTiming, kCAGravityResizeAspectFill};
 
+use super::bead::Bead;
 use super::glass_button::{
     ButtonHost, Buttons, GlassButtonStyle, Shortcut, Surface, make_glass_button,
 };
 use super::panel::{
-    CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, attach_blur, blur_out, blur_radius,
-    detach_blur_after, fade, keep_dark, make_label, make_panel, presented, scale, spring_y,
+    CROSS_FADE, FLIGHT, Fill, LabelStyle, Panel, SETTLE, after, animations_on, arrive, attach_blur,
+    blur_out, blur_radius, detach_blur_after, fade, keep_dark, make_label, make_panel, presented,
+    property, scale_about, spring, spring_y,
 };
 use crate::queue::Break;
 
 /// dim scrim over the blur, enough to even out a busy desktop into a uniformly dark backdrop
-const SCRIM_ALPHA: f64 = 0.25;
-const BUTTON_HEIGHT: f64 = 46.0;
-/// the foreground's blur radius as it enters and leaves
+const SCRIM_ALPHA: f64 = 0.32;
+const BUTTON_HEIGHT: f64 = 40.0;
+/// the bead's diameter, and at most this share of the display's height
+const BEAD_SIZE: f64 = 224.0;
+const BEAD_SHARE: f64 = 0.28;
+/// from the bead up to the baseline of the break's name, and down to the buttons: the same,
+/// so the bead sits evenly between them
+const BEAD_GAP: f64 = 40.0;
+/// the break's name, over the bead
+const TITLE_SIZE: f64 = 34.0;
+/// the bead's blur as it materialises and as it goes
+const BEAD_BLUR: f64 = 14.0;
+/// the bead grows from this scale as it comes, and shrinks to it as it goes
+const BEAD_REST_SCALE: f64 = 0.95;
+/// the name's blur radius as it leaves
 const BLUR_RADIUS: f64 = 16.0;
 /// how soft a custom background image is, in points on the display, eyeballed to match the
 /// FullScreenUI desktop blur. the image is blurred this much once, into a bitmap
@@ -44,24 +58,37 @@ const IMAGE_BITMAP_PIXEL: f64 = 2.0;
 const IMAGE_BLUR_ENTRANCE: f64 = 58.0;
 /// below 1.0 the dark void bleeds through and darkens the image so text stays legible
 const IMAGE_OPACITY: f32 = 0.75;
-/// the foreground starts to resolve from blur this long after the screen appears
-const FOREGROUND_DELAY: f64 = 0.06;
-/// and takes this long to come into focus
-const FOREGROUND_ENTRANCE: f64 = 0.55;
-/// when the foreground is in focus, from the moment the screen appears
-const FOREGROUND_SETTLED: f64 = FOREGROUND_DELAY + FOREGROUND_ENTRANCE;
-/// the message starts its entrance this long after the screen appears
-const LABEL_BEGINS: f64 = FOREGROUND_SETTLED + 0.07;
+/// the image and the bead start to resolve from blur this long after the screen appears
+const ENTRANCE_DELAY: f64 = 0.06;
+/// and take this long to come into focus
+const ENTRANCE: f64 = 0.55;
+/// when the screen is in focus, from the moment it appears
+const SETTLED: f64 = ENTRANCE_DELAY + ENTRANCE;
+/// the name starts its entrance this long after the screen appears, as the bead lands
+const LABEL_BEGINS: f64 = 0.36;
 /// and the buttons this long
-const BUTTONS_BEGIN: f64 = LABEL_BEGINS + 0.28;
-const EXIT_DURATION: f64 = 0.32;
+const BUTTONS_BEGIN: f64 = 0.90;
+/// each button after the first follows the one before it by this much
+const BUTTON_STAGGER: f64 = 0.06;
+/// how long a button takes to fade in, after which it takes clicks and its key
+const BUTTON_FADE: f64 = 0.24;
+/// how far above its place the name starts, and how far below theirs the buttons do
+const LABEL_DROP: f64 = 18.0;
+const BUTTONS_RISE: f64 = 10.0;
+/// the name grows into place from this scale as it sharpens
+const LABEL_SCALE: f64 = 0.96;
+/// the backdrop takes this long to fade when the break ends
+const EXIT_DURATION: f64 = 0.36;
+/// the bead, name and buttons start with it and are gone sooner. nothing sharp is left
+/// standing on a desktop that's nearly back
+const CONTENT_EXIT: f64 = 0.28;
 const BUTTON_STYLE: GlassButtonStyle = GlassButtonStyle {
     surface: Surface::Glass,
     height: BUTTON_HEIGHT,
     min_width: 120.0,
-    horizontal_padding: 48.0,
-    title_font_size: 16.0,
-    hint_font_size: 13.0,
+    horizontal_padding: 64.0,
+    title_font_size: 15.0,
+    hint_font_size: 12.0,
 };
 
 /// a break screen that `show` put up
@@ -89,9 +116,12 @@ struct Overlay {
     window: Retained<Panel>,
     /// desktop blur, image and scrim, faded as one on exit
     backdrop: Retained<NSView>,
-    /// message, countdown and buttons, blurred and faded as one on exit
+    /// name and buttons, faded as one on exit
     foreground: Retained<NSView>,
-    countdown: Retained<NSTextField>,
+    /// in the foreground. it blurs as it leaves, which the glass buttons beside it can't
+    name: Retained<NSTextField>,
+    /// over the foreground, with a blur of its own, to fly while the rest resolves
+    bead: Bead,
     buttons: Vec<Retained<ButtonHost>>,
 }
 
@@ -116,15 +146,12 @@ impl BreakScreen {
     ) -> Option<Built> {
         self.teardown_now();
         let mtm = self.mtm;
-        // SAFETY: immutable AppKit constants
-        let (weight_regular, weight_heavy) = unsafe { (NSFontWeightRegular, NSFontWeightHeavy) };
+        // SAFETY: an immutable AppKit constant
+        let weight_semibold = unsafe { NSFontWeightSemibold };
 
         self.animate = animations_on();
         let animate = self.animate;
-        let now = CACurrentMediaTime();
 
-        // monospaced so the digits don't shift as they tick
-        let count_font = NSFont::monospacedDigitSystemFontOfSize_weight(100.0, weight_heavy);
         // with no display, sync tries again on its next tick
         let screens = NSScreen::screens(mtm);
         if screens.count() == 0 {
@@ -139,6 +166,9 @@ impl BreakScreen {
             (None, None)
         };
 
+        // every display's views are built first, and only then animated, so the time it
+        // takes to build them doesn't come out of the entrance
+        let mut images = Vec::new();
         for i in 0..screens.count() {
             let screen = screens.objectAtIndex(i);
             let frame = screen.frame();
@@ -188,22 +218,20 @@ impl BreakScreen {
             scrim.setFillColor(&NSColor::colorWithWhite_alpha(0.0, SCRIM_ALPHA));
             backdrop.addSubview(&scrim);
 
-            // one gaussian blur on this layer lets the message, countdown and buttons
-            // materialise from blur on the way in and dissolve back on the way out.
+            // the name and buttons come in one by one and fade out together. only the name
+            // blurs, on a layer of its own: a filter over the glass buttons would flatten
+            // them and cost a display-sized blur
             let foreground = NSView::initWithFrame(NSView::alloc(mtm), full);
             foreground.setWantsLayer(true);
             content.addSubview(&foreground);
 
-            let msg_w = (w - 160.0).min(1000.0);
-            let title_font = NSFont::systemFontOfSize_weight(28.0, weight_regular);
+            let msg_w = (w - 80.0).clamp(1.0, 720.0);
+            let title_font = NSFont::systemFontOfSize_weight(TITLE_SIZE, weight_semibold);
             let msg_color = NSColor::colorWithWhite_alpha(1.0, 0.92);
             let name_label = make_label(
                 mtm,
                 &brk.name,
-                NSRect::new(
-                    NSPoint::new(cx - msg_w / 2.0, cy + 44.0),
-                    NSSize::new(msg_w, 80.0),
-                ),
+                NSRect::ZERO,
                 &LabelStyle {
                     font: &title_font,
                     color: &msg_color,
@@ -211,26 +239,18 @@ impl BreakScreen {
                     max_lines: 2,
                 },
             );
-            foreground.addSubview(&name_label);
+            let name_h = name_label
+                .cell()
+                .map_or(64.0, |cell| {
+                    cell.cellSizeForBounds(NSRect::new(
+                        NSPoint::new(0.0, 0.0),
+                        NSSize::new(msg_w, 1000.0),
+                    ))
+                    .height
+                })
+                .ceil();
 
-            // each tick cross-fades via update_countdown
-            let count_label = make_label(
-                mtm,
-                &remaining.to_string(),
-                NSRect::new(
-                    NSPoint::new(cx - 250.0, cy - 90.0),
-                    NSSize::new(500.0, 130.0),
-                ),
-                &LabelStyle {
-                    font: &count_font,
-                    color: &NSColor::whiteColor(),
-                    alignment: NSTextAlignment::Center,
-                    max_lines: 1,
-                },
-            );
-            foreground.addSubview(&count_label);
-
-            let gap = 16.0;
+            let gap = 12.0;
             let buttons: Vec<Retained<ButtonHost>> = [
                 (buttons.skip, "Skip", sel!(skip:)),
                 (buttons.postpone, "Postpone", sel!(postpone:)),
@@ -248,10 +268,23 @@ impl BreakScreen {
                 ))
             })
             .collect();
+
+            // the bead sits in the middle of the display, with the name over it and the
+            // buttons under it
+            let d = (h * BEAD_SHARE).min(BEAD_SIZE).round();
+            let bead_y = (cy - d / 2.0).round();
+            // the label's frame reaches a descender below the baseline
+            let name_y = (bead_y + d + BEAD_GAP + title_font.descender()).round();
+            name_label.setFrame(NSRect::new(
+                NSPoint::new(cx - msg_w / 2.0, name_y),
+                NSSize::new(msg_w, name_h),
+            ));
+            foreground.addSubview(&name_label);
+
             if !buttons.is_empty() {
                 let widths: Vec<f64> = buttons.iter().map(|b| b.frame().size.width).collect();
                 let total: f64 = widths.iter().sum::<f64>() + gap * (buttons.len() as f64 - 1.0);
-                let by = 150.0;
+                let by = bead_y - BEAD_GAP - BUTTON_HEIGHT;
                 let mut x = cx - total / 2.0;
                 for (button, bw) in buttons.iter().zip(widths.iter()) {
                     button.setFrame(NSRect::new(
@@ -262,98 +295,92 @@ impl BreakScreen {
                     x += bw + gap;
                 }
             }
+            // a button takes neither clicks nor its shortcut until it shows, so keys typed
+            // as the break starts don't skip it
+            for button in &buttons {
+                button.set_awake(false);
+            }
 
-            // entrance choreography: backdrop fades up, foreground resolves out of blur, message
-            // slides down from above, buttons slide up from below. countdown just sharpens.
+            let bead = Bead::new(mtm, d, screen.backingScaleFactor());
+            bead.set_count(&fmt_count(remaining), &spoken_count(remaining), false);
+            bead.view.setFrameOrigin(NSPoint::new(cx - d / 2.0, bead_y));
+            content.addSubview(&bead.view);
+
+            images.push(image_view.as_ref().and_then(|view| view.layer()));
+            self.overlays.push(Overlay {
+                window,
+                backdrop,
+                foreground,
+                name: name_label,
+                bead,
+                buttons,
+            });
+        }
+
+        let now = CACurrentMediaTime();
+        for (overlay, image) in self.overlays.iter().zip(&images) {
             if animate {
-                if let Some(layer) = backdrop.layer() {
-                    layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, Fill::Entrance), None);
-                }
-                if let Some(layer) = foreground.layer() {
-                    let begin = now + FOREGROUND_DELAY;
-                    attach_unclipped_blur(&layer, 0.0);
-                    layer.addAnimation_forKey(
-                        &fade(0.0, 1.0, begin, FOREGROUND_ENTRANCE, Fill::Entrance),
-                        None,
-                    );
-                    layer.addAnimation_forKey(
-                        &blur_radius(BLUR_RADIUS, 0.0, begin, FOREGROUND_ENTRANCE, Fill::Entrance),
-                        None,
-                    );
-                    // drop the transition blur once the entrance settles so the break renders crisp
-                    detach_blur_after(mtm, layer, FOREGROUND_SETTLED + 0.14);
-                }
-                // the image sharpens to its own softness, and nothing blurs it from then on
-                if let Some(layer) = image_view.as_ref().and_then(|v| v.layer()) {
-                    attach_unclipped_blur(&layer, 0.0);
-                    layer.addAnimation_forKey(
-                        &blur_radius(
-                            IMAGE_BLUR_ENTRANCE,
-                            0.0,
-                            now + FOREGROUND_DELAY,
-                            FOREGROUND_ENTRANCE,
-                            Fill::Entrance,
-                        ),
-                        None,
-                    );
-                    detach_blur_after(mtm, layer, FOREGROUND_SETTLED + 0.05);
-                }
-                if let Some(layer) = name_label.layer() {
-                    animate_delayed_entrance(mtm, layer, 28.0, now + LABEL_BEGINS, now);
-                }
-                for button in &buttons {
-                    // takes neither clicks nor its shortcut until it shows, so keys typed as
-                    // the break starts don't skip it
-                    button.set_awake(false);
-                    if let Some(layer) = button.layer() {
-                        animate_delayed_entrance(mtm, layer, -28.0, now + BUTTONS_BEGIN, now);
-                    }
-                }
+                overlay.enter(mtm, image.as_ref(), now);
             } else {
                 // reduced motion: the screen fades up as one, and nothing moves
-                for layer in [backdrop.layer(), foreground.layer()].into_iter().flatten() {
+                let layers = [
+                    overlay.backdrop.layer(),
+                    overlay.name.layer(),
+                    overlay.bead.view.layer(),
+                ];
+                for layer in layers.into_iter().flatten() {
                     layer.addAnimation_forKey(
                         &fade(0.0, 1.0, now, CROSS_FADE, Fill::Entrance),
                         None,
                     );
                 }
             }
-
-            window.orderFrontRegardless();
-            self.overlays.push(Overlay {
-                window,
-                backdrop,
-                foreground,
-                countdown: count_label,
-                buttons,
-            });
+            // the buttons come last, one after the other, once the break has settled
+            for (i, button) in overlay.buttons.iter().enumerate() {
+                let Some(layer) = button.layer() else {
+                    continue;
+                };
+                // no blur: the button is glass, which a filter would flatten
+                let begin = now + BUTTONS_BEGIN + i as f64 * BUTTON_STAGGER;
+                layer
+                    .addAnimation_forKey(&fade(0.0, 1.0, begin, BUTTON_FADE, Fill::Entrance), None);
+                if animate {
+                    layer.addAnimation_forKey(&spring_y(-BUTTONS_RISE, begin), None);
+                }
+            }
+        }
+        for overlay in &self.overlays {
+            overlay.window.orderFrontRegardless();
         }
 
         // the skip and postpone keys go to the key window
         let first = self.overlays.first()?;
         first.window.makeKeyWindow();
         self.up = Rc::new(Cell::new(true));
+        // the countdown starts once the screen is in focus, and the bead's outline drifts
+        // from then
+        let settled = if animate { SETTLED } else { CROSS_FADE };
         if animate {
-            let up = Rc::clone(&self.up);
-            let buttons: Vec<_> = self
-                .overlays
-                .iter()
-                .flat_map(|overlay| overlay.buttons.clone())
-                .collect();
-            let delay = (now + BUTTONS_BEGIN - CACurrentMediaTime()).max(0.0);
-            after(mtm, delay, move || {
-                if up.get() {
-                    for button in &buttons {
-                        button.set_awake(true);
-                    }
-                }
-            });
+            for overlay in &self.overlays {
+                overlay.bead.drift(now + settled);
+            }
         }
-        let settled = if animate {
-            FOREGROUND_SETTLED
-        } else {
-            CROSS_FADE
-        };
+        // the buttons wake once they show, with reduced motion as without
+        let up = Rc::clone(&self.up);
+        let buttons: Vec<_> = self
+            .overlays
+            .iter()
+            .flat_map(|overlay| overlay.buttons.clone())
+            .collect();
+        let shown = BUTTONS_BEGIN + BUTTON_STAGGER + BUTTON_FADE;
+        let delay = (now + shown - CACurrentMediaTime()).max(0.0);
+        after(mtm, delay, move || {
+            if up.get() {
+                for button in &buttons {
+                    button.set_awake(true);
+                }
+            }
+        });
         let settling = (now + settled - CACurrentMediaTime()).max(0.0);
         Some(Built {
             settling: Duration::from_secs_f64(settling),
@@ -366,17 +393,11 @@ impl BreakScreen {
     }
 
     pub fn update_countdown(&self, remaining: u64) {
-        let text = NSString::from_str(&remaining.to_string());
+        let text = fmt_count(remaining);
         for overlay in &self.overlays {
-            let label = &overlay.countdown;
-            if *label.stringValue() == *text {
-                continue;
-            }
-            if self.animate {
-                animate_countdown_swap(self.mtm, &overlay.foreground, label, &text);
-            } else {
-                label.setStringValue(&text);
-            }
+            overlay
+                .bead
+                .set_count(&text, &spoken_count(remaining), self.animate);
         }
     }
 
@@ -392,26 +413,55 @@ impl BreakScreen {
         // reverse of the entrance. animations hold their final state so the overlay stays
         // faded/blurred right up to teardown.
         let now = CACurrentMediaTime();
-        let overlays = std::mem::take(&mut self.overlays);
-        for overlay in &overlays {
+        let overlays = Rc::new(std::mem::take(&mut self.overlays));
+        for overlay in overlays.iter() {
             // inert while it fades. a sleeping button takes neither clicks nor its shortcut,
             // and the overlay still catches clicks, so none reach the app behind it
             for button in &overlay.buttons {
                 button.set_awake(false);
             }
-            let layers = [overlay.backdrop.layer(), overlay.foreground.layer()];
-            for layer in layers.into_iter().flatten() {
+            let bead = &overlay.bead;
+            // everything goes at once, as one move: the bead, name and buttons dissolve
+            // where they are while the backdrop lifts off the desktop under them
+            let content = if animate { CONTENT_EXIT } else { CROSS_FADE };
+            let fades = [
+                (overlay.backdrop.layer(), fading),
+                (overlay.foreground.layer(), content),
+                (bead.view.layer(), content),
+            ];
+            for (layer, duration) in fades {
+                let Some(layer) = layer else {
+                    continue;
+                };
                 let opacity = presented(&layer, "opacity").unwrap_or(1.0);
-                layer.addAnimation_forKey(&fade(opacity, 0.0, now, fading, Fill::Exit), None);
+                layer.addAnimation_forKey(&fade(opacity, 0.0, now, duration, Fill::Exit), None);
             }
-            if animate && let Some(layer) = overlay.foreground.layer() {
-                blur_out(&layer, BLUR_RADIUS, now, EXIT_DURATION);
+            if !animate {
+                continue;
+            }
+            // the blur bites from the first frame and the fade trails it, so each is seen
+            // to go soft before it's gone. the bead shrinks a little on the blur's curve
+            if let Some(layer) = overlay.name.layer() {
+                blur_out(&layer, BLUR_RADIUS, now, CONTENT_EXIT);
+                layer.setMasksToBounds(false);
+            }
+            if let Some(content) = bead.content_layer() {
+                let to = scaled(bead.view.frame(), BEAD_REST_SCALE);
+                fly_away(&bead.view, to, now, CONTENT_EXIT);
+                blur_out(&content, BEAD_BLUR, now, CONTENT_EXIT);
             }
         }
 
-        // the overlays move into the timer so they stay on screen for the animation
+        // once the backdrop has faded the desktop is back, and clicks go through to it
+        let faded = Rc::clone(&overlays);
+        after(self.mtm, fading, move || {
+            for overlay in faded.iter() {
+                overlay.window.setIgnoresMouseEvents(true);
+            }
+        });
+        // the overlays live in the timers, so they stay on screen for the animation
         after(self.mtm, fading + 0.05, move || {
-            for overlay in &overlays {
+            for overlay in overlays.iter() {
                 overlay.window.orderOut(None);
             }
         });
@@ -425,6 +475,150 @@ impl BreakScreen {
             overlay.window.orderOut(None);
         }
     }
+}
+
+impl Overlay {
+    /// the full entrance, from `now`: the backdrop fades up and the bead leads; the name
+    /// comes down onto it as it lands
+    fn enter(&self, mtm: MainThreadMarker, image: Option<&Retained<CALayer>>, now: f64) {
+        let bead = &self.bead;
+        if let Some(layer) = self.backdrop.layer() {
+            layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.5, Fill::Entrance), None);
+        }
+        // only the bead's colour blurs. its glass can't, and fades instead
+        if let (Some(layer), Some(content)) = (bead.view.layer(), bead.content_layer()) {
+            attach_unclipped_blur(&content, 0.0);
+            let begin = now + ENTRANCE_DELAY;
+            materialise(&layer, &content, begin, ENTRANCE);
+            let from = scaled(bead.view.frame(), BEAD_REST_SCALE);
+            let settled = fly_in(&bead.view, from, begin);
+            detach_blur_after(mtm, content, settled - now + 0.05);
+        }
+        // the image sharpens to its own softness, and nothing blurs it from then on
+        if let Some(layer) = image {
+            attach_unclipped_blur(layer, 0.0);
+            layer.addAnimation_forKey(
+                &blur_radius(
+                    IMAGE_BLUR_ENTRANCE,
+                    0.0,
+                    now + ENTRANCE_DELAY,
+                    ENTRANCE,
+                    Fill::Entrance,
+                ),
+                None,
+            );
+            detach_blur_after(mtm, layer.clone(), SETTLED + 0.05);
+        }
+        // the name comes down onto the bead as it lands, growing a little as it sharpens
+        if let Some(layer) = self.name.layer() {
+            let begin = now + LABEL_BEGINS;
+            layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.3, Fill::Entrance), None);
+            let size = self.name.frame().size;
+            let middle = NSPoint::new(size.width / 2.0, size.height / 2.0);
+            for (key, rest, small) in scale_about(size, layer.anchorPoint(), middle, LABEL_SCALE) {
+                // it starts that much above its place as well
+                let from = if key == "transform.translation.y" {
+                    small + LABEL_DROP
+                } else {
+                    small
+                };
+                layer.addAnimation_forKey(
+                    &spring(key, from, rest, begin, SETTLE, Fill::Entrance),
+                    None,
+                );
+            }
+            attach_unclipped_blur(&layer, 0.0);
+            layer.addAnimation_forKey(&blur_radius(14.0, 0.0, begin, 0.5, Fill::Entrance), None);
+            detach_blur_after(mtm, layer, LABEL_BEGINS + 0.6);
+        }
+    }
+}
+
+/// a clock-style countdown, with the same format throughout the break
+fn fmt_count(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// the count as VoiceOver reads it
+fn spoken_count(seconds: u64) -> String {
+    let unit = |n: u64, name: &str| format!("{n} {name}{}", if n == 1 { "" } else { "s" });
+    match (seconds / 60, seconds % 60) {
+        (0, s) => format!("{} remaining", unit(s, "second")),
+        (m, 0) => format!("{} remaining", unit(m, "minute")),
+        (m, s) => format!("{} {} remaining", unit(m, "minute"), unit(s, "second")),
+    }
+}
+
+fn center(rect: NSRect) -> NSPoint {
+    NSPoint::new(
+        rect.origin.x + rect.size.width / 2.0,
+        rect.origin.y + rect.size.height / 2.0,
+    )
+}
+
+/// `rect` scaled by `factor` about its centre
+fn scaled(rect: NSRect, factor: f64) -> NSRect {
+    let c = center(rect);
+    let size = NSSize::new(rect.size.width * factor, rect.size.height * factor);
+    NSRect::new(
+        NSPoint::new(c.x - size.width / 2.0, c.y - size.height / 2.0),
+        size,
+    )
+}
+
+/// the scale and the offsets that make `view` look like it fills `rect`, a rect in its
+/// superview, as key path, value at rest and value there. it moves on its layer alone, and
+/// the view stays put for AppKit.
+fn toward(view: &NSView, layer: &CALayer, rect: NSRect) -> [(&'static str, f64, f64); 3] {
+    let frame = view.frame();
+    let factor = rect.size.width / frame.size.width;
+    // the layer scales about its anchor point, which AppKit may have put at a corner
+    let anchor = layer.anchorPoint();
+    let dx = rect.origin.x - frame.origin.x - (1.0 - factor) * anchor.x * frame.size.width;
+    let dy = rect.origin.y - frame.origin.y - (1.0 - factor) * anchor.y * frame.size.height;
+    [
+        ("transform.scale", 1.0, factor),
+        ("transform.translation.x", 0.0, dx),
+        ("transform.translation.y", 0.0, dy),
+    ]
+}
+
+/// springs `view` from looking like it fills `from` to where it sits, starting at `begin`.
+/// returns when it has settled.
+fn fly_in(view: &NSView, from: NSRect, begin: f64) -> f64 {
+    let Some(layer) = view.layer() else {
+        return begin;
+    };
+    let mut settled = begin;
+    for (key, rest, there) in toward(view, &layer, from) {
+        let anim = spring(key, there, rest, begin, FLIGHT, Fill::Entrance);
+        settled = settled.max(begin + anim.duration());
+        layer.addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
+    }
+    settled
+}
+
+/// carries `view` from wherever it is on screen to looking like it fills `to`, and holds it
+/// there until the window goes
+fn fly_away(view: &NSView, to: NSRect, begin: f64, duration: f64) {
+    let Some(layer) = view.layer() else {
+        return;
+    };
+    for (key, rest, there) in toward(view, &layer, to) {
+        let from = presented(&layer, key).unwrap_or(rest);
+        let anim = property(key, from, there, begin, duration, Fill::Exit);
+        anim.setTimingFunction(Some(&arrive()));
+        layer.addAnimation_forKey(&anim, Some(&NSString::from_str(key)));
+    }
+}
+
+/// fades the bead in from `begin` as the blur attached to its `content` clears
+fn materialise(layer: &CALayer, content: &CALayer, begin: f64, duration: f64) {
+    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, duration, Fill::Entrance), None);
+    content.addAnimation_forKey(
+        &blur_radius(BEAD_BLUR, 0.0, begin, duration, Fill::Entrance),
+        None,
+    );
 }
 
 /// the problem a break reports for an image it can't show
@@ -505,66 +699,28 @@ fn attach_unclipped_blur(layer: &CALayer, resting: f64) {
     layer.setMasksToBounds(false);
 }
 
-/// invisible until `begin`, then springs in and resolves from blur to sharp
-fn animate_delayed_entrance(
-    mtm: MainThreadMarker,
-    layer: Retained<CALayer>,
-    from_y: f64,
-    begin: f64,
-    now: f64,
-) {
-    attach_unclipped_blur(&layer, 0.0);
-    layer.addAnimation_forKey(&fade(0.0, 1.0, begin, 0.18, Fill::Entrance), None);
-    layer.addAnimation_forKey(&blur_radius(12.0, 0.0, begin, 0.42, Fill::Entrance), None);
-    layer.addAnimation_forKey(&spring_y(from_y, begin), None);
-    detach_blur_after(mtm, layer, begin - now + 0.5);
-}
-
-/// old digit shrinks/blurs out, new digit starts larger/blurred and resolves in place.
-/// `parent` holds `label`.
-fn animate_countdown_swap(
-    mtm: MainThreadMarker,
-    parent: &NSView,
-    label: &NSTextField,
-    text: &NSString,
-) {
-    let old_text = label.stringValue();
-    let outgoing = NSTextField::labelWithString(&old_text, mtm);
-    outgoing.setWantsLayer(true);
-    outgoing.setFrame(label.frame());
-    outgoing.setAlignment(NSTextAlignment::Center);
-    outgoing.setMaximumNumberOfLines(1);
-    if let Some(font) = label.font() {
-        outgoing.setFont(Some(&font));
-    }
-    if let Some(color) = label.textColor() {
-        outgoing.setTextColor(Some(&color));
-    }
-
-    parent.addSubview(&outgoing);
-
-    label.setStringValue(text);
-
-    let now = CACurrentMediaTime();
-    if let Some(layer) = outgoing.layer() {
-        attach_unclipped_blur(&layer, 0.0);
-        layer.addAnimation_forKey(&fade(1.0, 0.0, now, 0.3, Fill::Exit), None);
-        layer.addAnimation_forKey(&scale(1.0, 0.88, now, 0.3, Fill::Exit), None);
-        layer.addAnimation_forKey(&blur_radius(0.0, 10.0, now, 0.3, Fill::Exit), None);
-    }
-    if let Some(layer) = label.layer() {
-        attach_unclipped_blur(&layer, 0.0);
-        layer.addAnimation_forKey(&fade(0.0, 1.0, now, 0.3, Fill::Entrance), None);
-        layer.addAnimation_forKey(&scale(1.12, 1.0, now, 0.3, Fill::Entrance), None);
-        layer.addAnimation_forKey(&blur_radius(10.0, 0.0, now, 0.3, Fill::Entrance), None);
-        detach_blur_after(mtm, layer, 0.34);
-    }
-    after(mtm, 0.34, move || outgoing.removeFromSuperview());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pupil_keeps_a_clock_format_throughout_the_break() {
+        assert_eq!(fmt_count(0), "0:00");
+        assert_eq!(fmt_count(15), "0:15");
+        assert_eq!(fmt_count(99), "1:39");
+        assert_eq!(fmt_count(100), "1:40");
+        assert_eq!(fmt_count(300), "5:00");
+        assert_eq!(fmt_count(3600), "60:00");
+    }
+
+    #[test]
+    fn voiceover_reads_the_count_in_words() {
+        assert_eq!(spoken_count(0), "0 seconds remaining");
+        assert_eq!(spoken_count(1), "1 second remaining");
+        assert_eq!(spoken_count(15), "15 seconds remaining");
+        assert_eq!(spoken_count(60), "1 minute remaining");
+        assert_eq!(spoken_count(125), "2 minutes 5 seconds remaining");
+    }
 
     #[test]
     fn a_large_image_shrinks_to_a_bitmap_of_two_point_pixels() {
@@ -598,5 +754,12 @@ mod tests {
             (CGImage::width(Some(&soft)), CGImage::height(Some(&soft))),
             (1, 1)
         );
+    }
+
+    #[test]
+    fn scaling_keeps_the_centre() {
+        let r = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(100.0, 100.0));
+        let s = scaled(r, 0.5);
+        assert_eq!((s.origin.x, s.origin.y, s.size.width), (35.0, 45.0, 50.0));
     }
 }

@@ -45,11 +45,11 @@ with no Dock icon, and isn't packaged as an app bundle.
   countdown and Skip and Postpone buttons. In strict mode Skip becomes Dismiss,
   which only closes the panel. The warning never takes keyboard focus from the
   app you're typing in.
-- **A break screen** on every display, with the break's name, a countdown,
-  optional background image, and Skip and Postpone buttons. The countdown starts
-  once the screen has faded in, so a break runs about 0.6 s longer than its
-  length, or 0.25 s with Reduce Motion on. omma never becomes the active app,
-  and your app gets the keyboard back when the break ends.
+- **A break screen** on every display, with the break's name, a countdown in a
+  bead, optional background image, and Skip and Postpone buttons. The countdown
+  starts once the screen has faded in, so a break runs about 0.6 s longer than
+  its length, or 0.25 s with Reduce Motion on. omma never becomes the active
+  app, and your app gets the keyboard back when the break ends.
 - **A menu** with the time to the next break, items to take a break now (the
   next one, a short one or a long one), Enabled, Open config… and Quit. It also
   lists anything that needs fixing; see
@@ -104,9 +104,9 @@ warning_skip     = ""  # on the warning, from any app
 warning_postpone = ""
 ```
 
-`skip` and `postpone` work on the break screen once its buttons have appeared.
-With animations on that's about a second in, so a key you were typing as the
-break began doesn't skip it.
+`skip` and `postpone` work on the break screen once its buttons have appeared,
+a little over a second in, so a key you were typing as the break began doesn't
+skip it.
 
 `warning_skip` and `warning_postpone` are off by default. They work from any app
 while the warning shows, as system-wide shortcuts, so the warning never needs

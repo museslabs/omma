@@ -46,6 +46,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
     "objc2-quartz-core",
     "NSAccessibility",
+    "NSAccessibilityConstants",
     "NSAccessibilityProtocols",
     "NSAppearance",
     "NSApplication",
@@ -88,9 +89,11 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
     "CAAnimation",
     "CABase",
+    "CAGradientLayer",
     "CALayer",
     "CAMediaTiming",
     "CAMediaTimingFunction",
+    "CAShapeLayer",
     "CATransaction",
 ] }
 objc2-core-image = { version = "0.3", default-features = false, features = [
@@ -123,6 +126,7 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGEventSource",
     "CGEventTypes",
     "CGImage",
+    "CGPath",
 ] }
 
 [profile.release]

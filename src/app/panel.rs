@@ -15,12 +15,13 @@ use objc2_app_kit::{
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, NSRunLoop,
-    NSRunLoopCommonModes, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSRunLoop,
+    NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 use objc2_quartz_core::{
-    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
-    CATransaction, kCAFillModeBackwards, kCAFillModeBoth, kCAMediaTimingFunctionEaseInEaseOut,
+    CAAnimation, CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    CASpringAnimation, CATransaction, kCAFillModeBackwards, kCAFillModeBoth,
+    kCAMediaTimingFunctionEaseInEaseOut,
 };
 
 define_class!(
@@ -125,7 +126,7 @@ pub fn make_label(
 }
 
 /// false when the user has asked macOS to reduce motion. windows then cross-fade in and
-/// out over `CROSS_FADE`, and nothing moves or blurs.
+/// out over `CROSS_FADE`, and nothing moves, blurs or flips.
 pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
@@ -186,7 +187,7 @@ pub fn property(
     anim
 }
 
-fn set_fill(anim: &CABasicAnimation, fill: Fill) {
+pub fn set_fill(anim: &CAAnimation, fill: Fill) {
     // SAFETY: immutable Core Animation constants
     match fill {
         Fill::Entrance => anim.setFillMode(unsafe { kCAFillModeBackwards }),
@@ -218,14 +219,29 @@ pub fn blur_radius(
     property("filters.blur.inputRadius", from, to, begin, duration, fill)
 }
 
-pub fn scale(
-    from: f64,
-    to: f64,
-    begin: f64,
-    duration: f64,
-    fill: Fill,
-) -> Retained<CABasicAnimation> {
-    property("transform.scale", from, to, begin, duration, fill)
+/// the scale and the offsets that make a layer of `size`, anchored at `anchor` (0…1 of its
+/// size), look `factor` as big about `origin`, a point in its own coordinates. animated
+/// together on one curve, the layer grows from that point or shrinks into it.
+pub fn scale_about(
+    size: NSSize,
+    anchor: NSPoint,
+    origin: NSPoint,
+    factor: f64,
+) -> [(&'static str, f64, f64); 3] {
+    let shift = 1.0 - factor;
+    [
+        ("transform.scale", 1.0, factor),
+        (
+            "transform.translation.x",
+            0.0,
+            shift * (origin.x - anchor.x * size.width),
+        ),
+        (
+            "transform.translation.y",
+            0.0,
+            shift * (origin.y - anchor.y * size.height),
+        ),
+    ]
 }
 
 /// for things that arrive: off the mark at once, then a long, gentle settle
@@ -252,24 +268,65 @@ pub fn presented(layer: &CALayer, key_path: &str) -> Option<f64> {
     value.downcast::<NSNumber>().ok().map(|n| n.doubleValue())
 }
 
-/// springs into place from `from_y` points away: positive starts above, negative below
-pub fn spring_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
-    let anim = CASpringAnimation::animationWithKeyPath(Some(&NSString::from_str(
-        "transform.translation.y",
-    )));
-    // SAFETY: NSNumbers, the value type this key path animates
+/// a spring of unit mass. each of these overshoots a little, a quarter of the way to ringing
+/// at most, and settles
+#[derive(Clone, Copy)]
+pub struct Spring {
+    pub stiffness: f64,
+    pub damping: f64,
+}
+
+/// text and controls easing into place
+pub const SETTLE: Spring = Spring {
+    stiffness: 180.0,
+    damping: 22.0,
+};
+/// a surface popping open
+pub const POP: Spring = Spring {
+    stiffness: 300.0,
+    damping: 26.0,
+};
+/// the bead growing into place
+pub const FLIGHT: Spring = Spring {
+    stiffness: 150.0,
+    damping: 20.0,
+};
+
+/// animates the number at `key_path` on `spring`, for as long as the spring takes to settle
+pub fn spring(
+    key_path: &str,
+    from: f64,
+    to: f64,
+    begin: f64,
+    spring: Spring,
+    fill: Fill,
+) -> Retained<CASpringAnimation> {
+    let anim = CASpringAnimation::animationWithKeyPath(Some(&NSString::from_str(key_path)));
+    // SAFETY: NSNumbers, the value type these key paths animate
     unsafe {
-        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from_y)));
-        anim.setToValue(Some(&*NSNumber::numberWithDouble(0.0)));
+        anim.setFromValue(Some(&*NSNumber::numberWithDouble(from)));
+        anim.setToValue(Some(&*NSNumber::numberWithDouble(to)));
     }
     anim.setMass(1.0);
-    anim.setStiffness(180.0);
-    anim.setDamping(22.0);
+    anim.setStiffness(spring.stiffness);
+    anim.setDamping(spring.damping);
     anim.setInitialVelocity(0.0);
-    anim.setDuration(anim.settlingDuration().min(0.7));
+    anim.setDuration(anim.settlingDuration().min(1.2));
     anim.setBeginTime(begin);
-    set_fill(&anim, Fill::Entrance);
+    set_fill(&anim, fill);
     anim
+}
+
+/// springs into place from `from_y` points away: positive starts above, negative below
+pub fn spring_y(from_y: f64, begin: f64) -> Retained<CASpringAnimation> {
+    spring(
+        "transform.translation.y",
+        from_y,
+        0.0,
+        begin,
+        SETTLE,
+        Fill::Entrance,
+    )
 }
 
 /// the key of the animation `blur_out` adds
