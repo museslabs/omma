@@ -9,6 +9,7 @@ use objc2_app_kit::{
     NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold, NSGlassEffectView,
     NSGlassEffectViewStyle, NSScreen, NSTextAlignment, NSTextField, NSView,
 };
+use objc2_core_graphics::CGColor;
 use objc2_foundation::{MainThreadMarker, NSPoint, NSPointInRect, NSRect, NSSize, NSString};
 use objc2_quartz_core::CACurrentMediaTime;
 
@@ -18,7 +19,8 @@ use super::glass_button::{
 };
 use super::panel::{
     CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, arrive, attach_blur, blur_out,
-    blur_radius, detach_blur_after, fade, make_label, make_panel, presented,
+    blur_radius, detach_blur_after, fade, make_label, make_panel, presented, solid_surfaces,
+    system_is_dark,
 };
 
 const BUTTON_H: f64 = 40.0;
@@ -88,7 +90,7 @@ struct Showing {
     /// `animations_on()` at `show`, so `hide` animates only if the entrance did
     animate: bool,
     capsule_window: Retained<Panel>,
-    capsule: Retained<NSGlassEffectView>,
+    capsule: Retained<NSView>,
     /// the text and buttons, which blur as the capsule comes and goes
     body: Retained<NSView>,
     countdown: Retained<NSTextField>,
@@ -237,14 +239,34 @@ impl PreBreakDialog {
         content.setWantsLayer(true);
         let body = NSView::initWithFrame(NSView::alloc(mtm), local);
         body.setWantsLayer(true);
-        let capsule = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), placed);
-        capsule.setCornerRadius(CAPSULE_RADIUS);
-        // the system's regular glass, with no tint of ours. AppKit gives it the appearance's
-        // shade and the Liquid Glass slider's setting itself, as it does Control Center's;
-        // the clear style takes neither, and on macOS 27 a tint colour comes out as a flat
-        // fill over the glass
-        capsule.setStyle(NSGlassEffectViewStyle::Regular);
-        capsule.setContentView(Some(&body));
+        let capsule: Retained<NSView> = if solid_surfaces() {
+            let view = NSView::initWithFrame(NSView::alloc(mtm), placed);
+            view.setWantsLayer(true);
+            if let Some(layer) = view.layer() {
+                // under the labels' own colours, which follow the system's appearance
+                let (fill, edge) = if system_is_dark(mtm) {
+                    (0.14, 1.0)
+                } else {
+                    (0.96, 0.0)
+                };
+                layer.setBackgroundColor(Some(&CGColor::new_generic_gray(fill, 1.0)));
+                layer.setCornerRadius(CAPSULE_RADIUS);
+                layer.setBorderWidth(1.0);
+                layer.setBorderColor(Some(&CGColor::new_generic_gray(edge, 0.35)));
+            }
+            view.addSubview(&body);
+            view
+        } else {
+            let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), placed);
+            glass.setCornerRadius(CAPSULE_RADIUS);
+            // the system's regular glass, with no tint of ours. AppKit gives it the
+            // appearance's shade and the Liquid Glass slider's setting itself, as it does
+            // Control Center's; the clear style takes neither, and on macOS 27 a tint
+            // colour comes out as a flat fill over the glass
+            glass.setStyle(NSGlassEffectViewStyle::Regular);
+            glass.setContentView(Some(&body));
+            Retained::into_super(glass)
+        };
         capsule.setWantsLayer(true);
         content.addSubview(&capsule);
         let heading_y = capsule_h - PAD - heading_h;

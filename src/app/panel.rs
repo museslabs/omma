@@ -10,8 +10,8 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSBackingStoreType, NSColor, NSFont, NSPanel, NSScreenSaverWindowLevel, NSTextAlignment,
-    NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSBackingStoreType, NSColor, NSFont, NSPanel, NSScreenSaverWindowLevel,
+    NSTextAlignment, NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -101,6 +101,11 @@ pub fn is_dark(appearance: &NSAppearance) -> bool {
         .is_some_and(|name| name.isEqualToString(dark))
 }
 
+/// whether a panel left on the system's appearance is dark
+pub fn system_is_dark(mtm: MainThreadMarker) -> bool {
+    is_dark(&NSApplication::sharedApplication(mtm).effectiveAppearance())
+}
+
 pub struct LabelStyle<'a> {
     pub font: &'a NSFont,
     pub color: &'a NSColor,
@@ -129,6 +134,13 @@ pub fn make_label(
 /// out over `CROSS_FADE`, and nothing moves, blurs or flips.
 pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// true when the user has asked macOS to reduce transparency or increase contrast
+pub fn solid_surfaces() -> bool {
+    let workspace = NSWorkspace::sharedWorkspace();
+    workspace.accessibilityDisplayShouldReduceTransparency()
+        || workspace.accessibilityDisplayShouldIncreaseContrast()
 }
 
 /// runs `f` once, `delay` seconds from now, on the main run loop. like the app's tick, it

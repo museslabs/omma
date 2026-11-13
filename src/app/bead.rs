@@ -1,6 +1,7 @@
 //! native Liquid Glass refracts the mati's cobalt body. translucent rings, the pupil and
 //! count sit in its content view. during a break the colour drifts and drains under a slow
-//! wave, leaving the clear material and the pupil behind.
+//! wave, leaving the clear material and the pupil behind. when the user asks for solid
+//! surfaces, a flat disc stands in for the glass.
 
 use std::f64::consts::{PI, TAU};
 
@@ -17,7 +18,8 @@ use objc2_quartz_core::{
 
 use super::flip::FlipCount;
 use super::panel::{
-    Fill, arrive, fade, linear, presented, property, set_fill, travel, without_actions,
+    Fill, arrive, fade, linear, presented, property, set_fill, solid_surfaces, travel,
+    without_actions,
 };
 
 /// sRGB and alpha
@@ -379,18 +381,29 @@ impl Bead {
         view.addSubview(&content);
         let foreground = NSView::initWithFrame(NSView::alloc(mtm), frame);
         foreground.setWantsLayer(true);
-        let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-        glass.setCornerRadius(r);
-        glass.setStyle(NSGlassEffectViewStyle::Regular);
-        // only contentView is guaranteed to sit above the native material
-        glass.setContentView(Some(&foreground));
-        view.addSubview(&glass);
-        glass.setWantsLayer(true);
-        if counts && let Some(layer) = glass.layer() {
-            let outline = outlined(d, Outline::Glass, scale);
-            follow(&outline, "path", Outline::Glass);
-            // SAFETY: the mask is a fresh layer with no superlayer of its own
-            unsafe { layer.setMask(Some(&outline)) };
+        let solid = solid_surfaces();
+        if solid {
+            if let Some(layer) = view.layer() {
+                layer.setCornerRadius(r);
+                layer.setBackgroundColor(Some(&CGColor::new_generic_gray(0.14, 1.0)));
+                layer.setBorderWidth(1.0);
+                layer.setBorderColor(Some(&CGColor::new_generic_gray(1.0, 0.35)));
+            }
+            view.addSubview(&foreground);
+        } else {
+            let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
+            glass.setCornerRadius(r);
+            glass.setStyle(NSGlassEffectViewStyle::Regular);
+            // only contentView is guaranteed to sit above the native material
+            glass.setContentView(Some(&foreground));
+            view.addSubview(&glass);
+            glass.setWantsLayer(true);
+            if counts && let Some(layer) = glass.layer() {
+                let outline = outlined(d, Outline::Glass, scale);
+                follow(&outline, "path", Outline::Glass);
+                // SAFETY: the mask is a fresh layer with no superlayer of its own
+                unsafe { layer.setMask(Some(&outline)) };
+            }
         }
         let root = content.layer().expect("a view that wants a layer has one");
 
@@ -398,23 +411,32 @@ impl Bead {
         liquid.setFrame(frame);
         root.addSublayer(&liquid);
 
-        // the pigment keeps the mati's colours; AppKit supplies its reflections and refraction
+        // the pigment keeps the mati's colours; AppKit's glass, when there is one, supplies
+        // its reflections and refraction
         let body = CALayer::new();
         body.setFrame(frame);
         let cut = outlined(d, Outline::Pigment, scale);
         // SAFETY: the mask is a fresh layer with no superlayer of its own
         unsafe { body.setMask(Some(&cut)) };
         follow(&cut, "path", Outline::Pigment);
-        let cobalt = dome(d, BODY_LIGHT, &BODY, scale);
+        let cobalt = BODY.map(|(at, oklch, alpha)| (at, oklch, if solid { 1.0 } else { alpha }));
+        let cobalt = dome(d, BODY_LIGHT, &cobalt, scale);
         cobalt.setPosition(centre);
         body.addSublayer(&cobalt);
         liquid.addSublayer(&body);
 
-        // the eye is content inside the native glass, with its colour showing through the rings
+        // the eye is content inside the native glass, with its colour showing through the
+        // rings. on a solid surface there's no glass, and the rings are opaque
         let discs = DISCS.each_ref().map(|disc| {
             let side = d * disc.radius;
             let layer = match disc.dome {
-                Some(stops) => Retained::into_super(dome(side, disc.light, stops, scale)),
+                Some(stops) => {
+                    let stops: Vec<_> = stops
+                        .iter()
+                        .map(|&(at, oklch, alpha)| (at, oklch, if solid { 1.0 } else { alpha }))
+                        .collect();
+                    Retained::into_super(dome(side, disc.light, &stops, scale))
+                }
                 None => {
                     let layer = CALayer::new();
                     layer.setBounds(square(side));

@@ -16,7 +16,7 @@ use objc2_app_kit::{
     NSVisualEffectState, NSVisualEffectView,
 };
 use objc2_core_foundation::CGAffineTransform;
-use objc2_core_graphics::CGImage;
+use objc2_core_graphics::{CGColor, CGImage};
 use objc2_core_image::{CIContext, CIImage};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSPointInRect, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, CAMediaTiming, kCAGravityResizeAspectFill};
@@ -28,7 +28,7 @@ use super::glass_button::{
 use super::panel::{
     CROSS_FADE, FLIGHT, Fill, LabelStyle, Panel, SETTLE, after, animations_on, arrive, attach_blur,
     blur_out, blur_pulse, blur_radius, detach_blur_after, fade, keep_dark, make_label, make_panel,
-    presented, property, scale_about, spring, spring_y,
+    presented, property, scale_about, solid_surfaces, spring, spring_y,
 };
 use super::pre_break_dialog::{HandOff, hanging_bead};
 use crate::queue::Break;
@@ -178,6 +178,7 @@ impl BreakScreen {
         self.animate = animations_on();
         self.total = remaining.max(1);
         let animate = self.animate;
+        let solid = solid_surfaces();
 
         // with no display, sync tries again on its next tick
         let screens = NSScreen::screens(mtm);
@@ -225,22 +226,29 @@ impl BreakScreen {
 
             let backdrop = NSView::initWithFrame(NSView::alloc(mtm), full);
             backdrop.setWantsLayer(true);
+            if solid && let Some(layer) = backdrop.layer() {
+                layer.setBackgroundColor(Some(&CGColor::new_generic_gray(0.10, 1.0)));
+            }
             content.addSubview(&backdrop);
 
             let blur = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), full);
             blur.setMaterial(NSVisualEffectMaterial::FullScreenUI);
             blur.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             blur.setState(NSVisualEffectState::Active);
-            backdrop.addSubview(&blur);
+            if !solid {
+                backdrop.addSubview(&blur);
+            }
 
             // optional custom image, between blur and scrim, blurred into a soft backdrop
             // instead of a sharp photo
             let image_view = image
                 .as_deref()
+                .filter(|_| !solid)
                 .and_then(|image| make_image_view(mtm, image, full));
             if let Some(view) = &image_view {
                 backdrop.addSubview(view);
             } else if image.is_some()
+                && !solid
                 && let Some(path) = brk.image.as_deref()
             {
                 // Core Image couldn't soften it
