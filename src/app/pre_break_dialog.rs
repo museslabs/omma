@@ -253,6 +253,24 @@ fn animate_entrance(mtm: MainThreadMarker, glass: &NSGlassEffectView, body: &NSV
     }
 }
 
+/// "9s", or "2:05" from 100 seconds up
 fn fmt_seconds(seconds: u64) -> String {
-    format!("{seconds}s")
+    if seconds >= 100 {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_warning_counts_in_seconds_then_minutes() {
+        assert_eq!(fmt_seconds(9), "9s");
+        assert_eq!(fmt_seconds(99), "99s");
+        assert_eq!(fmt_seconds(100), "1:40");
+        assert_eq!(fmt_seconds(600), "10:00");
+    }
 }
