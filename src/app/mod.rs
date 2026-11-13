@@ -948,9 +948,13 @@ fn shorten(text: &str, chars: usize) -> String {
     }
 }
 
+/// each half of the blink lasts a whole number of fast ticks. otherwise the ticks, which
+/// are what change the icon, would catch one half late and the next early
+const BLINK_HALF_MS: u128 = 600;
+
 fn tray_icon_blink_on(now: SystemTime) -> bool {
     now.duration_since(UNIX_EPOCH)
-        .is_ok_and(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
+        .is_ok_and(|elapsed| (elapsed.as_millis() / BLINK_HALF_MS).is_multiple_of(2))
 }
 
 /// time since the last keyboard, mouse or trackpad input to any app. needs no permission.
