@@ -1,8 +1,9 @@
 name: Release
 
-# a version tag runs the tests, builds the Apple silicon binary and attaches it to a draft
-# release, with that version's CHANGELOG section as the notes. the tag must match
-# Cargo.toml's version and that section must have a date. publish the draft by hand.
+# a version tag runs the tests and builds the Apple silicon and x86_64 Linux binaries. it
+# attaches them to a draft release, with the CHANGELOG section of that version as the notes.
+# the tag must match the version in Cargo.toml, and that section must have a date. publish the
+# draft by hand.
 on:
   push:
     tags: ["v*"]
@@ -12,9 +13,23 @@ permissions:
 
 jobs:
   binary:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            arch: x86-64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Install the Wayland, xkbcommon and EGL headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libegl-dev
       - uses: dtolnay/rust-toolchain@stable
       - name: Check the version
         run: |
@@ -25,12 +40,26 @@ jobs:
       - run: cargo build --release --locked
       - name: Package
         run: |
-          file target/release/omma | grep -q arm64
-          name="omma-${GITHUB_REF_NAME}-aarch64-apple-darwin"
+          file target/release/omma | grep -q "${{ matrix.arch }}"
+          name="omma-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp target/release/omma README.md CHANGELOG.md LICENSE "$name/"
+          if [ "$RUNNER_OS" = Linux ]; then cp -r linux "$name/"; fi
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: omma-*.tar.gz*
+
+  release:
+    needs: binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
       - name: Release notes
         run: |
           version="${GITHUB_REF_NAME#v}"
