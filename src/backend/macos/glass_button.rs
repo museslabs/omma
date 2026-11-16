@@ -19,8 +19,8 @@ use objc2_quartz_core::{CACurrentMediaTime, CALayer};
 use super::panel::{Fill, arrive, is_dark, presented, property, without_actions};
 use crate::config::{Key, KeySpec};
 
-/// under the pointer a glow over a button comes up to this opacity: white in the dark
-/// appearance, black in the light. nothing moves. coming is quicker than going
+/// under the pointer, a glow over a button comes up to this opacity: white in the dark
+/// appearance, black in the light. nothing moves. the glow comes faster than it goes
 const HOVER_GLOW: f64 = 0.10;
 const HOVER_IN: f64 = 0.15;
 const HOVER_OUT: f64 = 0.22;
@@ -36,11 +36,11 @@ pub struct Hosted {
 
 define_class!(
     /// a button in its container, which is what goes in the view hierarchy. the container
-    /// shows the hover, a glow that fades where AppKit's own would snap, and can put the
-    /// button to sleep: asleep it takes neither clicks nor its key, and looks no different,
-    /// where a disabled button would dim its title
+    /// shows the hover, a glow that fades where AppKit's own snaps. it can also put the button
+    /// to sleep. asleep, the button takes neither clicks nor its key and looks no different. a
+    /// disabled button, by contrast, dims its title
     // SAFETY: NSView can be subclassed. each override has the signature AppKit declares,
-    // which registering the class checks.
+    // which registering the class checks
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaButtonHost"]
@@ -129,7 +129,7 @@ impl ButtonHost {
         }
     }
 
-    /// eases the button's glow up or away, from wherever it has got to
+    /// eases the button's glow up or away, from wherever it is now
     fn hover(&self, on: bool) {
         let glow = &self.ivars().glow;
         let from = presented(glow, "opacity").unwrap_or(0.0);
@@ -148,8 +148,8 @@ impl ButtonHost {
     }
 }
 
-/// a button's keyboard shortcut. a local one is the button's key equivalent; a global one is
-/// held elsewhere, so the button only shows its hint.
+/// a button's keyboard shortcut. a local one is the button's key equivalent. a global one is
+/// held elsewhere, so the button only shows its hint
 #[derive(Clone, Copy)]
 pub enum Shortcut {
     Local(KeySpec),
@@ -164,22 +164,10 @@ impl Shortcut {
     }
 }
 
-/// the buttons a window shows: skip and postpone, when allowed
-#[derive(Clone, Copy)]
-pub struct Buttons {
-    pub skip: Option<Button>,
-    pub postpone: Option<Button>,
-}
-
-#[derive(Clone, Copy)]
-pub struct Button {
-    pub key: Option<KeySpec>,
-}
-
 /// what the button is made of, for the surface it sits on
 pub enum Surface {
     /// a capsule of the system's glass under a title. not AppKit's glass bezel, whose
-    /// hover snaps from one colour to the other
+    /// hover snaps from one color to the other
     Glass,
     /// a standard push button, for controls already on a surface such as the warning's
     Fill,
@@ -211,7 +199,7 @@ pub fn make_glass_button(
         None => title.to_string(),
     };
     let full_ns = NSString::from_str(&full);
-    // SAFETY: `target` implements `action`, and outlives the button: it's the delegate, which
+    // SAFETY: `target` implements `action`, and outlives the button: it is the delegate, which
     // lives until the process exits
     let button = unsafe {
         NSButton::buttonWithTitle_target_action(&full_ns, Some(target), Some(action), mtm)
@@ -303,7 +291,7 @@ pub fn make_glass_button(
     // omma is active, which it never is
     let owner: &AnyObject = &host;
     // SAFETY: the owner is the view the area goes on, which implements the two methods
-    // these options make it send. the area doesn't outlive that view
+    // these options make it send. the area does not outlive that view
     let area = unsafe {
         NSTrackingArea::initWithRect_options_owner_userInfo(
             NSTrackingArea::alloc(),

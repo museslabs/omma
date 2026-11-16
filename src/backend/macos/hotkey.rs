@@ -1,6 +1,6 @@
 //! system-wide shortcuts through Carbon's RegisterEventHotKey. they fire from any app, take
 //! no focus and need no permission. omma holds them while the warning is up, and they act
-//! only on the warning.
+//! only on the warning
 
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
@@ -9,26 +9,19 @@ use objc2::msg_send;
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFData, CFRetained, CFString, CFType};
 
+use crate::app::WarningKey;
 use crate::config::{Key, KeySpec};
 
-/// what a shortcut does to the warning
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    Skip = 1,
-    Postpone = 2,
-}
-
-impl Action {
-    fn from_id(id: u32) -> Option<Action> {
-        [Action::Skip, Action::Postpone]
-            .into_iter()
-            .find(|&action| action as u32 == id)
-    }
+/// the action a hot key's id stands for, which is its discriminant
+fn action_from_id(id: u32) -> Option<WarningKey> {
+    [WarningKey::Skip, WarningKey::Postpone]
+        .into_iter()
+        .find(|&action| action as u32 == id)
 }
 
 pub struct Hotkeys {
     handler_installed: bool,
-    held: Vec<(Action, KeySpec, EventHotKeyRef)>,
+    held: Vec<(WarningKey, KeySpec, EventHotKeyRef)>,
 }
 
 impl Hotkeys {
@@ -41,8 +34,8 @@ impl Hotkeys {
 
     /// holds each of `keys` that Carbon accepts until `release`, and returns why it refused
     /// the others. a press sends `warningSkip:` or `warningPostpone:` to `target`, which must
-    /// live as long as the app, as the delegate does.
-    pub fn hold(&mut self, target: &AnyObject, keys: &[(Action, KeySpec)]) -> Vec<String> {
+    /// live as long as the app, as the delegate does
+    pub fn hold(&mut self, target: &AnyObject, keys: &[(WarningKey, KeySpec)]) -> Vec<String> {
         self.release();
         if keys.is_empty() {
             return Vec::new();
@@ -63,7 +56,7 @@ impl Hotkeys {
                 id: action as u32,
             };
             let mut hotkey = ptr::null_mut();
-            // SAFETY: plain values in, and `hotkey` is written only on success
+            // SAFETY: plain values in, and the call writes `hotkey` only on success
             let status = unsafe {
                 RegisterEventHotKey(
                     code,
@@ -86,7 +79,7 @@ impl Hotkeys {
     }
 
     /// the shortcut held for `action`, if Carbon took it
-    pub fn held(&self, action: Action) -> Option<KeySpec> {
+    pub fn held(&self, action: WarningKey) -> Option<KeySpec> {
         self.held
             .iter()
             .find(|&&(held, _, _)| held == action)
@@ -132,9 +125,9 @@ impl Hotkeys {
 }
 
 /// Carbon dispatches hot keys while the main thread fetches events, never while the delegate's
-/// state is borrowed, so sending the action straight to the delegate is safe. that holds as
+/// state is borrowed. so it is safe to send the action straight to the delegate. that holds as
 /// long as nothing called with the state borrowed runs a nested event loop (`runModal`, a
-/// menu's `popUp`, `nextEventMatchingMask`).
+/// menu's `popUp`, `nextEventMatchingMask`)
 extern "C" fn on_hotkey(
     _call: EventHandlerCallRef,
     event: EventRef,
@@ -159,13 +152,13 @@ extern "C" fn on_hotkey(
     if status != NO_ERR || id.signature != SIGNATURE {
         return EVENT_NOT_HANDLED;
     }
-    // SAFETY: the handler was installed with the delegate as its user data
+    // SAFETY: `install_handler` gave the handler the delegate as its user data
     let target = unsafe { &*target.cast::<AnyObject>() };
     let sender = ptr::null_mut::<AnyObject>();
-    match Action::from_id(id.id) {
+    match action_from_id(id.id) {
         // SAFETY: the delegate implements both, each taking a sender
-        Some(Action::Skip) => unsafe { msg_send![target, warningSkip: sender] },
-        Some(Action::Postpone) => unsafe { msg_send![target, warningPostpone: sender] },
+        Some(WarningKey::Skip) => unsafe { msg_send![target, warningSkip: sender] },
+        Some(WarningKey::Postpone) => unsafe { msg_send![target, warningPostpone: sender] },
         None => return EVENT_NOT_HANDLED,
     }
     NO_ERR
@@ -184,7 +177,7 @@ fn carbon_modifiers(spec: KeySpec) -> u32 {
 }
 
 /// a hot key is a key code, not a character. letters come from the ASCII-capable layout, so
-/// a shortcut keeps working while a Greek or other non-Latin layout is on.
+/// a shortcut keeps working while a Greek or other non-Latin layout is on
 fn key_code(key: Key) -> Option<u32> {
     match key {
         Key::Escape => Some(53),
@@ -211,7 +204,7 @@ fn layout_key_code(c: char) -> Option<u32> {
             let mut chars = [0u16; 4];
             let mut len = 0;
             // SAFETY: `layout` is the layout data, alive with `source`. `chars` has room for
-            // the `chars.len()` units the call may write, and `len` says how many it did.
+            // the `chars.len()` units the call can write, and `len` says how many it did
             let status = unsafe {
                 UCKeyTranslate(
                     layout,

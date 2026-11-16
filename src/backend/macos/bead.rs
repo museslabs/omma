@@ -1,10 +1,10 @@
-//! native Liquid Glass refracts the mati's cobalt body. translucent rings, the pupil and
-//! count sit in its content view. during a break the colour drifts and drains under a slow
-//! wave, leaving the clear material and the pupil behind. when the user asks for solid
-//! surfaces, a flat disc stands in for the glass.
+//! native Liquid Glass refracts the mati's cobalt body. translucent rings, the pupil and the
+//! count sit in its content view. during a break, the color drifts and drains under a slow
+//! wave. the clear material and the pupil stay behind. when the user asks for solid surfaces, a
+//! flat disc replaces the glass
 
 use std::cell::Cell;
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, Message};
@@ -22,199 +22,15 @@ use super::panel::{
     Fill, arrive, fade, linear, presented, property, set_fill, solid_surfaces, travel,
     without_actions,
 };
-
-/// sRGB and alpha
-pub type Rgba = (f64, f64, f64, f64);
-/// lightness, chroma and hue in degrees, as css writes `oklch()`. the bead's colours are
-/// kept in it because steps along it look even, and a shade keeps its colour instead of
-/// greying
-type Oklch = (f64, f64, f64);
-/// how far along a gradient (0…1), the colour there and its alpha
-type Stop = (f64, Oklch, f64);
-
-struct Disc {
-    /// its colours from where it's lightest out to its far edge, or none for the one flat
-    /// `PUPIL`
-    dome: Option<&'static [Stop]>,
-    /// where it's lightest, in its layer's unit space with y up
-    light: (f64, f64),
-    /// as a share of the bead's radius
-    radius: f64,
-    /// how far it shifts toward the pointer, as a share of the bead's diameter. the pupil
-    /// moves most, and shifting by different amounts the discs read as layers at different
-    /// depths
-    depth: (f64, f64),
-}
-
-/// the pupil is one flat colour, which the count's leaves match: `oklch(0.17 0.04 268)`, a
-/// blue too dark to read as one but not a grey
-const PUPIL: Rgba = (0.0315, 0.0555, 0.1283, 1.0);
-
-/// the pale ring: white where the light falls on it, at the upper left, and taking on the
-/// sky's blue as it turns away
-const WHITE: [Stop; 5] = [
-    (0.00, (0.985, 0.008, 240.0), 0.83),
-    (0.40, (0.960, 0.020, 242.0), 0.81),
-    (0.70, (0.900, 0.055, 246.0), 0.77),
-    (0.90, (0.830, 0.090, 249.0), 0.72),
-    (1.00, (0.770, 0.115, 251.0), 0.68),
-];
-
-/// the sky ring inside it, lit from the upper left. toward the lower right it deepens to
-/// the bright blue that rims the pupil
-const SKY: [Stop; 5] = [
-    (0.00, (0.860, 0.085, 236.0), 0.60),
-    (0.40, (0.800, 0.115, 240.0), 0.64),
-    (0.70, (0.710, 0.155, 247.0), 0.70),
-    (0.90, (0.620, 0.190, 255.0), 0.80),
-    (1.00, (0.560, 0.210, 259.0), 0.88),
-];
-
-const DISCS: [Disc; 3] = [
-    Disc {
-        dome: Some(&WHITE),
-        light: (0.36, 0.68),
-        radius: 0.68,
-        depth: (0.016, 0.012),
-    },
-    Disc {
-        dome: Some(&SKY),
-        light: (0.40, 0.62),
-        radius: 0.55,
-        depth: (0.040, 0.031),
-    },
-    Disc {
-        dome: None,
-        light: (0.5, 0.5),
-        radius: 0.42,
-        depth: (0.075, 0.058),
-    },
-];
-
-/// a blink squashes the pupil flat like a closing lid, a little wider as it goes: its
-/// scale across and up when shut
-const BLINK_SHUT: (f64, f64) = (1.12, 0.10);
-/// it springs open a touch too tall and narrow, then settles
-const BLINK_BOUNCE: (f64, f64) = (0.96, 1.08);
-/// closing is quick, opening a little slower, and the settle slowest
-const BLINK_CLOSE: f64 = 0.09;
-const BLINK_OPEN: f64 = 0.14;
-const BLINK_SETTLE: f64 = 0.16;
-/// the blinks come round again after this long. each starts this many seconds in. they're
-/// spaced unevenly, the last two a double, to keep the round from reading as a beat
-const BLINK_PERIOD: f64 = 9.0;
-const BLINKS: [f64; 3] = [2.4, 5.9, 6.34];
-/// annoyed, an upper lid comes down over this share of the pupil, at its middle, and slopes
-/// by this many radians, so it reads as a frown and never as a blink. open, its edge waits
-/// this far above the pupil, as a share of it
-const LID_DROP: f64 = 0.45;
-const LID_TILT: f64 = 0.2;
-const LID_OPEN: f64 = 1.1;
-/// pressed against something above it, the bead's top gives way to a straight edge, which
-/// curves into the rest of the outline over this share of the radius, or over the press
-/// itself while that's shallower, so the top still reaches the edge
-const FLAT_ROUNDING: f64 = 0.25;
-/// the top flattens no further than this share of the radius, past which the rings would
-/// reach its edge
-pub const FLAT_MOST: f64 = 0.4;
-/// as the top flattens, the rings sink by this much of the press and the pupil by more, as if
-/// pushed down through the liquid, so they stay clear of the edge
-const IRIS_SINK: f64 = 0.5;
-const PUPIL_SINK: f64 = 0.6;
-
-/// the cobalt: deep and saturated, lightest where the light falls on it at the top left and
-/// darkening to its far edge. its hue turns toward violet as it darkens, which keeps the
-/// dark a blue
-const BODY: [Stop; 5] = [
-    (0.00, (0.50, 0.250, 264.0), 0.88),
-    (0.35, (0.43, 0.265, 265.0), 0.88),
-    (0.65, (0.36, 0.232, 266.0), 0.90),
-    (0.85, (0.30, 0.195, 267.0), 0.92),
-    (1.00, (0.26, 0.165, 268.0), 0.94),
-];
-/// where the body is lightest, in its layer's unit space with y up
-const BODY_LIGHT: (f64, f64) = (0.36, 0.68);
-
-/// the body's radius at rest, as a share of the bead's
-const LIQUID: f64 = 0.92;
-/// how far the body's outline strays from that as it drifts, each way
-const MORPH: f64 = 0.058;
-/// the shell leaves room around the pigment, and moves less so that gap stays open
-const GLASS: f64 = 0.965;
-const GLASS_MORPH: f64 = 0.5;
-/// how long the drifting outline takes to come round to the same shape
-const MORPH_PERIOD: f64 = 11.0;
-/// the shapes in one round, and the points on each outline
-const MORPH_FRAMES: usize = 44;
-const OUTLINE_POINTS: usize = 64;
-/// the outline swells from a circle over this share of its first round
-const MORPH_SWELL: f64 = 0.22;
-/// the count's digits, as a share of the diameter
-const COUNT_SIZE: f64 = 0.12;
-/// how long the liquid takes to reach the level the next second puts it at. a little over
-/// the second, to keep it flowing until a late tick gives it the next level
-const FLOW: f64 = 1.1;
-/// the wave on the liquid's surface, as shares of the diameter, and how long one wave takes
-/// to pass
-const WAVE_HEIGHT: f64 = 0.011;
-const WAVE_LENGTH: f64 = 0.8;
-const WAVE_PERIOD: f64 = 2.8;
-/// the wave layers are this many diameters wide, too wide for a passing wave to show an end
-const WAVE_SPAN: f64 = 4.0;
-
-/// linear sRGB for an oklch colour, by Björn Ottosson's matrices. out of sRGB's gamut a
-/// channel is under 0 or over 1
-fn oklch_to_linear_srgb((lightness, chroma, hue): Oklch) -> [f64; 3] {
-    let (sin, cos) = hue.to_radians().sin_cos();
-    let (a, b) = (chroma * cos, chroma * sin);
-    let l = (lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b).powi(3);
-    let m = (lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b).powi(3);
-    let s = (lightness - 0.089_484_177_5 * a - 1.291_485_548_0 * b).powi(3);
-    [
-        4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s,
-        -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s,
-        -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701_0 * s,
-    ]
-}
-
-/// the same light in Display P3's wider primaries
-fn linear_srgb_to_p3([r, g, b]: [f64; 3]) -> [f64; 3] {
-    [
-        0.822_462_1 * r + 0.177_538_0 * g,
-        0.033_194_1 * r + 0.966_805_8 * g,
-        0.017_082_7 * r + 0.072_397_4 * g + 0.910_519_9 * b,
-    ]
-}
-
-/// the transfer curve sRGB and Display P3 share, from linear light to a stored value
-fn encode(linear: f64) -> f64 {
-    if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-/// Display P3 for an oklch colour. one the display can't show gives up chroma until it can,
-/// which keeps its lightness and hue; clamping the channels instead would shift both
-fn display_p3((lightness, chroma, hue): Oklch) -> [f64; 3] {
-    let linear = |chroma| linear_srgb_to_p3(oklch_to_linear_srgb((lightness, chroma, hue)));
-    let shows = |rgb: [f64; 3]| rgb.iter().all(|c| (-1e-4..=1.0 + 1e-4).contains(c));
-    let mut rgb = linear(chroma);
-    if !shows(rgb) {
-        let (mut low, mut high) = (0.0, chroma);
-        for _ in 0..24 {
-            let mid = (low + high) / 2.0;
-            if shows(linear(mid)) {
-                low = mid;
-            } else {
-                high = mid;
-            }
-        }
-        rgb = linear(low);
-    }
-    rgb.map(|c| encode(c.clamp(0.0, 1.0)))
-}
+use crate::mati::colour::{
+    BODY, BODY_LIGHT, DISCS, Oklch, PUPIL, Rgba, Stop, display_p3, dome_reach,
+};
+use crate::mati::form::{
+    BLINK_BOUNCE, BLINK_CLOSE, BLINK_OPEN, BLINK_PERIOD, BLINK_SETTLE, BLINK_SHUT, BLINKS,
+    COUNT_SIZE, FLOW, IRIS_SINK, LID_DROP, LID_OPEN, LID_TILT, MORPH_FRAMES, MORPH_PERIOD,
+    OUTLINE_POINTS, Outline, PUPIL_SINK, WAVE_HEIGHT, WAVE_LENGTH, WAVE_PERIOD, WAVE_SPAN,
+    height_for, level_y, outline_point, swell_at,
+};
 
 fn color((r, g, b, a): Rgba) -> CFRetained<CGColor> {
     CGColor::new_srgb(r, g, b, a)
@@ -230,7 +46,7 @@ fn p3_color(oklch: Oklch, alpha: f64) -> CFRetained<CGColor> {
 fn set_colors(layer: &CAGradientLayer, colors: &[CFRetained<CGColor>]) {
     let colors = CFArray::from_retained_objects(colors);
     // SAFETY: CFArray is toll-free bridged with NSArray. its elements are CGColors, the
-    // type CAGradientLayer requires; setColors copies the array and retains its colors.
+    // type CAGradientLayer requires. setColors copies the array and retains its colors
     unsafe {
         let colors = &*std::ptr::from_ref(&*colors).cast::<NSArray>();
         layer.setColors(Some(colors));
@@ -241,8 +57,8 @@ fn square(side: f64) -> NSRect {
     NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(side, side))
 }
 
-/// a gradient that runs outward from `centre`, a point in the layer's unit space with y up,
-/// and ends `reach` of the layer's width and height from it
+/// a gradient that runs outward from `centre`, a point in the layer's unit space with y up. it
+/// ends `reach` of the layer's width and height from `centre`
 fn radial(
     bounds: NSRect,
     centre: (f64, f64),
@@ -270,73 +86,10 @@ fn radial(
     layer
 }
 
-/// a square of coloured glass that is lightest at `light` and darkens from there to the far
-/// side of the circle in it, where its last stop lands
+/// a square of colored glass that is lightest at `light`. it darkens from there to the far
+/// side of the circle in the square, where its last stop lands
 fn dome(side: f64, light: (f64, f64), stops: &[Stop], scale: f64) -> Retained<CAGradientLayer> {
-    let reach = 0.5 + (light.0 - 0.5).hypot(light.1 - 0.5);
-    radial(square(side), light, reach, stops, scale)
-}
-
-/// how far the outline is from the bead's centre at `angle`, as a share of the radius,
-/// `phase` (0…τ) of the way round its drift. two slow lobes and three quicker ones turn
-/// against each other and swell in turn, which keeps a shape from coming back before the
-/// round is over. `swell` (0…1) is how far it has grown from a circle
-fn outline_radius(angle: f64, phase: f64, swell: f64) -> f64 {
-    let two = (0.50 + 0.12 * (2.0 * phase + 0.7).sin()) * (2.0 * angle + phase).sin();
-    let three = (0.38 + 0.10 * phase.cos()) * (3.0 * angle - phase + 1.3).sin();
-    LIQUID + MORPH * swell * (two + three)
-}
-
-#[derive(Clone, Copy)]
-enum Outline {
-    Pigment,
-    Glass,
-    /// the bead's own edge, where the native glass ends
-    Rim,
-}
-
-impl Outline {
-    fn radius(self, angle: f64, phase: f64, swell: f64) -> f64 {
-        let pigment = outline_radius(angle, phase, swell);
-        match self {
-            Self::Pigment => pigment,
-            Self::Glass => GLASS + GLASS_MORPH * (pigment - LIQUID),
-            Self::Rim => 1.0,
-        }
-    }
-
-    /// how far the top is from the centre at rest, as a share of the radius
-    fn top(self) -> f64 {
-        self.radius(PI / 2.0, 0.0, 0.0)
-    }
-}
-
-/// the lower of `a` and `b`, rounded off where they come within `k` (above 0) of each other
-fn soft_min(a: f64, b: f64, k: f64) -> f64 {
-    let h = (k - (a - b).abs()).max(0.0) / k;
-    a.min(b) - h * h * k / 4.0
-}
-
-/// point `i` of the outline's `OUTLINE_POINTS`, going round from the right, for a bead of
-/// diameter `d`. a `flat` above 0 (a share of the radius) cuts the top off straight that far
-/// below where it is at rest, and rounds the cut into the curve either side
-fn outline_point(
-    i: usize,
-    d: f64,
-    shape: Outline,
-    (phase, swell): (f64, f64),
-    flat: f64,
-) -> (f64, f64) {
-    let r = d / 2.0;
-    let turn = (i % OUTLINE_POINTS) as f64 / OUTLINE_POINTS as f64;
-    let angle = TAU * turn;
-    let reach = r * shape.radius(angle, phase, swell);
-    let mut y = reach * angle.sin();
-    // a drifting outline rises past its resting top, so only a press cuts it
-    if flat > 0.0 {
-        y = soft_min(y, r * (shape.top() - flat), r * flat.min(FLAT_ROUNDING));
-    }
-    (r + reach * angle.cos(), r + y)
+    radial(square(side), light, dome_reach(light), stops, scale)
 }
 
 /// adds the outline to `path` as a closed curve through `OUTLINE_POINTS` points, for a bead
@@ -389,9 +142,9 @@ struct Follower {
     shape: Outline,
 }
 
-/// puts `mask` on `layer` while `on` and takes it off otherwise, so a layer that's masked
-/// only now and then doesn't pay for the mask the rest of the time. `layer` has no other
-/// mask; AppKit puts none on the native glass
+/// puts `mask` on `layer` while `on` and takes it off otherwise. this way, a layer that needs
+/// the mask only now and then does not pay for it the rest of the time. `layer` has no other
+/// mask. AppKit puts none on the native glass
 fn mask_while(layer: &CALayer, mask: &CALayer, on: bool) {
     if on != layer.mask().is_some() {
         // SAFETY: `mask` is only ever this layer's mask, and has no superlayer of its own
@@ -416,24 +169,24 @@ impl Follower {
 pub struct Bead {
     /// what goes in the view hierarchy, `diameter` square
     pub view: Retained<NSView>,
-    /// the native glass's layer, which `rim` cuts flat while the top is pressed. None with
-    /// no glass, or with a glass that keeps a mask of its own because its outline drifts
+    /// the native glass's layer, which `rim` cuts flat while a press flattens the top. None
+    /// with no glass, or with a glass that keeps a mask of its own because its outline drifts
     glass: Option<Retained<CALayer>>,
     rim: Retained<CAShapeLayer>,
     /// how flat `press` last left the top, as a share of the radius
     flat: Cell<f64>,
     diameter: f64,
-    /// the colour beneath the glass, blurred separately during entrances and exits
+    /// the color beneath the glass, blurred separately during entrances and exits
     content: Retained<NSView>,
     /// the two rings, which sink as the top flattens
     iris: Retained<CALayer>,
-    /// the two rings, and the socket the pupil sits in, which `look` moves and `press` sinks
+    /// the two rings, and the socket that the pupil sits in, which `look` moves and `press` sinks
     discs: [Retained<CALayer>; 3],
     /// the socket's mask, an upper lid that `annoy` lowers over the pupil
     lid: Retained<CALayer>,
     /// the pupil, which blinks inside its socket
     pupil: Retained<CALayer>,
-    /// masks for the pigment and rings, sharing one moving liquid level
+    /// masks for the pigment and the rings. the two masks share one moving liquid level
     surface: Option<[Retained<CAShapeLayer>; 2]>,
     /// every layer shaped by the body's outline, which `drift` sets moving
     followers: Vec<Follower>,
@@ -441,7 +194,7 @@ pub struct Bead {
 }
 
 impl Bead {
-    /// `scale` is the backing scale of the display it shows on. with `counts`, the pupil
+    /// `scale` is the backing scale of the display that it shows on. with `counts`, the pupil
     /// shows a number that `set_count` changes, the liquid can drain and the outline can
     /// drift
     pub fn new(mtm: MainThreadMarker, diameter: f64, scale: f64, counts: bool) -> Bead {
@@ -482,7 +235,7 @@ impl Bead {
             view.addSubview(&host);
         }
 
-        // the material samples the colour below it, including the moving liquid surface
+        // the material samples the color below it, including the moving liquid surface
         let content = NSView::initWithFrame(NSView::alloc(mtm), frame);
         content.setWantsLayer(true);
         view.addSubview(&content);
@@ -495,7 +248,7 @@ impl Bead {
             let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
             glass.setCornerRadius(r);
             glass.setStyle(NSGlassEffectViewStyle::Regular);
-            // only contentView is guaranteed to sit above the native material
+            // AppKit promises to put only contentView above the native material
             glass.setContentView(Some(&foreground));
             view.addSubview(&glass);
             glass.setWantsLayer(true);
@@ -515,7 +268,7 @@ impl Bead {
         liquid.setFrame(frame);
         root.addSublayer(&liquid);
 
-        // the pigment keeps the mati's colours; AppKit's glass, when there is one, supplies
+        // the pigment keeps the mati's colors. AppKit's glass, when there is one, supplies
         // its reflections and refraction
         let body = CALayer::new();
         body.setFrame(frame);
@@ -529,8 +282,8 @@ impl Bead {
         body.addSublayer(&cobalt);
         liquid.addSublayer(&body);
 
-        // the eye is content inside the native glass, with its colour showing through the
-        // rings. on a solid surface there's no glass, and the rings are opaque
+        // the eye is content inside the native glass, and its color shows through the rings.
+        // on a solid surface, there is no glass and the rings are opaque
         let discs = DISCS.each_ref().map(|disc| {
             let side = d * disc.radius;
             let layer = match disc.dome {
@@ -563,7 +316,7 @@ impl Bead {
         iris.addSublayer(&white);
         iris.addSublayer(&sky);
         front.addSublayer(&iris);
-        // the socket takes the look and the sink, its lid the annoyance, and the pupil
+        // the socket takes the look and the sink. its lid takes the annoyance, and the pupil
         // inside blinks on its own
         let socket = CALayer::new();
         socket.setBounds(pupil.bounds());
@@ -571,7 +324,7 @@ impl Bead {
         let side = pupil.bounds().size.width;
         pupil.setPosition(NSPoint::new(side / 2.0, side / 2.0));
         socket.addSublayer(&pupil);
-        // the socket's mask while it's annoyed. whatever the mask covers shows, so the lid's
+        // the socket's mask while it is annoyed. whatever the mask covers shows, so the lid's
         // edge is its top. it pivots about the middle of that edge
         let lid = CALayer::new();
         lid.setBounds(square(3.0 * side));
@@ -591,7 +344,7 @@ impl Bead {
                 layer.setPath(Some(&wave_path(d)));
                 layer
             };
-            // whatever the mask covers shows; its top edge is the surface
+            // whatever the mask covers shows. its top edge is the surface
             let mask = wave();
             // SAFETY: the mask is a fresh layer with no superlayer of its own
             unsafe { liquid.setMask(Some(&mask)) };
@@ -639,12 +392,7 @@ impl Bead {
                 let paths: Vec<_> = (0..=MORPH_FRAMES)
                     .map(|frame| {
                         let along = frame as f64 / MORPH_FRAMES as f64;
-                        let swell = if swells {
-                            let t = (along / MORPH_SWELL).min(1.0);
-                            t * t * (3.0 - 2.0 * t)
-                        } else {
-                            1.0
-                        };
+                        let swell = if swells { swell_at(along) } else { 1.0 };
                         outline_path(d, *shape, TAU * along, swell, 0.0)
                     })
                     .collect();
@@ -652,7 +400,7 @@ impl Bead {
                 let anim =
                     CAKeyframeAnimation::animationWithKeyPath(Some(&NSString::from_str(key)));
                 // SAFETY: CFArray is toll-free bridged with NSArray. its elements are
-                // CGPaths, the type both path and shadowPath animate, and it's only read
+                // CGPaths, the type both path and shadowPath animate, and nothing writes to it
                 unsafe {
                     let paths = &*std::ptr::from_ref(&*paths).cast::<NSArray>();
                     anim.setValues(Some(paths));
@@ -673,7 +421,8 @@ impl Bead {
         }
     }
 
-    /// the pigment layer a blur goes on, leaving the native glass and its content intact
+    /// the pigment layer that a blur goes on. the blur leaves the native glass and its content
+    /// intact
     pub fn content_layer(&self) -> Option<Retained<CALayer>> {
         self.content.layer()
     }
@@ -686,7 +435,6 @@ impl Bead {
         }
     }
 
-    /// brings the count up from nothing over `duration`, from `begin`
     pub fn reveal_count(&self, begin: f64, duration: f64) {
         if let Some(layer) = self.count.as_ref().and_then(|count| count.view.layer()) {
             layer.addAnimation_forKey(&fade(0.0, 1.0, begin, duration, Fill::Entrance), None);
@@ -753,7 +501,7 @@ impl Bead {
     }
 
     /// reshapes every outline with its top `flat`, a share of the radius. the rim cuts the
-    /// glass only while it's flat, and leaves its edge alone the rest of the time
+    /// glass only while it is flat, and leaves its edge alone the rest of the time
     fn flatten(&self, flat: f64) {
         let d = self.diameter;
         for follower in &self.followers {
@@ -769,7 +517,7 @@ impl Bead {
     }
 
     /// sets the pupil blinking, for as long as the bead lives: now and then it squashes
-    /// flat about its own centre, wherever it's looking, and bounces open again
+    /// flat about its own center, wherever it looks, and bounces open again
     pub fn blink(&self) {
         let numbers = |numbers: &[f64]| {
             let numbers: Vec<_> = numbers.iter().map(|&n| NSNumber::new_f64(n)).collect();
@@ -801,7 +549,7 @@ impl Bead {
             timings.push(linear());
 
             let anim = CAKeyframeAnimation::animationWithKeyPath(Some(&NSString::from_str(key)));
-            // SAFETY: an array of NSNumbers is an array of objects, and it's only read.
+            // SAFETY: an array of NSNumbers is an array of objects, and nothing writes to it.
             // NSNumbers are the value type these key paths animate
             unsafe {
                 let values: Retained<NSArray> = Retained::cast_unchecked(numbers(&values));
@@ -860,9 +608,9 @@ impl Bead {
         }
     }
 
-    /// shows `left` (0…1) of the liquid from `begin`, a Core Animation time, flowing there
-    /// over `FLOW` from wherever it is on screen. without `animate` the level steps instead,
-    /// for reduced motion.
+    /// shows `left` (0…1) of the liquid from `begin`, a Core Animation time. the level flows
+    /// there over `FLOW` from wherever it is on screen. without `animate`, the level steps
+    /// instead, for reduced motion
     pub fn drain_to(&self, left: f64, begin: f64, animate: bool) {
         let Some(surface) = &self.surface else {
             return;
@@ -900,232 +648,4 @@ fn wave_path(d: f64) -> CFRetained<CGMutablePath> {
         CGMutablePath::close_subpath(Some(&path));
     }
     path
-}
-
-/// the furthest the body's outline gets from the centre, as a share of the bead's radius
-fn liquid_reach() -> f64 {
-    LIQUID + MORPH * 1.1
-}
-
-/// where the wave's crests sit for a fill `height` (0…1 of the liquid's height), measured
-/// up from the bead's bottom. full, even the troughs clear the liquid's top wherever its
-/// outline has drifted; empty, the crests are under its bottom
-fn level_y(diameter: f64, height: f64) -> f64 {
-    let r = diameter / 2.0;
-    let liquid = r * liquid_reach();
-    let swell = 2.0 * diameter * WAVE_HEIGHT;
-    r - liquid - 2.0 + height * (2.0 * liquid + swell + 4.0)
-}
-
-/// the share of a disc's area under a level `height` (0…1 of the diameter) up from the bottom
-fn area_below(height: f64) -> f64 {
-    let d = 1.0 - 2.0 * height;
-    (d.acos() - d * (1.0 - d * d).sqrt()) / PI
-}
-
-/// the level that leaves `left` (0…1) of the disc's area coloured. the colour then drains at
-/// an even rate though the disc is wider in the middle
-fn height_for(left: f64) -> f64 {
-    if left <= 0.0 {
-        return 0.0;
-    }
-    if left >= 1.0 {
-        return 1.0;
-    }
-    let (mut low, mut high) = (0.0, 1.0);
-    for _ in 0..32 {
-        let mid = (low + high) / 2.0;
-        if area_below(mid) < left {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    (low + high) / 2.0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_level_leaves_the_asked_share_of_the_area() {
-        assert_eq!(height_for(0.0), 0.0);
-        assert_eq!(height_for(1.0), 1.0);
-        assert!((height_for(0.5) - 0.5).abs() < 1e-6);
-        for left in [0.05, 0.25, 0.6, 0.9] {
-            assert!((area_below(height_for(left)) - left).abs() < 1e-6);
-        }
-        // a sliver of colour needs more than a sliver of height, the bottom being narrow
-        assert!(height_for(0.1) > 0.1);
-    }
-
-    fn close(got: [f64; 3], want: [f64; 3]) -> bool {
-        got.iter()
-            .zip(want)
-            .all(|(got, want)| (got - want).abs() < 2e-3)
-    }
-
-    #[test]
-    fn oklch_lands_on_known_display_p3_colours() {
-        assert!(close(display_p3((1.0, 0.0, 0.0)), [1.0, 1.0, 1.0]));
-        assert!(close(display_p3((0.0, 0.0, 0.0)), [0.0, 0.0, 0.0]));
-        // sRGB's red and blue, as css gives them in oklch and in display-p3
-        let red = display_p3((0.627_96, 0.257_68, 29.234));
-        assert!(close(red, [0.9175, 0.2003, 0.1386]));
-        let blue = display_p3((0.452_01, 0.313_21, 264.052));
-        assert!(close(blue, [0.0, 0.0, 0.9595]));
-    }
-
-    #[test]
-    fn a_colour_the_display_cannot_show_loses_chroma_not_hue() {
-        // far outside any display
-        let vivid = (0.7, 0.4, 145.0);
-        let clipped = display_p3(vivid);
-        assert!(clipped.iter().all(|c| (0.0..=1.0).contains(c)));
-        // still a green, and one channel has reached the gamut's edge
-        assert!(clipped[1] > clipped[0] && clipped[1] > clipped[2]);
-        assert!(clipped.iter().any(|&c| !(1e-3..=1.0 - 1e-3).contains(&c)));
-        // one it can show comes through untouched
-        let (l, c, h) = BODY[0].1;
-        let straight = linear_srgb_to_p3(oklch_to_linear_srgb((l, c, h))).map(encode);
-        assert!(close(display_p3((l, c, h)), straight));
-    }
-
-    #[test]
-    fn every_stop_is_in_order_and_inside_the_display() {
-        for stops in [&BODY[..], &WHITE[..], &SKY[..]] {
-            assert_eq!(stops[0].0, 0.0);
-            assert_eq!(stops[stops.len() - 1].0, 1.0);
-            assert!(stops.windows(2).all(|pair| pair[0].0 < pair[1].0));
-            // each darkens outward from the light
-            assert!(stops.windows(2).all(|pair| pair[0].1.0 > pair[1].1.0));
-            for &(_, oklch, _) in stops {
-                let straight = linear_srgb_to_p3(oklch_to_linear_srgb(oklch));
-                assert!(straight.iter().all(|c| (0.0..=1.0).contains(c)));
-            }
-        }
-    }
-
-    #[test]
-    fn the_pupil_is_the_oklch_colour_its_comment_names() {
-        let srgb = oklch_to_linear_srgb((0.17, 0.04, 268.0)).map(encode);
-        assert!(close([PUPIL.0, PUPIL.1, PUPIL.2], srgb));
-    }
-
-    #[test]
-    fn each_disc_stays_inside_the_one_around_it_wherever_it_looks() {
-        for pair in DISCS.windows(2) {
-            let (outer, inner) = (&pair[0], &pair[1]);
-            // radii are shares of the bead's radius, depths of its diameter
-            let room = (outer.radius - inner.radius) / 2.0;
-            assert!(inner.depth.0 - outer.depth.0 < room);
-            assert!(inner.depth.1 - outer.depth.1 < room);
-        }
-    }
-
-    #[test]
-    fn a_pressed_outline_runs_straight_along_the_top_and_keeps_the_rest() {
-        let (d, r) = (64.0, 32.0);
-        let at = |i: usize, shape: Outline, flat: f64| outline_point(i, d, shape, (0.0, 0.0), flat);
-        for shape in [Outline::Pigment, Outline::Glass, Outline::Rim] {
-            let cut = r + r * (shape.top() - FLAT_MOST);
-            for i in 0..OUTLINE_POINTS {
-                let angle = TAU * i as f64 / OUTLINE_POINTS as f64;
-                let reach = r * shape.radius(angle, 0.0, 0.0);
-                let round = (r + reach * angle.cos(), r + reach * angle.sin());
-                // unpressed, it's the circle
-                assert_eq!(at(i, shape, 0.0), round);
-                // pressed, nothing reaches above the cut or moves sideways, and the lower
-                // half stays as it was
-                let pressed = at(i, shape, FLAT_MOST);
-                assert!(pressed.1 <= cut + 1e-9);
-                assert_eq!(pressed.0, round.0);
-                if round.1 <= r {
-                    assert_eq!(pressed, round);
-                }
-                // over the middle third it's a straight line along the cut
-                if (pressed.0 - r).abs() < d / 6.0 && pressed.1 > r {
-                    assert!((pressed.1 - cut).abs() < 1e-9);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn an_unpressed_outline_drifts_past_its_resting_top_uncut() {
-        let (d, r) = (64.0, 32.0);
-        let mut highest: f64 = 0.0;
-        for shape in [Outline::Pigment, Outline::Glass] {
-            for frame in 0..MORPH_FRAMES {
-                let phase = TAU * frame as f64 / MORPH_FRAMES as f64;
-                for i in 0..OUTLINE_POINTS {
-                    let angle = TAU * i as f64 / OUTLINE_POINTS as f64;
-                    let reach = r * shape.radius(angle, phase, 1.0);
-                    let free = (r + reach * angle.cos(), r + reach * angle.sin());
-                    assert_eq!(outline_point(i, d, shape, (phase, 1.0), 0.0), free);
-                    highest = highest.max((free.1 - r) / r - shape.top());
-                }
-            }
-        }
-        // the drift does rise above the resting top, so a cut there would show
-        assert!(highest > 0.0);
-    }
-
-    #[test]
-    fn the_eye_sinks_clear_of_a_flattened_top() {
-        // shares of the radius above the centre, at the flattest press: the rings and pupil
-        // sink in step with the press, so if they're clear there they're clear all the way
-        let edge = Outline::Pigment.top() - FLAT_MOST;
-        let reach = |disc: &Disc, sink: f64| disc.radius + 2.0 * disc.depth.1 - sink * FLAT_MOST;
-        assert!(reach(&DISCS[0], IRIS_SINK) < edge);
-        assert!(reach(&DISCS[1], IRIS_SINK) < edge);
-        assert!(reach(&DISCS[2], PUPIL_SINK) < edge);
-    }
-
-    #[test]
-    fn an_annoyed_lid_never_shuts_the_eye_and_an_open_one_clears_it() {
-        // the share of the pupil under the sloping lid's low end: well over a third shows
-        let lowest = LID_DROP + LID_TILT.tan() / 2.0;
-        assert!(lowest < 0.6);
-        // open, the lid's edge stays above the pupil
-        const { assert!(LID_OPEN > 1.0) };
-    }
-
-    #[test]
-    fn the_blinks_follow_one_another_inside_the_round() {
-        let length = BLINK_CLOSE + BLINK_OPEN + BLINK_SETTLE;
-        assert!(BLINKS.windows(2).all(|pair| pair[0] + length < pair[1]));
-        assert!(BLINKS[BLINKS.len() - 1] + length < BLINK_PERIOD);
-    }
-
-    #[test]
-    fn full_and_empty_leave_no_surface_in_the_liquid() {
-        let (d, r) = (300.0, 150.0);
-        let troughs = level_y(d, 1.0) - 2.0 * d * WAVE_HEIGHT;
-        assert!(troughs > r + r * liquid_reach());
-        assert!(level_y(d, 0.0) < r - r * liquid_reach());
-    }
-
-    #[test]
-    fn the_liquid_stays_inside_the_glass_and_around_the_rings() {
-        let mut furthest: f64 = 0.0;
-        let mut nearest: f64 = 1.0;
-        for frame in 0..360 {
-            for step in 0..360 {
-                let at = |n: usize| TAU * n as f64 / 360.0;
-                let reach = outline_radius(at(step), at(frame), 1.0);
-                let glass = Outline::Glass.radius(at(step), at(frame), 1.0);
-                // the draining pigment starts inside the shell throughout the morph
-                assert!(glass > reach && glass < 1.0);
-                furthest = furthest.max(reach);
-                nearest = nearest.min(reach);
-            }
-        }
-        // the liquid fits inside the glass and always contains the pale ring
-        assert!(furthest <= liquid_reach() && liquid_reach() < 1.0);
-        assert!(nearest > DISCS[0].radius);
-        // and at rest it's a circle
-        assert_eq!(outline_radius(1.0, 2.0, 0.0), LIQUID);
-    }
 }

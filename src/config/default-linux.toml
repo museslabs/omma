@@ -1,0 +1,135 @@
+# omma config. omma reads this file again a second or two after each save.
+#
+# Times are in whole seconds. A key that you leave out keeps its default. A key
+# that omma does not know is an error, and so is a value out of range. The menu
+# shows the error, with its line number when it has one. omma then keeps its
+# last good config, or the defaults at startup. Put the keys at the top before
+# the first [table] header, because TOML puts each key below a header into that
+# table.
+
+# The time between breaks, 1 to 86400 (24 h). The short interval must be less
+# than the long interval.
+short_break_interval = 900   # 15 min
+long_break_interval  = 4500  # 75 min
+
+# The length of a break, 1 to 3600 (1 h). Each break in the lists at the end can
+# set its own length.
+short_break_duration = 20
+long_break_duration  = 60
+
+# The warning shows this long before a break, 0 to 600 (10 min). 0 shows no
+# warning.
+pre_break_warning = 10
+
+# Postpone moves a break back by postpone_duration, 1 to 86400 (24 h).
+allow_postpone    = false
+postpone_duration = 300  # 5 min
+
+# true hides Skip and Postpone, so that every break runs its full length.
+strict_break = false
+
+# true shuffles each list of breaks. false goes through them in order.
+random_order = true
+
+[smart_pause]
+# After idle_seconds (10 to 86400) without keyboard or mouse input, the schedule
+# pauses. When you come back, the next break is a full interval away. Time away
+# that is at least as long as a long break counts as a long break.
+enabled      = true
+idle_seconds = 60
+
+[sounds]
+# A sound by name, with the same case. Tink and Glass are built in. A sound from
+# the freedesktop theme in /usr/share/sounds/freedesktop/stereo also works, such
+# as bell, complete or message. So does a sound that you add to
+# ~/.local/share/sounds. "" plays no sound.
+pre_break  = "Tink"   # when the warning shows
+post_break = "Glass"  # when a break runs to its end
+
+[keybindings]
+# Shortcuts for the Skip and Postpone buttons on the break screen. A shortcut is
+# one key after any of the modifiers super, shift, alt and ctrl, joined by +.
+# The key is a single character, or escape, space, enter, tab or delete. For
+# example, "s" or "super+shift+s". Shift goes only with a letter, escape, space,
+# enter or delete. "" turns a shortcut off. With allow_postpone on, the two
+# shortcuts must differ.
+skip     = "escape"
+postpone = "space"
+
+# The same for the warning. These shortcuts work from any app while the warning
+# shows, so the warning never needs focus. Each one needs super or ctrl, for
+# example "super+shift+alt+space". omma gets them from the desktop portal, which
+# needs the desktop file of omma (see the README). Some desktops ask you to
+# confirm the shortcuts. If your compositor has no portal, bind omma --skip and
+# omma --postpone to keys in its config instead. "" turns one off.
+warning_skip     = ""
+warning_postpone = ""
+
+[do_not_disturb]
+# While a rule below applies, omma holds the break back. action = "skip" drops
+# the break, and "postpone" tries again after postpone_duration.
+action = "skip"
+
+# Apps, matched in any case against part of the process name or the app ID of
+# the app, for example ["zoom"].
+apps_running  = []
+apps_in_front = []  # only while the app has the focused window
+
+# These two rules and apps_in_front need a compositor that lists its windows.
+# Hyprland, Sway, niri and other wlroots compositors do.
+fullscreen    = false  # while the focused window is fullscreen
+window_titles = []     # case-insensitive regexes, for example ["Zoom Meeting"]
+
+# The breaks. Each break has a name. It can also set its own duration and a
+# background image. The image must be an existing file at an absolute path, or
+# at a path that starts with ~/.
+#
+#   [[long_breaks]]
+#   name     = "Take a walk"
+#   duration = 300
+#   image    = "~/Pictures/trail.jpg"
+
+[[short_breaks]]
+name = "Gently close your eyes"
+
+[[short_breaks]]
+name = "Blink slowly a few times"
+
+[[short_breaks]]
+name = "Look at something 20 feet (6 m) away"
+
+[[short_breaks]]
+name = "Look far away, then at something near"
+
+[[short_breaks]]
+name = "Have some water"
+
+[[short_breaks]]
+name = "Relax your shoulders and drop them away from your ears"
+
+[[short_breaks]]
+name = "Stretch your neck gently from side to side"
+
+[[short_breaks]]
+name = "Check your posture and sit back comfortably"
+
+[[short_breaks]]
+name = "Unclench your jaw and relax your face"
+
+[[short_breaks]]
+name = "Stretch your wrists and fingers"
+
+[[long_breaks]]
+name = "Stand up and stretch your back and legs"
+
+[[long_breaks]]
+name = "Walk around for a while"
+
+[[long_breaks]]
+name = "Lean back at your seat and relax"
+
+[[long_breaks]]
+name = "Step away from the screen and look out a window"
+
+[[long_breaks]]
+name = "Walk over and refill your water"

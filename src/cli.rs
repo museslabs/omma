@@ -27,6 +27,14 @@ struct Action {
     #[arg(short = 'l', long)]
     long_break: bool,
 
+    /// skip the break the warning is counting down to, or the one on screen
+    #[arg(long)]
+    skip: bool,
+
+    /// postpone the break the warning is counting down to, or the one on screen
+    #[arg(long)]
+    postpone: bool,
+
     /// disable the running instance
     #[arg(short = 'd', long)]
     disable: bool,
@@ -58,7 +66,7 @@ struct Action {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// start the menu-bar app
+    /// start omma in the menu bar or the tray
     Run,
     PrintDefaultConfig,
     /// send a command to the running instance
@@ -75,6 +83,8 @@ impl Args {
             (a.take_break, Command::TakeBreak),
             (a.short_break, Command::TakeShortBreak),
             (a.long_break, Command::TakeLongBreak),
+            (a.skip, Command::Skip),
+            (a.postpone, Command::Postpone),
             (a.disable, Command::Disable),
             (a.enable, Command::Enable),
             (a.quit, Command::Quit),
@@ -129,13 +139,15 @@ mod tests {
     use clap::error::ErrorKind;
 
     /// every spelling of every flag, as the README documents them
-    const FLAGS: [(&str, Mode); 16] = [
+    const FLAGS: [(&str, Mode); 18] = [
         ("-t", Mode::Send(Command::TakeBreak)),
         ("--take-break", Mode::Send(Command::TakeBreak)),
         ("-s", Mode::Send(Command::TakeShortBreak)),
         ("--short-break", Mode::Send(Command::TakeShortBreak)),
         ("-l", Mode::Send(Command::TakeLongBreak)),
         ("--long-break", Mode::Send(Command::TakeLongBreak)),
+        ("--skip", Mode::Send(Command::Skip)),
+        ("--postpone", Mode::Send(Command::Postpone)),
         ("-d", Mode::Send(Command::Disable)),
         ("--disable", Mode::Send(Command::Disable)),
         ("-e", Mode::Send(Command::Enable)),

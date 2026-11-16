@@ -1,5 +1,5 @@
 //! one running instance per user. it holds a lock file, and clients reach it through a
-//! socket in the same directory.
+//! socket in the same directory
 
 use std::fmt;
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
@@ -19,6 +19,10 @@ pub enum Command {
     TakeBreak,
     TakeShortBreak,
     TakeLongBreak,
+    /// skip the warned or running break
+    Skip,
+    /// postpone the warned or running break
+    Postpone,
     Enable,
     Disable,
     /// disable for this long, sent in whole seconds
@@ -28,12 +32,14 @@ pub enum Command {
     Reload,
 }
 
-/// the wire name of each command without an argument. renaming one breaks CLIs talking to an
-/// older instance.
-const COMMANDS: [(Command, &str); 8] = [
+/// the wire name of each command without an argument. renaming one breaks a CLI that talks
+/// to an older instance
+const COMMANDS: [(Command, &str); 10] = [
     (Command::TakeBreak, "take-break"),
     (Command::TakeShortBreak, "short-break"),
     (Command::TakeLongBreak, "long-break"),
+    (Command::Skip, "skip"),
+    (Command::Postpone, "postpone"),
     (Command::Enable, "enable"),
     (Command::Disable, "disable"),
     (Command::Quit, "quit"),
@@ -85,20 +91,51 @@ pub struct UnknownCommand;
 pub type Reply = Result<String, String>;
 
 /// `~/Library/Application Support/omma`, where the running instance keeps its lock file and
-/// socket. None when the home directory isn't an absolute path.
+/// socket. None when the home directory is not an absolute path
+#[cfg(target_os = "macos")]
 pub fn runtime_dir() -> Option<PathBuf> {
     std::env::home_dir()
         .filter(|home| home.is_absolute())
         .map(|home| home.join("Library/Application Support/omma"))
 }
 
+/// `$XDG_RUNTIME_DIR/omma`, where the running instance keeps its lock file and socket, or
+/// `~/.local/state/omma` without a runtime directory. None when neither is an absolute path
+#[cfg(not(target_os = "macos"))]
+pub fn runtime_dir() -> Option<PathBuf> {
+    runtime_dir_from(
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::home_dir(),
+    )
+}
+
+/// the XDG base directory spec says to ignore an empty or relative path
+#[cfg(not(target_os = "macos"))]
+fn runtime_dir_from(
+    runtime: Option<std::ffi::OsString>,
+    state: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let absolute =
+        |path: Option<std::ffi::OsString>| path.map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute(runtime)
+        .or_else(|| absolute(state))
+        .or_else(|| {
+            home.filter(|h| h.is_absolute())
+                .map(|h| h.join(".local/state"))
+        })
+        .map(|base| base.join("omma"))
+}
+
 const LOCK_FILE: &str = "omma.lock";
 const SOCKET: &str = "omma.sock";
 /// a client writes its command as soon as it connects
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
-/// a command line is cut off here. the longest, a pause of u64::MAX seconds, is 26 bytes.
+/// the server reads at most this many bytes of a command line. the longest, a pause of
+/// u64::MAX seconds, is 26 bytes
 const MAX_LINE: u64 = 64;
-/// the main thread writes replies, and mustn't wait on a client
+/// the main thread writes replies, and must not wait on a client
 const WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 /// keeps a persistent accept error, such as running out of file descriptors, from spinning
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
@@ -108,12 +145,12 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct Server {
     rx: Receiver<Request>,
     /// locked for as long as the process lives. the kernel releases it however the
-    /// process ends, so a crash leaves nothing to clean up.
+    /// process ends, so a crash leaves nothing to clean up
     _lock: File,
 }
 
-/// takes the instance lock in `dir`, creating `dir` if needed, and listens on the socket
-/// there. None when another instance holds the lock.
+/// takes the instance lock in `dir` and listens on the socket there. it creates `dir` if
+/// `dir` does not exist. None when another instance holds the lock
 pub fn bind(dir: &Path) -> io::Result<Option<Server>> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     let lock = OpenOptions::new()
@@ -127,7 +164,7 @@ pub fn bind(dir: &Path) -> io::Result<Option<Server>> {
         Err(TryLockError::Error(e)) => return Err(e),
     }
 
-    // with the lock held, a socket left here is stale. bind reports anything else in the way.
+    // with the lock held, a socket left here is stale. bind reports anything else in the way
     let path = dir.join(SOCKET);
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
@@ -146,8 +183,8 @@ impl Server {
     }
 }
 
-/// a client's command, waiting for its reply. the connection closes when the request is
-/// dropped, and the client waits for that.
+/// a client's command, which waits for its reply. the connection closes when the request is
+/// dropped, and the client waits for that
 pub struct Request {
     pub command: Command,
     stream: UnixStream,
@@ -184,7 +221,7 @@ fn accept_loop(listener: UnixListener, tx: Sender<Request>) {
 }
 
 /// None when the client sent no command in time, or an unknown one. an unknown command gets
-/// its refusal here.
+/// its refusal here
 fn read_request(stream: UnixStream) -> Option<Request> {
     stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT)).ok()?;
@@ -206,7 +243,7 @@ fn read_request(stream: UnixStream) -> Option<Request> {
 }
 
 /// sends `command` to the running instance and waits for its reply. None when no instance
-/// is running.
+/// is running
 pub fn send(dir: &Path, command: Command) -> anyhow::Result<Option<Reply>> {
     let stream = match UnixStream::connect(dir.join(SOCKET)) {
         Ok(stream) => stream,
@@ -223,7 +260,7 @@ pub fn send(dir: &Path, command: Command) -> anyhow::Result<Option<Reply>> {
 fn exchange(mut stream: &UnixStream, command: Command) -> anyhow::Result<Reply> {
     stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
     writeln!(stream, "{command}")?;
-    // the reply counts once the connection closes. after quit that's when the process exits.
+    // the reply counts once the connection closes. after quit, that is when the process exits
     let mut response = String::new();
     if let Err(e) = stream.read_to_string(&mut response) {
         if !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
@@ -242,7 +279,7 @@ fn exchange(mut stream: &UnixStream, command: Command) -> anyhow::Result<Reply> 
     }
 }
 
-/// `ok <text>` or `err <text>`, then a newline. the text may span lines.
+/// `ok <text>` or `err <text>`, then a newline. the text can span lines
 fn encode(reply: &Reply) -> String {
     match reply {
         Ok(text) => format!("ok {text}\n"),
@@ -268,7 +305,7 @@ mod tests {
     use super::*;
 
     /// a fresh path under /tmp, removed on drop. a socket path must fit in 104 bytes,
-    /// which a long $TMPDIR can exceed.
+    /// which a long $TMPDIR can exceed
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -363,7 +400,7 @@ mod tests {
         let scratch = Scratch::new();
         let server = bind(&scratch.0).unwrap().unwrap();
         let socket = scratch.0.join(SOCKET);
-        // read one after another, these would outlast the client's timeout
+        // if the server reads them one after another, these outlast the client's timeout
         let _silent: Vec<_> = (0..4)
             .map(|_| UnixStream::connect(&socket).unwrap())
             .collect();
@@ -472,6 +509,8 @@ mod tests {
             TakeBreak,
             TakeShortBreak,
             TakeLongBreak,
+            Skip,
+            Postpone,
             Enable,
             Disable,
             Pause(Duration::from_secs(1800)),
@@ -481,8 +520,8 @@ mod tests {
         ] {
             // a new command stops this compiling: add it to the match and to the list above
             match command {
-                TakeBreak | TakeShortBreak | TakeLongBreak | Enable | Disable | Pause(_) | Quit
-                | Status | Reload => {}
+                TakeBreak | TakeShortBreak | TakeLongBreak | Skip | Postpone | Enable | Disable
+                | Pause(_) | Quit | Status | Reload => {}
             }
             let line = command.to_string();
             assert!(line.len() as u64 <= MAX_LINE, "{line}");
@@ -522,6 +561,26 @@ mod tests {
                 assert_ne!(name_a, name_b);
             }
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_runtime_dir_prefers_xdg_runtime_dir_then_state_then_home() {
+        let os = |p: &str| Some(std::ffi::OsString::from(p));
+        let home = || Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            runtime_dir_from(os("/run/user/1000"), os("/s"), home()),
+            Some(PathBuf::from("/run/user/1000/omma"))
+        );
+        assert_eq!(
+            runtime_dir_from(os("relative"), os("/s"), home()),
+            Some(PathBuf::from("/s/omma"))
+        );
+        assert_eq!(
+            runtime_dir_from(None, os(""), home()),
+            Some(PathBuf::from("/home/u/.local/state/omma"))
+        );
+        assert_eq!(runtime_dir_from(None, None, Some(PathBuf::from("u"))), None);
     }
 
     #[test]

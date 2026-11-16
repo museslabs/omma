@@ -1,5 +1,5 @@
-//! the configured breaks and the order each kind comes in. which kind is due when is the
-//! scheduler's call.
+//! the configured breaks and the order each kind comes in. the scheduler decides which kind
+//! is due when
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -40,7 +40,8 @@ impl Breaks {
     }
 }
 
-/// cycles through each kind's breaks, reshuffling every round when the order is random
+/// cycles through the breaks of each kind. when the order is random, it shuffles them again
+/// every round
 pub struct BreakQueue {
     shorts: Deck,
     longs: Deck,
@@ -82,7 +83,6 @@ impl BreakQueue {
         &deck.breaks[deck.next]
     }
 
-    /// moves `kind` on to its following break
     pub fn advance(&mut self, kind: BreakType) {
         let deck = match kind {
             BreakType::Short => &mut self.shorts,
@@ -108,7 +108,7 @@ impl BreakQueue {
     }
 }
 
-/// xorshift64, just enough to shuffle break order without a dep
+/// xorshift64, enough to shuffle the break order without a dependency
 struct Rng(u64);
 
 impl Rng {

@@ -1,8 +1,7 @@
 //! do-not-disturb. the app rules look at running and frontmost apps through NSWorkspace and
 //! need no permission. the fullscreen and window-title rules read other apps' windows through
-//! the Accessibility API, which the user grants.
+//! the Accessibility API, which the user grants
 
-use std::fmt;
 use std::ptr::{self, NonNull};
 
 use objc2::rc::Retained;
@@ -15,36 +14,15 @@ use objc2_core_foundation::{
     CFArray, CFBoolean, CFDictionary, CFRetained, CFString, CFType, ConcreteType,
 };
 
+use crate::app::dnd::{Reason, app_matches};
 use crate::config::{AppName, DoNotDisturb, TitlePattern};
 
-/// how long an Accessibility call waits for an app before it fails. a hung app would hold
-/// omma's main thread for the system's default, about 6 s.
+/// how long an Accessibility call waits for an app before it fails. without this limit, a hung
+/// app holds omma's main thread for the system default, about 6 s
 const AX_TIMEOUT_SECS: f32 = 0.25;
 
-/// a do-not-disturb rule that held, with the app's name or the window's title
-pub enum Reason {
-    Running(String),
-    Frontmost(String),
-    Fullscreen(String),
-    Window(String),
-}
-
-impl fmt::Display for Reason {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Reason::Running(app) => write!(f, "{app} is running"),
-            Reason::Frontmost(app) => write!(f, "{app} is in front"),
-            Reason::Fullscreen(app) => write!(f, "{app} is fullscreen"),
-            // a line break in a title would split a menu item
-            Reason::Window(title) => {
-                write!(f, "“{}” is on screen", title.replace(char::is_control, " "))
-            }
-        }
-    }
-}
-
-/// the first rule that holds now. permission for the window rules is checked each time, so
-/// a grant while omma runs counts at once.
+/// the first rule that holds now. omma checks the permission for the window rules on each call,
+/// so a grant while omma runs takes effect at once
 pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
     let workspace = NSWorkspace::sharedWorkspace();
 
@@ -75,13 +53,13 @@ pub fn should_suppress(dnd: &DoNotDisturb) -> Option<Reason> {
     matching_title(&workspace, &dnd.window_titles).map(Reason::Window)
 }
 
-/// whether omma has Accessibility permission. it can change while omma runs.
+/// whether omma has Accessibility permission. it can change while omma runs
 pub fn is_trusted() -> bool {
     // SAFETY: no arguments
     unsafe { AXIsProcessTrusted() }
 }
 
-/// asks for Accessibility permission unless omma has it. the system's prompt doesn't block.
+/// asks for Accessibility permission unless omma has it. the system's prompt does not block
 pub fn request_accessibility() {
     // SAFETY: an immutable CFString that the framework exports
     let prompt = unsafe { kAXTrustedCheckOptionPrompt };
@@ -89,16 +67,6 @@ pub fn request_accessibility() {
         CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[CFBoolean::new(true)]);
     // SAFETY: the options map CFString keys to CFBoolean values, as the call expects
     unsafe { AXIsProcessTrustedWithOptions(Some(options.as_opaque())) };
-}
-
-/// whether a rule names part of the app's name or bundle id
-fn app_matches(rules: &[AppName], name: &str, bundle_id: &str) -> bool {
-    let name = name.to_lowercase();
-    let bundle_id = bundle_id.to_lowercase();
-    rules
-        .iter()
-        .map(AppName::as_str)
-        .any(|rule| name.contains(rule) || bundle_id.contains(rule))
 }
 
 fn app_name(app: &NSRunningApplication) -> String {
@@ -116,22 +84,21 @@ fn running_app_matches(app: &NSRunningApplication, rules: &[AppName]) -> bool {
         .bundleIdentifier()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    app_matches(rules, &name, &bundle_id)
+    app_matches(rules, [name.as_str(), bundle_id.as_str()])
 }
 
-/// caps every Accessibility call's wait. the timeout set on the system-wide element applies
-/// to every element. it's set before each round of calls, since Apple doesn't document
-/// whether a timeout set before the permission is granted holds.
+/// a timeout on the system-wide element applies to every element. omma sets it before each
+/// round of calls, because Apple does not document whether a timeout set before the user grants
+/// the permission holds
 fn limit_ax_wait() {
     // SAFETY: no arguments
     let system = unsafe { AXUIElement::new_system_wide() };
-    // SAFETY: plain values. the call fails only for an invalid element or a negative timeout.
+    // SAFETY: plain values. the call fails only for an invalid element or a negative timeout
     let _ = unsafe { system.set_messaging_timeout(AX_TIMEOUT_SECS) };
 }
 
-/// the app's top-level accessibility element
 fn ax_app(app: &NSRunningApplication) -> CFRetained<AXUIElement> {
-    // SAFETY: takes any pid; calls on an element whose app is gone just fail
+    // SAFETY: the call takes any pid. calls on an element whose app is gone fail
     unsafe { AXUIElement::new_application(app.processIdentifier()) }
 }
 
@@ -149,7 +116,7 @@ fn attribute(element: &AXUIElement, name: &'static str) -> Option<CFRetained<CFT
     NonNull::new(value.cast_mut()).map(|value| unsafe { CFRetained::from_raw(value) })
 }
 
-/// the attribute, when its value is a `T`. another app supplies it, so its type is checked.
+/// the attribute, when its value is a `T`. another app supplies the value, so this checks its type
 fn attribute_as<T: ConcreteType>(
     element: &AXUIElement,
     name: &'static str,
@@ -166,8 +133,8 @@ fn fullscreen_app(workspace: &NSWorkspace) -> Option<Retained<NSRunningApplicati
         .then_some(front)
 }
 
-/// the first title a pattern matches, of a window on screen: one that isn't minimized, of
-/// an app that isn't hidden
+/// the first title a pattern matches, of a window on screen: one that is not minimized, of
+/// an app that is not hidden
 fn matching_title(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> Option<String> {
     if patterns.is_empty() {
         return None;
@@ -184,7 +151,7 @@ fn matching_title(workspace: &NSWorkspace, patterns: &[TitlePattern]) -> Option<
             let title = attribute_as::<CFString>(&window, "AXTitle")?.to_string();
             let minimized =
                 || attribute_as::<CFBoolean>(&window, "AXMinimized").is_some_and(|m| m.as_bool());
-            // minimized is asked only of a matching window, which keeps the calls few
+            // only a matching window gets the minimized query, which keeps the calls few
             (patterns.iter().any(|p| p.is_match(&title)) && !minimized()).then_some(title)
         })
 }
@@ -200,53 +167,4 @@ fn windows(app: &NSRunningApplication) -> Vec<CFRetained<AXUIElement>> {
         .iter()
         .filter_map(|window| window.downcast().ok())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rules(names: &[&str]) -> Vec<AppName> {
-        names
-            .iter()
-            .map(|name| AppName::try_from(name.to_string()).unwrap())
-            .collect()
-    }
-
-    #[test]
-    fn a_rule_matches_part_of_the_name_or_bundle_id_in_any_case() {
-        let zoom = rules(&["Zoom"]);
-        assert!(app_matches(&zoom, "zoom.us", "us.zoom.xos"));
-        assert!(app_matches(&zoom, "ZOOM", ""));
-        assert!(app_matches(&zoom, "", "us.zoom.xos"));
-        assert!(!app_matches(&zoom, "Safari", "com.apple.Safari"));
-        assert!(!app_matches(&zoom, "", ""));
-        assert!(app_matches(&rules(&["keynote", "zoom"]), "Zoom", ""));
-        assert!(!app_matches(&[], "Zoom", "us.zoom.xos"));
-    }
-
-    #[test]
-    fn a_reason_names_the_app_or_the_window() {
-        assert_eq!(
-            Reason::Running("Zoom".into()).to_string(),
-            "Zoom is running"
-        );
-        assert_eq!(
-            Reason::Frontmost("Zoom".into()).to_string(),
-            "Zoom is in front"
-        );
-        assert_eq!(
-            Reason::Fullscreen("Keynote".into()).to_string(),
-            "Keynote is fullscreen"
-        );
-        assert_eq!(
-            Reason::Window("Zoom\nMeeting".into()).to_string(),
-            "“Zoom Meeting” is on screen"
-        );
-    }
-
-    #[test]
-    fn a_rule_matches_names_beyond_ascii() {
-        assert!(app_matches(&rules(&["ΣΗΜΕΙΏΣΕΙΣ"]), "Σημειώσεις", ""));
-    }
 }

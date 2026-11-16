@@ -1,8 +1,8 @@
-//! the warning's bead on its thread, hanging off the menu-bar icon. it swings like a
-//! pendulum on a display link: grab it and it follows the pointer, let go and the swing keeps
-//! the release velocity. its inner rings lean toward the pointer, as if it watched you. the
-//! menu bar is a wall. pressed against it, the bead's top flattens like a drop of liquid's,
-//! and its eye narrows in annoyance.
+//! the warning's bead, which hangs on its thread off the menu bar icon. it swings like a
+//! pendulum on a display link. when the user grabs it, it follows the pointer. when the user
+//! lets go, the swing keeps the release velocity. its inner rings lean toward the pointer, as if
+//! it watched you. the menu bar is a wall. when the bead presses against it, the bead's top
+//! flattens like the top of a drop of liquid, and its eye narrows in annoyance
 
 use std::cell::RefCell;
 
@@ -17,67 +17,17 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
-use super::bead::{Bead, FLAT_MOST};
+use super::bead::Bead;
 use super::break_screen::FLIGHT_DELAY;
 use super::panel::{
-    Fill, POP, Spring, after, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade,
-    presented, property, scale_about, spring, without_actions,
+    Fill, after, arrive, attach_blur, blur_out, blur_radius, detach_blur_after, fade, presented,
+    property, scale_about, spring, without_actions,
 };
-
-/// ω² of the swing, per second squared
-const STIFFNESS: f64 = 42.0;
-/// light while it hangs in the warning, letting a swing ring on; heavy as it settles on the
-/// warning's way out
-const DAMPING_FREE: f64 = 1.7;
-const DAMPING_SETTLE: f64 = 14.0;
-/// the swing it drops in with, in radians per second: about 18° to one side
-const DROP_KICK: f64 = 2.0;
-/// left hanging still this long, it stirs again with a smaller swing, to the other side
-/// each time
-const STIR_AFTER: f64 = 3.5;
-const STIR_KICK: f64 = 1.1;
-/// below this angle and speed it counts as hanging still
-const STILL_ANGLE: f64 = 0.035;
-const STILL_SPEED: f64 = 0.2;
-/// the charm swells in from this scale like a bubble, thread and bead as one, and shrinks back
-/// to it. the bead's colour blurs this much as it does
-const BUBBLE_FROM: f64 = 0.95;
-const BUBBLE_BLUR: f64 = 8.0;
-/// how much of a grab around the bead counts, beyond its edge
-const GRAB_SLOP: f64 = 6.0;
-/// the look's springs, critically damped
-const LOOK: Spring = Spring {
-    stiffness: 190.0,
-    damping: 27.0,
-};
-/// the pointer this far from the bead, or further, makes it look all the way over
-const LOOK_REACH: f64 = 140.0;
-/// how hard the menu bar pushes back on a bead swung into it, per radian past where they
-/// meet, and how much of the swing it soaks up. the bead drags against the bar and comes
-/// off at well under half the speed it hit
-const WALL_STIFFNESS: f64 = 250.0;
-const WALL_DAMPING: f64 = 20.0;
-/// a drag presses the bead into the bar less and less far, up to this many radians
-const PRESS_LIMIT: f64 = 0.18;
-/// the top flattens against the bar, and the annoyed lid comes down, on a brisk spring that
-/// barely overshoots
-const BRISK: Spring = Spring {
-    stiffness: 900.0,
-    damping: 51.0,
-};
-/// the top rounds out again slower, as a drop of liquid would, and never past round
-const ROUNDING: Spring = Spring {
-    stiffness: 300.0,
-    damping: 35.0,
-};
-/// pressed this many points into the bar, the bead gets annoyed, and stays annoyed this long
-/// after
-const ANNOY_AT: f64 = 3.0;
-const ANNOY_HOLD: f64 = 0.6;
-/// the lid lifts slower than it came down, with a little bounce
-const RAISING: Spring = Spring {
-    stiffness: 300.0,
-    damping: 22.0,
+use crate::mati::form::FLAT_MOST;
+use crate::mati::motion::{
+    ANNOY_AT, ANNOY_HOLD, BRISK, BUBBLE_BLUR, BUBBLE_FROM, DAMPING_FREE, DAMPING_SETTLE, DROP_KICK,
+    GRAB_SLOP, LOOK, LOOK_REACH, POP, RAISING, ROUNDING, STIFFNESS, STILL_ANGLE, STILL_SPEED,
+    STIR_AFTER, STIR_KICK, WALL_DAMPING, WALL_STIFFNESS, chase, press, pressed,
 };
 
 pub struct Swing {
@@ -85,18 +35,18 @@ pub struct Swing {
     thread: Retained<CALayer>,
     /// where the thread hangs from, in the view
     pivot: NSPoint,
-    /// from the pivot to the bead's centre
+    /// from the pivot to the bead's center
     length: f64,
     /// the angle, either side, at which the bead's top meets the menu bar. the pivot hangs
     /// on the bar's bottom edge, the view's top
     wall: f64,
-    /// where the swing has the bead, which past `wall` is pressed into the bar
+    /// where the swing has the bead, which, past `wall`, presses into the bar
     theta: f64,
     omega: f64,
-    /// how many points the bead's top is pressed flat, and how fast that's changing. the
+    /// how many points the bead's top is pressed flat, and how fast that changes. the
     /// bead shows only as far into the bar as this lets it
     flat: [f64; 2],
-    /// how annoyed it is, as `Bead::annoy` takes it, how fast that's changing, and how much
+    /// how annoyed it is, as `Bead::annoy` takes it, how fast that changes, and how much
     /// longer it stays annoyed
     annoyed: [f64; 2],
     annoyed_for: f64,
@@ -105,7 +55,7 @@ pub struct Swing {
     slope: f64,
     /// lightly damped, while it hangs in a warning
     free: bool,
-    /// how long it has hung still, and which way the last stir went
+    /// the time since it last moved, and which way the last stir went
     still_for: f64,
     stir_left: bool,
     drag: Option<Drag>,
@@ -119,7 +69,7 @@ pub struct Swing {
 }
 
 struct Drag {
-    /// the angle between where it was grabbed and the bead, kept through the drag
+    /// the angle between the grab point and the bead, kept through the drag
     offset: f64,
     /// recent (time, angle) pairs, for the velocity at release
     history: Vec<(f64, f64)>,
@@ -127,7 +77,7 @@ struct Drag {
 
 define_class!(
     // SAFETY: NSView can be subclassed. each override has the signature AppKit declares,
-    // which registering the class checks, and `step:` is the display link's callback.
+    // which registering the class checks, and `step:` is the display link's callback
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaCharm"]
@@ -193,7 +143,7 @@ define_class!(
             let Some(drag) = swing.drag.take() else {
                 return;
             };
-            // the swing carries on at the speed it was let go
+            // the swing carries on at the speed of the release
             if let (Some(&(t0, a0)), Some(&(t1, a1))) = (drag.history.first(), drag.history.last())
                 && t1 > t0
                 && event.timestamp() - t1 <= 0.08
@@ -249,8 +199,8 @@ define_class!(
 );
 
 impl Charm {
-    /// a `size` view with the thread hanging from its top centre, `thread_length` long, and a
-    /// bead of `bead` diameter on its end. `scale` is the backing scale of the display it's on
+    /// a `size` view with the thread hanging from its top center, `thread_length` long, and a
+    /// bead of `bead` diameter on its end. `scale` is the backing scale of the display it is on
     pub fn new(
         mtm: MainThreadMarker,
         size: NSSize,
@@ -316,10 +266,10 @@ impl Charm {
         charm
     }
 
-    /// starts the swing on the display the window is on, dropping in with a `DROP_KICK`
-    /// swing. without `animate` it hangs still and can't be grabbed, for reduced motion. its
-    /// window should start out ignoring the mouse: the swing makes it take clicks while the
-    /// pointer is on the bead
+    /// starts the swing on the display that the window is on. the bead drops in with a
+    /// `DROP_KICK` swing. without `animate`, it hangs still and the user cannot grab it, for
+    /// reduced motion. its window must start out ignoring the mouse: the swing makes it take
+    /// clicks while the pointer is on the bead
     pub fn start(&self, animate: bool) {
         if !animate {
             return;
@@ -337,8 +287,8 @@ impl Charm {
         swing.bead.blink();
     }
 
-    /// lets go of the bead for good: it can't be grabbed, and swings to rest under heavy
-    /// damping until `stop`
+    /// lets go of the bead for good: the user cannot grab it, and it swings to rest under
+    /// heavy damping until `stop`
     pub fn settle(&self) {
         let mut swing = self.ivars().borrow_mut();
         swing.drag = None;
@@ -373,7 +323,7 @@ impl Charm {
         scale_about(self.frame().size, layer.anchorPoint(), pivot, BUBBLE_FROM)
     }
 
-    /// thread and bead swell in as one, on a spring, as the bead's colour comes out of blur
+    /// thread and bead swell in as one, on a spring, as the bead's color comes out of blur
     pub fn bubble_in(&self, now: f64) {
         let Some(layer) = self.layer() else {
             return;
@@ -396,7 +346,7 @@ impl Charm {
         }
     }
 
-    /// the reverse of `bubble_in`, holding at the end until the window goes
+    /// the reverse of `bubble_in`. it holds at the end until the window goes
     pub fn bubble_out(&self, now: f64, duration: f64) {
         let Some(layer) = self.layer() else {
             return;
@@ -433,14 +383,14 @@ impl Swing {
         self.bead.view.frame().size.width / 2.0
     }
 
-    /// the angle the bead shows at. it goes into the bar only as far as its top has
-    /// flattened, so the flat stays on the bar and the rest of the bead never crosses it
+    /// the angle the bead shows at. it goes into the bar only as far as its top is flat. thus
+    /// the flat stays on the bar, and the rest of the bead never crosses it
     fn shown(&self) -> f64 {
         let reach = ((self.radius() - self.flat[0]) / self.length).acos();
         self.theta.clamp(-reach, reach)
     }
 
-    /// where the bead's centre shows, in the view
+    /// where the bead's center shows, in the view
     fn bead_center(&self) -> NSPoint {
         let (sin, cos) = self.shown().sin_cos();
         NSPoint::new(
@@ -462,7 +412,8 @@ impl Swing {
         (point.x - self.pivot.x).atan2((self.pivot.y - point.y).max(8.0))
     }
 
-    /// keeps a free bead from hanging dead still: once it has, for a while, it swings again
+    /// keeps a free bead from hanging dead still: when it hangs still for a while, it swings
+    /// again
     fn stir(&mut self, dt: f64) {
         if !self.free || self.theta.abs() > STILL_ANGLE || self.omega.abs() > STILL_SPEED {
             self.still_for = 0.0;
@@ -491,7 +442,7 @@ impl Swing {
     }
 
     /// flattens the bead's top as far as the swing presses it into the bar, and annoys it
-    /// while it's pressed hard
+    /// while the swing presses it hard
     fn react(&mut self, dt: f64) {
         let radius = self.radius();
         let goal = pressed(self.theta, radius, self.length).min(radius * FLAT_MOST);
@@ -515,7 +466,7 @@ impl Swing {
     }
 
     /// puts the thread and bead where the angle and look say, as flat and annoyed as the
-    /// bar has made it
+    /// bar makes it
     fn place(&self) {
         let center = self.bead_center();
         let radius = self.radius();
@@ -539,40 +490,6 @@ impl Swing {
     }
 }
 
-/// a drag to `angle`, with the bar at `wall`. past the bar, each further radian presses the
-/// bead in less, toward `PRESS_LIMIT`
-fn press(angle: f64, wall: f64) -> f64 {
-    let over = angle.abs() - wall;
-    if over <= 0.0 {
-        return angle;
-    }
-    angle.signum() * (wall + PRESS_LIMIT * over / (PRESS_LIMIT + over))
-}
-
-/// how many points a bead of `radius` on a swing `length` long, at `theta`, reaches past the
-/// pivot's height. the swing never nears half a turn, where this would stop holding
-fn pressed(theta: f64, radius: f64, length: f64) -> f64 {
-    (radius - length * theta.cos()).max(0.0)
-}
-
-/// moves `pos`, going at `vel`, `dt` seconds on toward `goal` on a spring of unit mass. it
-/// steps a 240th of a second at a time at most. in one long step after a dropped frame, a
-/// spring as stiff as `BRISK` would overshoot more each step instead of settling. once it's
-/// within a thousandth of `goal` and nearly still, it stops there exactly, so whatever it
-/// drives can tell it has stopped changing
-fn chase(pos: &mut f64, vel: &mut f64, goal: f64, spring: Spring, dt: f64) {
-    let steps = (dt * 240.0).ceil().max(1.0);
-    let step = dt / steps;
-    for _ in 0..steps as usize {
-        *vel += (spring.stiffness * (goal - *pos) - spring.damping * *vel) * step;
-        *pos += *vel * step;
-    }
-    if (goal - *pos).abs() < 1e-3 && vel.abs() < 1e-2 {
-        *pos = goal;
-        *vel = 0.0;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use objc2::ClassType;
@@ -584,53 +501,5 @@ mod tests {
     #[test]
     fn the_charm_class_registers() {
         let _ = Charm::class();
-    }
-
-    #[test]
-    fn a_drag_presses_into_the_bar_less_the_further_it_goes() {
-        let wall = 1.1;
-        assert_eq!(press(0.5, wall), 0.5);
-        assert_eq!(press(-wall, wall), -wall);
-        let a = press(wall + 0.5, wall) - wall;
-        let b = press(wall + 1.0, wall) - press(wall + 0.5, wall);
-        assert!(a > 0.0 && b > 0.0 && b < a);
-        assert!(press(wall + 100.0, wall) < wall + PRESS_LIMIT);
-        assert_eq!(press(-2.0, wall), -press(2.0, wall));
-    }
-
-    #[test]
-    fn the_bead_reaches_into_the_bar_only_past_the_wall() {
-        let (radius, length): (f64, f64) = (32.0, 74.0);
-        let wall = (radius / length).acos();
-        assert_eq!(pressed(0.0, radius, length), 0.0);
-        assert_eq!(pressed(wall - 0.01, radius, length), 0.0);
-        assert!(pressed(wall, radius, length) < 1e-9);
-        let near = pressed(wall + 0.05, radius, length);
-        let hardest = pressed(-(wall + PRESS_LIMIT), radius, length);
-        assert!(near > 0.0 && hardest > near);
-        // the hardest a drag can press annoys the bead, and flattens most of its top
-        assert!(hardest > ANNOY_AT && hardest > radius / 3.0);
-    }
-
-    #[test]
-    fn every_spring_comes_to_rest_on_its_goal_even_at_the_longest_frame() {
-        for spring in [LOOK, BRISK, ROUNDING, RAISING] {
-            let (mut pos, mut vel) = (0.0, 0.0);
-            // a second of frames as long as `step` lets one be
-            for _ in 0..32 {
-                chase(&mut pos, &mut vel, 1.0, spring, 0.032);
-            }
-            assert_eq!((pos, vel), (1.0, 0.0));
-        }
-    }
-
-    #[test]
-    fn the_top_rounds_out_without_dipping_past_round() {
-        let (mut depth, mut speed) = (12.0, 0.0);
-        for _ in 0..120 {
-            chase(&mut depth, &mut speed, 0.0, ROUNDING, 1.0 / 120.0);
-            assert!(depth >= 0.0);
-        }
-        assert_eq!(depth, 0.0);
     }
 }

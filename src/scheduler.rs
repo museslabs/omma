@@ -1,17 +1,17 @@
 //! the break schedule as a pure state machine, with no platform code and no clock reads.
 //! each call returns the event it caused, if any. the ui follows `phase()` and uses events
-//! only for side effects such as sounds.
+//! only for side effects such as sounds
 
 use std::time::{Duration, SystemTime};
 
 use crate::config::DndAction;
 use crate::queue::{Break, BreakQueue, BreakType, Breaks};
 
-/// a jump of at least this much between ticks means the mac slept or the clock moved
-/// forward. it counts as rest whatever the smart pause setting.
+/// a jump of at least this much between ticks means the computer slept or the clock moved
+/// forward. it counts as rest with any smart pause setting
 const SLEEP_GAP: Duration = Duration::from_secs(60);
 
-/// time arithmetic caps durations here so it can't overflow; anything longer means never
+/// time arithmetic caps durations here, so it cannot overflow. anything longer means never
 const NEVER: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 
 /// everything that shapes the schedule
@@ -23,10 +23,21 @@ pub struct Settings {
     pub postpone: Duration,
     pub allow_postpone: bool,
     pub strict: bool,
-    /// idle time that pauses the schedule; None turns smart pause off
+    /// idle time that pauses the schedule. None turns smart pause off
     pub idle_threshold: Option<Duration>,
     pub random_order: bool,
     pub breaks: Breaks,
+}
+
+impl Settings {
+    /// strict mode lets no break be skipped
+    pub fn can_skip(&self) -> bool {
+        !self.strict
+    }
+
+    pub fn can_postpone(&self) -> bool {
+        self.allow_postpone && !self.strict
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +47,7 @@ pub enum Phase {
         until: Option<SystemTime>,
     },
     /// waiting since `since` to warn about the current break. the wait is the postpone delay
-    /// when `postponed`, otherwise what the current break's kind calls for.
+    /// when `postponed`. otherwise the kind of the current break sets it
     Waiting {
         since: SystemTime,
         postponed: bool,
@@ -90,9 +101,9 @@ impl Core {
     }
 
     /// applies new settings without restarting the schedule. each wait keeps its start, so a
-    /// changed interval counts from when the wait began, and a deadline that has already
-    /// passed fires on the next tick. a postponed break stays unless the break lists or
-    /// `random_order` changed. a warning or break under way keeps its break and deadline.
+    /// changed interval counts from when the wait began. a deadline that already passed fires
+    /// on the next tick. a postponed break stays unless the break lists or `random_order`
+    /// changed. a warning or break under way keeps its break and deadline
     pub fn reconfigure(&mut self, settings: Settings) {
         if settings == self.settings {
             return;
@@ -110,13 +121,13 @@ impl Core {
         }
     }
 
-    /// advances the schedule to `now`; `idle` is the time since the last user input.
+    /// advances the schedule to `now`. `idle` is the time since the last user input.
     ///
-    /// rest is time away from the screen. it's idle time past the smart pause threshold,
+    /// rest is time away from the screen. it is idle time past the smart pause threshold,
     /// which pauses the schedule, or a jump of `SLEEP_GAP` or more between ticks. once the
     /// user is back, the next break waits at least a full short interval. rest at least as
-    /// long as the next long break counts as that break. a clock moved back moves every
-    /// deadline back with it.
+    /// long as the next long break counts as that break. when the clock moves back, every
+    /// deadline moves back with it
     #[must_use]
     pub fn tick(&mut self, now: SystemTime, idle: Duration) -> Option<Event> {
         self.follow_clock(now);
@@ -140,7 +151,7 @@ impl Core {
                 }
                 None
             }
-            // idling through a break is the point of it; only sleep counts here
+            // idling through a break is the point of it. only sleep counts here
             Phase::Break { ends_at } => {
                 if slept {
                     self.credit(now, gap);
@@ -151,7 +162,8 @@ impl Core {
                 })
             }
             Phase::Waiting { .. } | Phase::Warning { .. } if idle_away || slept => {
-                // no input arrives during a sleep, which the idle counter may not include
+                // no input arrives during a sleep, and the idle counter does not always include
+                // the sleep
                 let away = if slept { gap.max(idle) } else { idle };
                 if idle_away {
                     self.phase = Phase::Paused {
@@ -174,7 +186,7 @@ impl Core {
         }
     }
 
-    /// moves on past the warned or running break. ignored in other phases and in strict mode.
+    /// moves on past the warned or running break. ignored in other phases and in strict mode
     #[must_use]
     pub fn skip(&mut self, now: SystemTime) -> Option<Event> {
         if !self.can_skip() || !self.break_due() {
@@ -187,7 +199,7 @@ impl Core {
     }
 
     /// retries the warned or running break after the postpone delay. ignored in other
-    /// phases and when the settings don't allow postponing.
+    /// phases and when the settings do not allow postponing
     #[must_use]
     pub fn postpone(&mut self, now: SystemTime) -> Option<Event> {
         if !self.can_postpone() || !self.break_due() {
@@ -199,8 +211,8 @@ impl Core {
         event
     }
 
-    /// do-not-disturb holding back a warned break. the system acts here, not the user, so
-    /// the skip and postpone settings don't apply.
+    /// do-not-disturb holds back a warned break. the system acts here, not the user, so the
+    /// skip and postpone settings do not apply
     pub fn suppress(&mut self, now: SystemTime, action: DndAction) {
         if !matches!(self.phase, Phase::Warning { .. }) {
             return;
@@ -214,7 +226,7 @@ impl Core {
 
     /// starts a break at once with no warning: the current break, or the next of `kind`.
     /// ignored during a break and while disabled. a smart pause ends first, as if the tick
-    /// that notices the user is back had come before the click.
+    /// that notices the user is back came before the click
     #[must_use]
     pub fn take_break(&mut self, now: SystemTime, kind: Option<BreakType>) -> Option<Event> {
         if matches!(self.phase, Phase::Disabled { .. } | Phase::Break { .. }) {
@@ -230,7 +242,7 @@ impl Core {
         Some(self.start_break(now))
     }
 
-    /// enabling starts the schedule afresh. disabling is `disable_until` with no end.
+    /// enabling restarts the schedule. disabling is `disable_until` with no end
     #[must_use]
     pub fn set_enabled(&mut self, now: SystemTime, on: bool) -> Option<Event> {
         if !on {
@@ -244,8 +256,8 @@ impl Core {
     }
 
     /// turns the schedule off until `until`, or until enabled again when None, and ends a
-    /// running break uncompleted. the first tick at or after `until` starts the schedule
-    /// afresh, as enabling does.
+    /// running break uncompleted. the first tick at or after `until` restarts the schedule,
+    /// as enabling does
     #[must_use]
     pub fn disable_until(&mut self, now: SystemTime, until: Option<SystemTime>) -> Option<Event> {
         self.follow_clock(now);
@@ -267,16 +279,16 @@ impl Core {
     }
 
     pub fn can_skip(&self) -> bool {
-        !self.settings.strict
+        self.settings.can_skip()
     }
 
     pub fn can_postpone(&self) -> bool {
-        self.settings.allow_postpone && !self.settings.strict
+        self.settings.can_postpone()
     }
 
     /// whole seconds, rounded up, until the phase's deadline: the warning, the break or
     /// the break's end. a break counts down from its length at most, so a countdown that
-    /// `start_countdown_at` started late shows its first second for longer.
+    /// `start_countdown_at` started late shows its first second for longer
     pub fn remaining(&self, now: SystemTime) -> Option<u64> {
         match self.phase {
             Phase::Waiting { since, postponed } => {
@@ -290,11 +302,11 @@ impl Core {
         }
     }
 
-    /// starts the running break's countdown at `at`, when its screen has come into focus,
-    /// so every second of it is on screen. the break then ends one length after `at`.
-    /// `now` is when the screen was asked for. ignored outside a break, and when the
-    /// countdown had moved past its first second by `now`. call it once per break, since
-    /// each call in the first second moves the end again.
+    /// starts the running break's countdown at `at`, when its screen comes into focus, so
+    /// every second of it is on screen. the break then ends one length after `at`. `now` is
+    /// when the app asked for the screen. ignored outside a break, and when the countdown is
+    /// past its first second at `now`. call it once per break, because each call in the first
+    /// second moves the end again
     pub fn start_countdown_at(&mut self, now: SystemTime, at: SystemTime) {
         self.follow_clock(now);
         let length = self.current.duration;
@@ -358,7 +370,7 @@ impl Core {
         Event::BreakStarted
     }
 
-    /// the current break is over, taken or skipped. waits for the next one.
+    /// the current break is over, taken or skipped. waits for the next one
     fn finish_current(&mut self, now: SystemTime) {
         self.queue.advance(self.current.kind);
         if self.current.kind == BreakType::Long {
@@ -375,7 +387,7 @@ impl Core {
         };
     }
 
-    /// a fresh schedule, with the long cycle starting `now`
+    /// a new schedule. the long cycle starts at `now`
     fn resume(&mut self, now: SystemTime) {
         self.long_since = now;
         self.schedule(now);
@@ -390,7 +402,7 @@ impl Core {
     }
 
     /// the user is back after `rest` away. any rest earns a full short interval before the
-    /// next break, so an overdue long break waits that long too.
+    /// next break, so an overdue long break waits that long too
     fn end_rest(&mut self, now: SystemTime, rest: Duration) {
         self.credit(now, rest);
         let long_since_floor = earlier(
@@ -427,11 +439,10 @@ impl Core {
     }
 }
 
-/// the break to wait for from `since`. it's a long one when it falls due before the next
-/// short one would be over, so the long takes that short's place instead of following right
-/// after it.
-/// a wait that starts the long cycle afresh always ends in a short, so shorts can't starve
-/// however long they take.
+/// the break to wait for from `since`. it is a long break when the long falls due before the
+/// next short ends. then the long takes the place of that short, and does not follow right
+/// after it. a wait that restarts the long cycle always ends in a short, so shorts always get
+/// a turn, however long they take
 fn pick(
     settings: &Settings,
     queue: &BreakQueue,
@@ -462,7 +473,7 @@ fn earlier(t: SystemTime, d: Duration) -> SystemTime {
     t.checked_sub(d.min(NEVER)).unwrap_or(t)
 }
 
-/// whole seconds from `now` to `t`, rounded up; 0 once `t` has passed
+/// whole seconds from `now` to `t`, rounded up. 0 once `t` is past
 fn ceil_secs(now: SystemTime, t: SystemTime) -> u64 {
     t.duration_since(now).map_or(0, whole_secs)
 }
@@ -528,8 +539,8 @@ mod tests {
         }
     }
 
-    /// ticks once a second since the last tick, as the app's timer would, then at `now`, with
-    /// no idle time. returns the event at `now`; an event before it fails the test.
+    /// ticks once a second since the last tick, as the app's timer does, then at `now`, with
+    /// no idle time. returns the event at `now`. an event before it fails the test
     fn step(core: &mut Core, now: SystemTime) -> Option<Event> {
         loop {
             let t = core.last_tick + secs(1);
@@ -548,7 +559,7 @@ mod tests {
         core
     }
 
-    /// ticks once a second over `from..to` with no idle time; returns each break that
+    /// ticks once a second over `from..to` with no idle time. returns each break that
     /// started, with the second it started at
     fn breaks_between(core: &mut Core, from: u64, to: u64) -> Vec<(u64, Break)> {
         let mut started = Vec::new();
@@ -627,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_countdown_already_under_way_keeps_its_deadline() {
-        // a screen built mid-break, once a display appears, doesn't wind the count back up
+        // a screen built mid-break, once a display appears, does not wind the count back up
         let mut core = in_break();
         core.start_countdown_at(at_ms(63_200), at_ms(63_800));
         assert_eq!(core.remaining(at_ms(63_200)), Some(2));
@@ -845,7 +856,7 @@ mod tests {
             assert!(matches!(core.phase(), Phase::Paused { .. }));
             core
         };
-        // the user is back and clicks before the tick that would notice
+        // the user is back and clicks before a tick notices
         let mut clicked = paused();
         assert_eq!(
             clicked.take_break(at(600), Some(Short)),
@@ -857,7 +868,7 @@ mod tests {
             ticked.take_break(at(600), Some(Short)),
             Some(Event::BreakStarted)
         );
-        // either way the 600 s away stood in for the long break
+        // either way, the 600 s away counts as the long break
         for core in [&mut clicked, &mut ticked] {
             assert_eq!(step(core, at(603)), BREAK_ENDED);
             assert_eq!(core.current().kind, Short);
@@ -1025,7 +1036,7 @@ mod tests {
     fn waking_before_any_input_still_credits_the_sleep() {
         let mut core = Core::new(settings(), at(0));
         assert_eq!(kinds(&breaks_between(&mut core, 1, 100)), [Short]);
-        // asleep from 100 s to 200 s; the first tick after waking comes before any key press,
+        // asleep from 100 s to 200 s. the first tick after waking comes before any key press,
         // and the idle counter reads 190 s
         assert_eq!(core.tick(at(200), secs(190)), None);
         let breaks = breaks_between(&mut core, 201, 600);
@@ -1122,7 +1133,7 @@ mod tests {
             [62, 127, 192, 257]
         );
         assert_eq!(core.current().kind, Long);
-        // asleep 130 s across the long's warning at 300: too short to stand in for it
+        // asleep 130 s across the long's warning at 300: too short to count as the long
         assert_eq!(core.tick(at(410), Duration::ZERO), None);
         assert_eq!(core.current().kind, Long);
         assert_eq!(core.remaining(at(410)), Some(60));
@@ -1141,7 +1152,7 @@ mod tests {
             },
             at(0),
         );
-        // the third short would end at 3675, after the long falls due at 3670
+        // a third short ends at 3675, after the long falls due at 3670
         let breaks = breaks_between(&mut core, 1, 3700);
         assert_eq!(kinds(&breaks), [Short, Short, Long]);
         assert_eq!(starts(&breaks), [1210, 2435, 3680]);
@@ -1196,7 +1207,7 @@ mod tests {
     }
 
     /// the user is idle from 0 s until `back`, with smart pause after `threshold` seconds and
-    /// a 60 s long break; returns when the first long break starts
+    /// a 60 s long break. returns when the first long break starts
     fn first_long_after_idle(threshold: u64, back: u64) -> u64 {
         let mut core = Core::new(
             Settings {
@@ -1234,7 +1245,7 @@ mod tests {
                 Short, Short, Short, Short, Long, Short, Short, Short, Short, Long
             ]
         );
-        // the first long warns at 75 min; the next 75 min after the first one ends
+        // the first long warns at 75 min. the next warns 75 min after the first one ends
         assert_eq!(starts(&breaks)[4], 4500 + 10);
         assert_eq!(starts(&breaks)[9], 4570 + 4500 + 10);
     }
@@ -1310,7 +1321,7 @@ mod tests {
             [62, 127, 192, 257]
         );
         assert_eq!(core.current().kind, Long);
-        // the long warns at 300; a short taken at 270 doesn't push it back
+        // the long warns at 300. a short taken at 270 does not push it back
         assert_eq!(
             core.take_break(at(270), Some(Short)),
             Some(Event::BreakStarted)
@@ -1325,7 +1336,7 @@ mod tests {
         let mut core = Core::new(settings(), at(0));
         assert_eq!(step(&mut core, at(40)), None);
 
-        // a change that doesn't touch this wait leaves the countdown alone
+        // a change that does not touch this wait leaves the countdown alone
         core.reconfigure(Settings {
             postpone: secs(99),
             ..settings()
@@ -1340,7 +1351,7 @@ mod tests {
         });
         assert_eq!(core.remaining(at(40)), Some(50));
 
-        // a shorter one that has already run out warns on the next tick
+        // a shorter one that already ran out warns on the next tick
         core.reconfigure(Settings {
             short_interval: secs(30),
             ..settings()

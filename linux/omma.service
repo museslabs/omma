@@ -1,0 +1,15 @@
+# A systemd user service that starts omma with the graphical session.
+# 1. Copy this file to ~/.config/systemd/user/omma.service.
+# 2. Set ExecStart to the full path of your omma binary.
+# 3. Run: systemctl --user enable --now omma
+[Unit]
+Description=omma, an eye-strain break reminder
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.cargo/bin/omma
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
