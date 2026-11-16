@@ -19,6 +19,10 @@ pub enum Command {
     TakeBreak,
     TakeShortBreak,
     TakeLongBreak,
+    /// skip the warned or running break
+    Skip,
+    /// postpone the warned or running break
+    Postpone,
     Enable,
     Disable,
     /// disable for this long, sent in whole seconds
@@ -30,10 +34,12 @@ pub enum Command {
 
 /// the wire name of each command without an argument. renaming one breaks a CLI that talks
 /// to an older instance
-const COMMANDS: [(Command, &str); 8] = [
+const COMMANDS: [(Command, &str); 10] = [
     (Command::TakeBreak, "take-break"),
     (Command::TakeShortBreak, "short-break"),
     (Command::TakeLongBreak, "long-break"),
+    (Command::Skip, "skip"),
+    (Command::Postpone, "postpone"),
     (Command::Enable, "enable"),
     (Command::Disable, "disable"),
     (Command::Quit, "quit"),
@@ -473,6 +479,8 @@ mod tests {
             TakeBreak,
             TakeShortBreak,
             TakeLongBreak,
+            Skip,
+            Postpone,
             Enable,
             Disable,
             Pause(Duration::from_secs(1800)),
@@ -482,8 +490,8 @@ mod tests {
         ] {
             // a new command stops this compiling: add it to the match and to the list above
             match command {
-                TakeBreak | TakeShortBreak | TakeLongBreak | Enable | Disable | Pause(_) | Quit
-                | Status | Reload => {}
+                TakeBreak | TakeShortBreak | TakeLongBreak | Skip | Postpone | Enable | Disable
+                | Pause(_) | Quit | Status | Reload => {}
             }
             let line = command.to_string();
             assert!(line.len() as u64 <= MAX_LINE, "{line}");

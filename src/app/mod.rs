@@ -365,6 +365,8 @@ impl<U: Ui> App<U> {
             Command::TakeBreak => self.cli_take_break(now, None),
             Command::TakeShortBreak => self.cli_take_break(now, Some(BreakType::Short)),
             Command::TakeLongBreak => self.cli_take_break(now, Some(BreakType::Long)),
+            Command::Skip => self.cli_skip(now),
+            Command::Postpone => self.cli_postpone(now),
             Command::Enable => self.cli_set_enabled(now, true),
             Command::Disable => self.cli_set_enabled(now, false),
             Command::Pause(length) => {
@@ -400,6 +402,49 @@ impl<U: Ui> App<U> {
             Err("omma is disabled".into())
         };
         (event, reply)
+    }
+
+    /// why the warned or running break cannot be skipped or postponed, if it cannot
+    fn break_due(&self, verb: &str) -> Result<String, String> {
+        match self.core.phase() {
+            Phase::Warning { .. } | Phase::Break { .. } => Ok(self.core.current().name.clone()),
+            Phase::Disabled { .. } => Err("omma is disabled".into()),
+            _ => Err(format!("no break is coming up to {verb}")),
+        }
+    }
+
+    fn cli_skip(&mut self, now: SystemTime) -> (Option<Event>, Reply) {
+        let name = match self.break_due("skip") {
+            Ok(_) if !self.core.can_skip() => {
+                return (
+                    None,
+                    Err("strict_break is on, so breaks can't be skipped".into()),
+                );
+            }
+            Ok(name) => name,
+            Err(why) => return (None, Err(why)),
+        };
+        (self.core.skip(now), Ok(format!("skipped: {name}")))
+    }
+
+    fn cli_postpone(&mut self, now: SystemTime) -> (Option<Event>, Reply) {
+        let name = match self.break_due("postpone") {
+            Ok(_) if !self.core.can_postpone() => {
+                let why = if self.config.schedule.strict {
+                    "strict_break is on, so breaks can't be postponed"
+                } else {
+                    "allow_postpone is off, so breaks can't be postponed"
+                };
+                return (None, Err(why.into()));
+            }
+            Ok(name) => name,
+            Err(why) => return (None, Err(why)),
+        };
+        let by = fmt_duration(self.config.schedule.postpone.as_secs());
+        (
+            self.core.postpone(now),
+            Ok(format!("postponed by {by}: {name}")),
+        )
     }
 
     fn cli_set_enabled(&mut self, now: SystemTime, on: bool) -> (Option<Event>, Reply) {
