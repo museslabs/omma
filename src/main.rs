@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("omma supports macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("omma supports macOS and Linux with a Wayland compositor only");
 
 /// writes `omma: <message>` to the running app's stderr and drops a failed write. eprintln!
 /// panics after the terminal that started omma closes
@@ -90,5 +90,10 @@ fn run() -> anyhow::Result<ExitCode> {
 }
 
 fn runtime_dir() -> anyhow::Result<PathBuf> {
-    ipc::runtime_dir().context("can't locate the home directory: set HOME to an absolute path")
+    #[cfg(target_os = "macos")]
+    const HINT: &str = "can't locate the home directory: set HOME to an absolute path";
+    #[cfg(not(target_os = "macos"))]
+    const HINT: &str = "can't locate a runtime directory: set XDG_RUNTIME_DIR or HOME to an \
+                        absolute path";
+    ipc::runtime_dir().context(HINT)
 }

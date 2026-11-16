@@ -14,6 +14,8 @@ use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
 
+#[cfg(not(target_os = "macos"))]
+pub use keys::Mods;
 pub use keys::{Key, KeySpec};
 
 use crate::queue::{Break, BreakType, Breaks};
@@ -23,6 +25,8 @@ use crate::scheduler::Settings;
 /// platform has its own file, which documents its sounds, shortcuts and window rules
 #[cfg(target_os = "macos")]
 pub const DEFAULT_CONFIG: &str = include_str!("default-macos.toml");
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_CONFIG: &str = include_str!("default-linux.toml");
 
 /// a config that passed every check
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -489,6 +493,56 @@ fn sound(name: String, home: Option<&Path>) -> Result<Option<String>, String> {
         None => Err(format!(
             "there's no sound named `{name}` in ~/Library/Sounds, /Library/Sounds or \
              /System/Library/Sounds"
+        )),
+    }
+}
+
+/// the sounds omma makes itself, which need no sound theme. they have the names of the macOS
+/// sounds that they replace, so one config works on both
+#[cfg(not(target_os = "macos"))]
+pub const BUILT_IN_SOUNDS: [&str; 2] = ["Tink", "Glass"];
+
+/// where omma looks for a sound by name, after the built-in ones: the user's sounds, then
+/// the freedesktop sound theme
+#[cfg(not(target_os = "macos"))]
+fn sound_folders(home: Option<&Path>) -> Vec<PathBuf> {
+    let absolute = |dir: PathBuf| dir.is_absolute().then_some(dir);
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .and_then(absolute);
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    data_home
+        .into_iter()
+        .chain(home.map(|home| home.join(".local/share")))
+        .map(|dir| dir.join("sounds"))
+        .chain(
+            data_dirs
+                .split(':')
+                .map(PathBuf::from)
+                .filter_map(absolute)
+                .map(|dir| dir.join("sounds/freedesktop/stereo")),
+        )
+        .collect()
+}
+
+/// None for "", else a built-in sound's name, or the path of a sound file named `name` plus
+/// an extension in one of `sound_folders`. names are case-sensitive
+#[cfg(not(target_os = "macos"))]
+fn sound(name: String, home: Option<&Path>) -> Result<Option<String>, String> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if BUILT_IN_SOUNDS.contains(&name.as_str()) {
+        return Ok(Some(name));
+    }
+    match sound_file(&name, sound_folders(home)) {
+        Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
+        None => Err(format!(
+            "there's no sound named `{name}`: use Tink or Glass, or the name of a sound in \
+             ~/.local/share/sounds or /usr/share/sounds/freedesktop/stereo"
         )),
     }
 }
@@ -1096,6 +1150,46 @@ mod tests {
                 format!(
                     "sounds.post_break: there's no sound named `{name}` in ~/Library/Sounds, \
                      /Library/Sounds or /System/Library/Sounds"
+                )
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_sound_is_built_in_or_a_file_that_exists_or_empty_for_none() {
+        let sounds = |text: &str, home: &Path| {
+            Config::parse(&format!("[sounds]\n{text}\n"), Some(home)).map(|cfg| cfg.sounds)
+        };
+        assert_eq!(
+            sounds("pre_break = \"\"\npost_break = \"Tink\"", home()),
+            Ok(Sounds {
+                pre_break: None,
+                post_break: Some("Tink".into()),
+            })
+        );
+
+        let user = TempDir::new("sounds");
+        let folder = user.0.join(".local/share/sounds");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("chime.oga"), b"").unwrap();
+        assert_eq!(
+            sounds("pre_break = \"chime\"", &user.0).map(|s| s.pre_break),
+            Ok(Some(
+                folder.join("chime.oga").to_string_lossy().into_owned()
+            ))
+        );
+
+        // names are case-sensitive, and the user's sounds are the user's own
+        for name in ["tink", "Glas", " Tink", "chime", "no-such-sound-anywhere"] {
+            assert_eq!(
+                sounds(&format!("post_break = \"{name}\""), home())
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "sounds.post_break: there's no sound named `{name}`: use Tink or Glass, or \
+                     the name of a sound in ~/.local/share/sounds or \
+                     /usr/share/sounds/freedesktop/stereo"
                 )
             );
         }

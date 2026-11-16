@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "GPL-3.0-or-later"
-description = "An eye-strain break reminder for the macOS menu bar"
+description = "An eye-strain break reminder for the macOS menu bar and Wayland desktops"
 repository = "https://github.com/museslabs/omma"
 readme = "README.md"
 # The bead's design files belong to the repository, not the crate.
 exclude = ["design/"]
-keywords = ["macos", "health", "eye-strain", "break", "menu-bar"]
+keywords = ["macos", "wayland", "health", "eye-strain", "break"]
 categories = ["command-line-utilities"]
 
 [dependencies]
@@ -19,6 +19,20 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 regex = "1"
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+glutin = { version = "0.32", default-features = false, features = ["egl", "wayland"] }
+glow = "0.17"
+raw-window-handle = "0.6"
+xkbcommon = { version = "0.9", default-features = false, features = ["wayland"] }
+cosmic-text = "0.19"
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

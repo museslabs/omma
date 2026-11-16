@@ -92,10 +92,40 @@ pub type Reply = Result<String, String>;
 
 /// `~/Library/Application Support/omma`, where the running instance keeps its lock file and
 /// socket. None when the home directory is not an absolute path
+#[cfg(target_os = "macos")]
 pub fn runtime_dir() -> Option<PathBuf> {
     std::env::home_dir()
         .filter(|home| home.is_absolute())
         .map(|home| home.join("Library/Application Support/omma"))
+}
+
+/// `$XDG_RUNTIME_DIR/omma`, where the running instance keeps its lock file and socket, or
+/// `~/.local/state/omma` without a runtime directory. None when neither is an absolute path
+#[cfg(not(target_os = "macos"))]
+pub fn runtime_dir() -> Option<PathBuf> {
+    runtime_dir_from(
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::home_dir(),
+    )
+}
+
+/// the XDG base directory spec says to ignore an empty or relative path
+#[cfg(not(target_os = "macos"))]
+fn runtime_dir_from(
+    runtime: Option<std::ffi::OsString>,
+    state: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let absolute =
+        |path: Option<std::ffi::OsString>| path.map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute(runtime)
+        .or_else(|| absolute(state))
+        .or_else(|| {
+            home.filter(|h| h.is_absolute())
+                .map(|h| h.join(".local/state"))
+        })
+        .map(|base| base.join("omma"))
 }
 
 const LOCK_FILE: &str = "omma.lock";
@@ -531,6 +561,26 @@ mod tests {
                 assert_ne!(name_a, name_b);
             }
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_runtime_dir_prefers_xdg_runtime_dir_then_state_then_home() {
+        let os = |p: &str| Some(std::ffi::OsString::from(p));
+        let home = || Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            runtime_dir_from(os("/run/user/1000"), os("/s"), home()),
+            Some(PathBuf::from("/run/user/1000/omma"))
+        );
+        assert_eq!(
+            runtime_dir_from(os("relative"), os("/s"), home()),
+            Some(PathBuf::from("/s/omma"))
+        );
+        assert_eq!(
+            runtime_dir_from(None, os(""), home()),
+            Some(PathBuf::from("/home/u/.local/state/omma"))
+        );
+        assert_eq!(runtime_dir_from(None, None, Some(PathBuf::from("u"))), None);
     }
 
     #[test]

@@ -8,7 +8,9 @@ use crate::config::{Config, ConfigError};
 use crate::ipc::Server;
 
 pub trait Backend {
-    /// what `check_system` found, which `run` goes on with: the main-thread marker on macOS
+    /// what `check_system` found, which `run` goes on with: the main-thread marker on macOS,
+    /// the connection to the compositor on Wayland. `run` must reuse the connection, because
+    /// some connections can be made only once
     type System;
 
     /// fails when the system cannot show omma's windows, before omma takes the instance lock
@@ -28,6 +30,11 @@ pub trait Backend {
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "linux")]
+pub mod wayland;
+
 /// the backend for the platform omma was built for
 #[cfg(target_os = "macos")]
 pub type Platform = macos::Macos;
+#[cfg(target_os = "linux")]
+pub type Platform = wayland::Wayland;

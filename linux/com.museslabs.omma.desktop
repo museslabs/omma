@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=omma
+GenericName=Break Reminder
+Comment=Eye-strain break reminder
+Exec=omma
+Terminal=false
+Categories=Utility;
+Keywords=break;eye;strain;rest;20-20-20;
+StartupNotify=false
