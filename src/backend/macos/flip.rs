@@ -1,5 +1,5 @@
-//! the countdown as a flip clock: a digit that changes turns over like a leaf, its top half
-//! falling away and the new bottom half landing with a little bounce.
+//! the countdown as a flip clock: a digit that changes turns over like a leaf. its top half
+//! falls away, and the new bottom half lands with a little bounce
 
 use std::cell::RefCell;
 
@@ -13,8 +13,9 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction};
 
-use super::bead::Rgba;
-use super::panel::{Fill, LabelStyle, POP, after, fade, make_label, property, spring};
+use super::panel::{Fill, LabelStyle, after, fade, make_label, property, spring};
+use crate::mati::colour::Rgba;
+use crate::mati::motion::POP;
 
 /// how long the old top half takes to fall edge-on
 const FALL: f64 = 0.15;
@@ -22,11 +23,11 @@ const FALL: f64 = 0.15;
 const SHADE: f64 = 0.45;
 
 pub struct FlipCount {
-    /// what goes in the view hierarchy, sized to the count and centred where `new` was told
+    /// what goes in the view hierarchy, sized to the count and centered on the `centre` of `new`
     pub view: Retained<NSView>,
     mtm: MainThreadMarker,
     font: Retained<NSFont>,
-    /// the colour of the leaves, which hides what is under a turning one
+    /// the color of the leaves, which hides what is under a turning one
     ground: Rgba,
     centre: NSPoint,
     /// a digit's size, and a colon's width
@@ -45,7 +46,7 @@ struct Cell {
 }
 
 impl FlipCount {
-    /// digits `size` points tall on leaves of the colour `ground`, centred on `centre` in the
+    /// digits `size` points tall on leaves of the color `ground`, centered on `centre` in the
     /// superview
     pub fn new(mtm: MainThreadMarker, size: f64, ground: Rgba, centre: NSPoint) -> FlipCount {
         // SAFETY: an immutable AppKit constant
@@ -61,7 +62,7 @@ impl FlipCount {
         let colon = measure(":0").width - one.width;
         // an even height, so the fold between the halves falls on a whole point
         let height = (one.height / 2.0).ceil() * 2.0;
-        // digits have no descender, so the count sits half of one low to centre it by eye
+        // digits have no descender, so the count sits half of one low to center it by eye
         let centre = NSPoint::new(centre.x, centre.y + font.descender() / 2.0);
         let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
         view.setWantsLayer(true);
@@ -84,8 +85,8 @@ impl FlipCount {
     }
 
     /// shows `text`, which VoiceOver reads as `spoken`. with `flip`, each character that
-    /// differs from the one in its place turns over; a count of another length is laid out
-    /// afresh
+    /// differs from the one in its place turns over. a count of another length gets a fresh
+    /// layout
     pub fn set(&self, text: &str, spoken: &str, flip: bool) {
         self.view
             .setAccessibilityLabel(Some(&NSString::from_str(spoken)));
@@ -181,8 +182,8 @@ impl FlipCount {
         (leaf, label)
     }
 
-    /// turns `cell` over from `old` to `ch`: the old top half falls onto the fold over the new
-    /// one, then the new bottom half swings down from the fold over the old one
+    /// turns `cell` over from `old` to `ch`. first, the old top half falls onto the fold over
+    /// the new one. then the new bottom half swings down from the fold over the old one
     fn turn(&self, cell: &Cell, old: char, ch: char) {
         let width = self.width(ch);
         let height = self.digit.height;
@@ -239,7 +240,7 @@ impl FlipCount {
             shade.addAnimation_forKey(&fade(SHADE, 0.0, now + FALL, 0.18, Fill::Entrance), None);
         }
 
-        // once the new half has landed it's the cell's own, and the leaves go
+        // once the new half lands, it is the cell's own, and the leaves go
         let bottom = cell.bottom.clone();
         after(self.mtm, settled - now, move || {
             bottom.setStringValue(&text);
@@ -249,7 +250,7 @@ impl FlipCount {
     }
 }
 
-/// a black layer over `leaf`, whose opacity is how far the leaf has turned from the light
+/// a black layer over `leaf`, whose opacity is how far the leaf is turned from the light
 fn shade(leaf: &NSView) -> Option<Retained<CALayer>> {
     let layer = leaf.layer()?;
     let shade = CALayer::new();

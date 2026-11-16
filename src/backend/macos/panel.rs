@@ -1,5 +1,5 @@
 //! what the warning and the break screen share: the panel, labels, delayed work and the
-//! Core Animation helpers behind their blur, fade and slide transitions.
+//! Core Animation helpers behind their blur, fade and slide transitions
 
 use core::ptr::NonNull;
 use std::cell::Cell;
@@ -27,7 +27,7 @@ use objc2_quartz_core::{
 define_class!(
     /// the ivar says whether the panel can become the key window
     // SAFETY: NSPanel can be subclassed, and nothing here breaks its requirements. each
-    // override has the signature AppKit declares, which registering the class checks.
+    // override has the signature AppKit declares, which registering the class checks
     #[unsafe(super(NSPanel))]
     #[thread_kind = MainThreadOnly]
     #[name = "OmmaPanel"]
@@ -40,16 +40,16 @@ define_class!(
             *self.ivars()
         }
 
-        /// a key nothing handles is dropped instead of beeping
+        /// the panel drops a key that nothing handles, and does not beep
         #[unsafe(method(noResponderFor:))]
         fn no_responder_for(&self, _selector: Sel) {}
     }
 );
 
 /// a borderless, see-through panel above every window, fullscreen apps included, and on
-/// every Space. it never activates omma, so the app the user is in stays active. with
-/// `takes_keys` it can still become the key window and get keystrokes, which a borderless
-/// window otherwise never does; focus goes back to the user's app when it goes away.
+/// every Space. it never activates omma, so the app that the user is in stays active. with
+/// `takes_keys`, it can still become the key window and get keystrokes, which a borderless
+/// window otherwise never does. when the panel goes away, focus goes back to the user's app
 pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Retained<Panel> {
     let this = Panel::alloc(mtm).set_ivars(takes_keys);
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
@@ -67,13 +67,13 @@ pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Ret
     panel.setOpaque(false);
     // native shadows follow the panel's rectangle, not the glass drawn inside it
     panel.setHasShadow(false);
-    // a panel hides when its app isn't active, and omma never activates
+    // a panel hides when its app is not active, and omma never activates
     panel.setHidesOnDeactivate(false);
     // clear, so the glass and the behind-window blur sample the desktop. its appearance
     // is the system's, light or dark
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
-    // a see-through window lets clicks through where it's transparent unless told
-    // otherwise; this one takes them over its whole frame, faded out or not
+    // a see-through window lets clicks through where it is transparent, unless told
+    // otherwise. this one takes them over its whole frame, faded out or not
     panel.setIgnoresMouseEvents(false);
     panel.setLevel(NSScreenSaverWindowLevel);
     panel.setCollectionBehavior(
@@ -84,8 +84,8 @@ pub fn make_panel(mtm: MainThreadMarker, frame: NSRect, takes_keys: bool) -> Ret
     panel
 }
 
-/// for a panel that darkens what's behind it whatever the system's appearance. its glass
-/// and text have to be the dark ones
+/// for a panel that darkens what is behind it, whatever the system's appearance. its glass
+/// and text must be the dark ones
 pub fn keep_dark(panel: &Panel) {
     // SAFETY: an immutable AppKit constant
     if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
@@ -130,13 +130,13 @@ pub fn make_label(
     label
 }
 
-/// false when the user has asked macOS to reduce motion. windows then cross-fade in and
-/// out over `CROSS_FADE`, and nothing moves, blurs or flips.
+/// false when the user set macOS to reduce motion. windows then cross-fade in and out over
+/// `CROSS_FADE`, and nothing moves, blurs or flips
 pub fn animations_on() -> bool {
     !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
-/// true when the user has asked macOS to reduce transparency or increase contrast
+/// true when the user set macOS to reduce transparency or increase contrast
 pub fn solid_surfaces() -> bool {
     let workspace = NSWorkspace::sharedWorkspace();
     workspace.accessibilityDisplayShouldReduceTransparency()
@@ -144,7 +144,7 @@ pub fn solid_surfaces() -> bool {
 }
 
 /// runs `f` once, `delay` seconds from now, on the main run loop. like the app's tick, it
-/// runs in the common modes, so an open status menu doesn't hold it up.
+/// runs in the common modes, so an open status menu does not hold it up
 pub fn after(_mtm: MainThreadMarker, delay: f64, f: impl FnOnce() + 'static) {
     let f = Cell::new(Some(f));
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
@@ -152,9 +152,9 @@ pub fn after(_mtm: MainThreadMarker, delay: f64, f: impl FnOnce() + 'static) {
             f();
         }
     });
-    // SAFETY: the marker proves this is the main thread, and the timer goes on the main run
-    // loop and fires there, the only thread the block's captures may be used on. the mode
-    // is an immutable Foundation constant.
+    // SAFETY: the marker proves that this is the main thread. the timer goes on the main run
+    // loop and fires there, the only thread that can use the block's captures. the mode is
+    // an immutable Foundation constant
     unsafe {
         let timer = NSTimer::timerWithTimeInterval_repeats_block(delay, false, &block);
         NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
@@ -231,9 +231,9 @@ pub fn blur_radius(
     property("filters.blur.inputRadius", from, to, begin, duration, fill)
 }
 
-/// the scale and the offsets that make a layer of `size`, anchored at `anchor` (0…1 of its
-/// size), look `factor` as big about `origin`, a point in its own coordinates. animated
-/// together on one curve, the layer grows from that point or shrinks into it.
+/// the scale and the offsets that make a layer of `size` look `factor` as big about `origin`,
+/// a point in its own coordinates. `anchor` is the layer's anchor point, in 0…1 of its size.
+/// animated together on one curve, the layer grows from that point or shrinks into it
 pub fn scale_about(
     size: NSSize,
     anchor: NSPoint,
@@ -280,9 +280,9 @@ pub fn without_actions(f: impl FnOnce()) {
     CATransaction::commit();
 }
 
-/// the number at `key_path` as it's on screen now, partway through any animation
+/// the number at `key_path` as it is on screen now, partway through any animation
 pub fn presented(layer: &CALayer, key_path: &str) -> Option<f64> {
-    // SAFETY: the presentation layer is a read-only copy of the layer as it's drawn, and
+    // SAFETY: the presentation layer is a read-only copy of the layer as it is drawn, and
     // reading a number through key-value coding leaves it alone
     let value = unsafe {
         let shown = layer.presentationLayer()?;
@@ -291,29 +291,7 @@ pub fn presented(layer: &CALayer, key_path: &str) -> Option<f64> {
     value.downcast::<NSNumber>().ok().map(|n| n.doubleValue())
 }
 
-/// a spring of unit mass. each of these overshoots a little, a quarter of the way to ringing
-/// at most, and settles
-#[derive(Clone, Copy)]
-pub struct Spring {
-    pub stiffness: f64,
-    pub damping: f64,
-}
-
-/// text and controls easing into place
-pub const SETTLE: Spring = Spring {
-    stiffness: 180.0,
-    damping: 22.0,
-};
-/// a surface popping open
-pub const POP: Spring = Spring {
-    stiffness: 300.0,
-    damping: 26.0,
-};
-/// the bead's flight across the display
-pub const FLIGHT: Spring = Spring {
-    stiffness: 150.0,
-    damping: 20.0,
-};
+use crate::mati::motion::{SETTLE, Spring};
 
 /// animates the number at `key_path` on `spring`, for as long as the spring takes to settle
 pub fn spring(
@@ -360,7 +338,7 @@ pub fn blur_pulse(peak: f64, begin: f64, duration: f64) -> Retained<CAKeyframeAn
     )));
     let numbers =
         |values: [f64; 3]| NSArray::from_retained_slice(&values.map(NSNumber::numberWithDouble));
-    // SAFETY: an array of NSNumbers is an array of objects, and it's only read. NSNumbers
+    // SAFETY: an array of NSNumbers is an array of objects, and nothing writes to it. NSNumbers
     // are the value type this key path animates
     unsafe {
         let values: Retained<NSArray> = Retained::cast_unchecked(numbers([0.0, peak, 0.0]));
@@ -378,7 +356,7 @@ const BLUR_OUT: &str = "blur-out";
 
 /// gives the layer a gaussian blur named "blur" whose radius `blur_radius` animates.
 /// `resting` is the radius while no animation runs: 0.0 for a passing blur, more to keep
-/// the layer soft.
+/// the layer soft
 pub fn attach_blur(layer: &CALayer, resting: f64) {
     // SAFETY: CIGaussianBlur takes an NSNumber for inputRadius, and a layer's filters are
     // CIFilters
@@ -397,9 +375,9 @@ pub fn attach_blur(layer: &CALayer, resting: f64) {
     }
 }
 
-/// blurs a leaving layer to `radius`, from sharp or from however blurred its entrance had
-/// left it, and holds the blur until the layer goes away. most of the blur comes in the
-/// first frames, ahead of a fade over the same time, for the layer to be seen to soften
+/// blurs a leaving layer to `radius`, from sharp or from however blurred its entrance left
+/// it, and holds the blur until the layer goes away. most of the blur comes in the first
+/// frames, ahead of a fade over the same time, so the user sees the layer soften
 pub fn blur_out(layer: &CALayer, radius: f64, begin: f64, duration: f64) {
     let from = presented(layer, "filters.blur.inputRadius").unwrap_or(0.0);
     attach_blur(layer, 0.0);
@@ -409,7 +387,7 @@ pub fn blur_out(layer: &CALayer, radius: f64, begin: f64, duration: f64) {
 }
 
 /// drops a passing blur once its animation is over, so the layer renders without the
-/// filter. a layer that has started to leave in the meantime keeps its blur.
+/// filter. a layer that starts to leave in the meantime keeps its blur
 pub fn detach_blur_after(mtm: MainThreadMarker, layer: Retained<CALayer>, delay: f64) {
     after(mtm, delay, move || {
         let leaving = layer

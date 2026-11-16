@@ -2,7 +2,7 @@
 compile_error!("omma supports macOS only");
 
 /// writes `omma: <message>` to the running app's stderr and drops a failed write. eprintln!
-/// would panic once the terminal that started omma is closed.
+/// panics after the terminal that started omma closes
 macro_rules! log {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
@@ -11,9 +11,11 @@ macro_rules! log {
 }
 
 mod app;
+mod backend;
 mod cli;
 mod config;
 mod ipc;
+mod mati;
 mod queue;
 mod scheduler;
 
@@ -21,11 +23,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context;
+use backend::{Backend, Platform};
 use clap::Parser;
 use cli::Mode;
 use ipc::Command;
 
-// exit codes, as the README lists them. clap exits with 2 on invalid flags.
+// exit codes, as the README lists them. clap exits with 2 on invalid flags
 const NOT_RUNNING: u8 = 1;
 const ALREADY_RUNNING: u8 = 1;
 const REFUSED: u8 = 2;
@@ -66,7 +69,7 @@ fn send(command: Command) -> anyhow::Result<ExitCode> {
 /// takes the instance lock before reading the config, so a second instance neither writes
 /// a default config nor reports a config error
 fn run() -> anyhow::Result<ExitCode> {
-    app::check_system()?;
+    let system = Platform::check_system()?;
     let dir = runtime_dir()?;
     let Some(server) =
         ipc::bind(&dir).with_context(|| format!("can't start in {}", dir.display()))?
@@ -82,7 +85,7 @@ fn run() -> anyhow::Result<ExitCode> {
         log!("{}: {e}; using the defaults", config_path.display());
     }
 
-    app::run(cfg, config_path, config_error, server)?;
+    Platform::run(system, cfg, config_path, config_error, server)?;
     Ok(ExitCode::SUCCESS)
 }
 

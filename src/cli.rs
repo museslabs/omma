@@ -58,7 +58,7 @@ struct Action {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// start the menu-bar app
+    /// start omma in the menu bar or the tray
     Run,
     PrintDefaultConfig,
     /// send a command to the running instance

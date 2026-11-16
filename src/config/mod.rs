@@ -1,5 +1,5 @@
 //! the config file, parsed once into checked, typed settings. an unknown key, a value out of
-//! range or a broken rule rejects the whole file, with an error that says where.
+//! range or a broken rule rejects the whole file, with an error that says where
 
 mod keys;
 
@@ -19,8 +19,10 @@ pub use keys::{Key, KeySpec};
 use crate::queue::{Break, BreakType, Breaks};
 use crate::scheduler::Settings;
 
-/// commented, and equal to `Config::default()`; written on first run
-pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
+/// commented, and equal to `Config::default()`. omma writes it on the first run. each
+/// platform has its own file, which documents its sounds, shortcuts and window rules
+#[cfg(target_os = "macos")]
+pub const DEFAULT_CONFIG: &str = include_str!("default-macos.toml");
 
 /// a config that passed every check
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,7 +33,7 @@ pub struct Config {
     pub do_not_disturb: DoNotDisturb,
 }
 
-/// the file as written. `Default` fills in what it leaves out.
+/// the file as written. `Default` fills in what it leaves out
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
@@ -67,7 +69,7 @@ struct SmartPause {
     idle_seconds: IdleTime,
 }
 
-/// sounds by name, as written; "" for none
+/// sounds by name, as written, with "" for none
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct SoundNames {
@@ -75,7 +77,8 @@ struct SoundNames {
     post_break: String,
 }
 
-/// sounds that exist in a folder NSSound looks in; None plays nothing
+/// sounds that exist, as the platform plays them: on macOS a name that NSSound finds, elsewhere
+/// a built-in sound's name or a sound file's path. None plays nothing
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sounds {
     /// when the warning shows up
@@ -84,8 +87,8 @@ pub struct Sounds {
     pub post_break: Option<String>,
 }
 
-/// shortcuts for Skip and Postpone; None turns one off. `skip` and `postpone` act on the
-/// break screen, the `warning_` pair from any app while the warning shows.
+/// shortcuts for Skip and Postpone. None turns one off. `skip` and `postpone` act on the
+/// break screen. the `warning_` pair acts from any app while the warning shows
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keybindings {
@@ -99,7 +102,7 @@ pub struct Keybindings {
     pub warning_postpone: Option<KeySpec>,
 }
 
-/// rules that hold a break back. none holds while they're all empty or false
+/// rules that hold a break back. none holds while they are all empty or false
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DoNotDisturb {
@@ -116,6 +119,7 @@ pub struct DoNotDisturb {
 
 impl DoNotDisturb {
     /// whether a rule reads other apps' windows, which needs Accessibility permission
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn needs_accessibility(&self) -> bool {
         self.fullscreen || !self.window_titles.is_empty()
     }
@@ -145,7 +149,7 @@ impl TryFrom<String> for AppName {
     }
 }
 
-/// a case-insensitive regex. a plain word matches anywhere in a title.
+/// a case-insensitive regex. a plain word matches anywhere in a title
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "String")]
 pub struct TitlePattern(Regex);
@@ -201,10 +205,10 @@ const DAY: u64 = 24 * HOUR;
 type Interval = Secs<1, DAY>;
 type BreakLength = Secs<1, HOUR>;
 type WarningTime = Secs<0, { 10 * MINUTE }>;
-/// below 10 s, any pause to read or think would pause the schedule
+/// with a threshold below 10 s, any pause to read or think pauses the schedule
 type IdleTime = Secs<10, DAY>;
 
-/// whole seconds in `MIN..=MAX`. the bounds keep deadlines far from overflowing.
+/// whole seconds in `MIN..=MAX`. the bounds keep deadlines far from overflowing
 #[derive(Clone, Copy)]
 struct Secs<const MIN: u64, const MAX: u64>(u64);
 
@@ -354,7 +358,7 @@ impl Default for Config {
 }
 
 impl ConfigFile {
-    /// the rules that span keys, and the images' paths. `~/` in a path stands for `home`.
+    /// the rules that span keys, and the images' paths. `~/` in a path stands for `home`
     fn check(self, home: Option<&Path>) -> Result<Config, String> {
         let has_both = !self.short_breaks.is_empty() && !self.long_breaks.is_empty();
         if has_both && self.short_break_interval.0 >= self.long_break_interval.0 {
@@ -454,11 +458,24 @@ fn image_path(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// the first file in `folders` named `name` plus an extension
+fn sound_file(name: &str, folders: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    folders
+        .into_iter()
+        .filter_map(|folder| std::fs::read_dir(folder).ok())
+        .flatten()
+        .flatten()
+        .find(|file| Path::new(&file.file_name()).file_stem() == Some(OsStr::new(name)))
+        .map(|file| file.path())
+}
+
 /// the folders NSSound looks in for a sound by name, after the user's ~/Library/Sounds
+#[cfg(target_os = "macos")]
 const SOUND_FOLDERS: [&str; 2] = ["/Library/Sounds", "/System/Library/Sounds"];
 
-/// None for "", else a sound file named `name` plus an extension in one of the folders.
-/// names are case-sensitive, as NSSound's are.
+/// None for "", else the name of a sound file named `name` plus an extension in one of the
+/// folders. names are case-sensitive, as NSSound's are
+#[cfg(target_os = "macos")]
 fn sound(name: String, home: Option<&Path>) -> Result<Option<String>, String> {
     if name.is_empty() {
         return Ok(None);
@@ -467,23 +484,17 @@ fn sound(name: String, home: Option<&Path>) -> Result<Option<String>, String> {
         .map(|home| home.join("Library/Sounds"))
         .into_iter()
         .chain(SOUND_FOLDERS.map(PathBuf::from));
-    let found = folders
-        .filter_map(|folder| std::fs::read_dir(folder).ok())
-        .flatten()
-        .flatten()
-        .any(|file| Path::new(&file.file_name()).file_stem() == Some(OsStr::new(&name)));
-    if found {
-        Ok(Some(name))
-    } else {
-        Err(format!(
+    match sound_file(&name, folders) {
+        Some(_) => Ok(Some(name)),
+        None => Err(format!(
             "there's no sound named `{name}` in ~/Library/Sounds, /Library/Sounds or \
              /System/Library/Sounds"
-        ))
+        )),
     }
 }
 
 impl Config {
-    /// reads and checks the config at `path`. never writes.
+    /// reads and checks the config at `path`. never writes
     pub fn from_file(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::new(format!("can't read the file: {e}")))?;
@@ -497,8 +508,9 @@ impl Config {
     }
 }
 
-/// the config at startup: the file at `path`, created from the defaults when it's missing.
-/// when the file can't be read or fails a check, the defaults stand in and the error says why.
+/// the config at startup: the file at `path`, created from the defaults when it is missing.
+/// when omma cannot read the file, or the file fails a check, the defaults take its place and
+/// the error says why
 pub fn load_or_create(path: &Path) -> (Config, Option<ConfigError>) {
     let loaded = match path.try_exists() {
         Ok(false) => write_default(path)
@@ -536,7 +548,7 @@ impl ConfigError {
         }
     }
 
-    /// names the key when toml's message doesn't, and says where a misplaced key belongs
+    /// names the key when toml's message does not, and says where a misplaced key belongs
     fn from_toml(err: &toml::de::Error, text: &str) -> ConfigError {
         let Some(span) = err.span() else {
             return ConfigError::new(err.message());
@@ -553,7 +565,7 @@ impl ConfigError {
 
         let message = err.message();
         let unknown = message.starts_with("unknown field");
-        // toml quotes a key it doesn't know; then name only the table it's in
+        // toml quotes a key that it does not know. then name only the table that holds the key
         let shown = key.as_deref().map(|key| {
             if unknown {
                 key.rsplit_once('.').map_or("", |(table, _)| table)
@@ -605,12 +617,12 @@ fn value_has(value: &Spanned<DeValue<'_>>, at: usize, path: &mut Vec<String>) ->
     inside || value.span().contains(&at)
 }
 
-/// the keys of a break entry. the default file has only names, so `place_of` needs these.
+/// the keys of a break entry. the default file has only names, so `place_of` needs these
 const BREAK_KEYS: [&str; 3] = ["name", "duration", "image"];
 
-/// where the default config has `key`, if in just one place. a key under one [table] gets
-/// no hint toward another: there it's more likely a key that table lacks, as `enabled`
-/// under [sounds] would be, and the error's list of the table's keys says more.
+/// where the default config has `key`, if `key` is in one place only. a key under one
+/// [table] gets no hint toward another. there it is more likely a key that the table lacks,
+/// as `enabled` under [sounds] is. the error's list of the table's keys says more
 fn place_of(key: &str, in_table: bool) -> Option<String> {
     let defaults: toml::Table = DEFAULT_CONFIG.parse().ok()?;
     let mut places = Vec::new();
@@ -641,7 +653,7 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 /// `$XDG_CONFIG_HOME/omma/config.toml`, else `~/.config/omma/config.toml`. None when neither
-/// is an absolute path.
+/// is an absolute path
 pub fn config_path() -> Option<PathBuf> {
     config_path_from(std::env::var_os("XDG_CONFIG_HOME"), std::env::home_dir())
 }
@@ -659,10 +671,11 @@ fn config_path_from(xdg_config_home: Option<OsString>, home: Option<PathBuf>) ->
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use super::keys::CMD;
     use super::*;
     use crate::scheduler::Core;
 
-    /// the repo stands in for the home directory
+    /// the repo acts as the home directory
     fn home() -> &'static Path {
         Path::new(env!("CARGO_MANIFEST_DIR"))
     }
@@ -860,7 +873,7 @@ mod tests {
         assert!(
             rejects("short_break_interval = 601\nlong_break_interval = 600\n").contains("601 s")
         );
-        // with one kind of break the other interval doesn't matter
+        // with one kind of break, the other interval does not matter
         parse("short_break_interval = 900\nlong_break_interval = 60\nlong_breaks = []\n").unwrap();
         parse("short_break_interval = 900\nlong_break_interval = 60\nshort_breaks = []\n").unwrap();
     }
@@ -915,7 +928,7 @@ mod tests {
                 rejects(&format!("[keybindings]\nwarning_skip = \"{spec}\"\n")),
                 format!(
                     "line 2: keybindings.warning_skip: `{spec}` works from any app, so it needs \
-                     cmd or ctrl"
+                     {CMD} or ctrl"
                 )
             );
         }
@@ -1048,10 +1061,11 @@ mod tests {
             err("tray-icon.svg", Some(home())),
             "image for \"Blink\": `tray-icon.svg` must be an absolute path or start with ~/"
         );
-        // a directory isn't an image
+        // a directory is not an image
         assert!(err("~/src", Some(home())).ends_with("/src"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_sound_is_a_name_that_exists_or_empty_for_none() {
         let sounds = |text: &str, home: &Path| {
@@ -1090,7 +1104,7 @@ mod tests {
     #[test]
     fn a_change_outside_the_schedule_keeps_the_countdown() {
         let before = Config::default();
-        let after = parse("[sounds]\npre_break = \"Ping\"\n").unwrap();
+        let after = parse("[sounds]\npre_break = \"\"\n").unwrap();
         assert_ne!(before, after);
         assert_eq!(before.schedule, after.schedule);
 

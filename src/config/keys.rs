@@ -16,12 +16,20 @@ pub enum Key {
     Delete,
 }
 
+/// the name that shortcuts and their errors give the command key: ⌘ on macOS, or the super
+/// (logo) key elsewhere. both names parse on every platform
+#[cfg(target_os = "macos")]
+pub const CMD: &str = "cmd";
+#[cfg(not(target_os = "macos"))]
+pub const CMD: &str = "super";
+
 /// the modifiers held down with a shortcut's key
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+    /// ⌘ on macOS, the super key elsewhere
     pub cmd: bool,
 }
 
@@ -59,7 +67,7 @@ fn key(name: &str) -> Option<Key> {
 
 /// whether a shortcut with shift and `key` can fire. AppKit matches a shortcut against the
 /// character typed with shift applied. shift turns a letter into its capital and leaves
-/// escape, space, enter and delete alone.
+/// escape, space, enter and delete alone
 fn takes_shift(key: Key) -> bool {
     match key {
         Key::Char(c) => {
@@ -71,7 +79,7 @@ fn takes_shift(key: Key) -> bool {
     }
 }
 
-/// sets the modifier `name` stands for; false when it stands for none
+/// sets the modifier that `name` stands for. false when it stands for none
 fn set_modifier(mods: &mut Mods, name: &str) -> bool {
     let held = match name {
         "cmd" | "command" | "super" | "meta" => &mut mods.cmd,
@@ -87,7 +95,7 @@ fn set_modifier(mods: &mut Mods, name: &str) -> bool {
 impl FromStr for KeySpec {
     type Err = String;
 
-    /// modifiers first, then one key, joined by `+`. case and spaces around parts don't matter.
+    /// modifiers first, then one key, joined by `+`. case and spaces around parts do not matter
     fn from_str(spec: &str) -> Result<KeySpec, String> {
         let lower = spec.to_lowercase();
         let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
@@ -102,7 +110,7 @@ impl FromStr for KeySpec {
         for part in parts {
             if !set_modifier(&mut mods, part) {
                 return Err(if key(part).is_none() {
-                    format!("`{part}` in `{spec}` isn't a modifier; use cmd, shift, alt or ctrl")
+                    format!("`{part}` in `{spec}` isn't a modifier; use {CMD}, shift, alt or ctrl")
                 } else if set_modifier(&mut Mods::default(), last) {
                     format!("`{spec}` has a modifier after its key; put modifiers first")
                 } else {
@@ -138,7 +146,7 @@ impl fmt::Display for KeySpec {
             shift,
             cmd,
         } = self.mods;
-        for (held, name) in [(ctrl, "ctrl"), (alt, "alt"), (shift, "shift"), (cmd, "cmd")] {
+        for (held, name) in [(ctrl, "ctrl"), (alt, "alt"), (shift, "shift"), (cmd, CMD)] {
             if held {
                 write!(f, "{name}+")?;
             }
@@ -163,16 +171,16 @@ pub(super) fn optional<'de, D: Deserializer<'de>>(de: D) -> Result<Option<KeySpe
     spec.parse().map(Some).map_err(serde::de::Error::custom)
 }
 
-/// a shortcut that works from any app, or None for `""`. it needs cmd or ctrl, since a key
-/// without them would be taken from whatever the user is typing in. its key is found on the
-/// ASCII-capable keyboard layout, so a character key has to be ASCII.
+/// a shortcut that works from any app, or None for `""`. it needs cmd (super) or ctrl,
+/// because without them it takes the key away from the app that the user types in. the lookup
+/// of its key uses the ASCII-capable keyboard layout, so a character key must be ASCII
 pub(super) fn optional_global<'de, D: Deserializer<'de>>(
     de: D,
 ) -> Result<Option<KeySpec>, D::Error> {
     let spec = optional(de)?;
     let error = match spec {
         Some(spec) if !spec.mods.cmd && !spec.mods.ctrl => {
-            format!("`{spec}` works from any app, so it needs cmd or ctrl")
+            format!("`{spec}` works from any app, so it needs {CMD} or ctrl")
         }
         Some(KeySpec {
             key: Key::Char(c), ..
@@ -265,9 +273,9 @@ mod tests {
         };
         assert_eq!(parse(" Ctrl + Option+SHIFT+cmd + X "), all);
         assert_eq!(parse("cmd+cmd+shift+alt+ctrl+x"), all);
-        assert_eq!(all.to_string(), "ctrl+alt+shift+cmd+x");
+        assert_eq!(all.to_string(), format!("ctrl+alt+shift+{CMD}+x"));
         assert_eq!(parse(&all.to_string()), all);
-        assert_eq!(parse("cmd+delete").to_string(), "cmd+delete");
+        assert_eq!(parse("cmd+delete").to_string(), format!("{CMD}+delete"));
     }
 
     #[test]
@@ -313,7 +321,7 @@ mod tests {
         );
         assert_eq!(
             error("ctl+s"),
-            "`ctl` in `ctl+s` isn't a modifier; use cmd, shift, alt or ctrl"
+            format!("`ctl` in `ctl+s` isn't a modifier; use {CMD}, shift, alt or ctrl")
         );
         let empty = "has an empty part; join keys with a single +";
         assert_eq!(error("cmd++s"), format!("`cmd++s` {empty}"));

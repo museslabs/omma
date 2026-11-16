@@ -1,6 +1,6 @@
-//! the warning: a mati bead drops off the menu-bar icon on a thread, and a compact glass
-//! notification beside it counts down with skip and postpone buttons. they're two panels,
-//! which keeps the clear space between them from taking clicks.
+//! the warning: a mati bead drops off the menu bar icon on a thread. a compact glass
+//! notification beside it counts down with skip and postpone buttons. they are two panels, so
+//! the clear space between them takes no clicks
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -14,20 +14,20 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSPointInRect, NSRect, NSSize,
 use objc2_quartz_core::CACurrentMediaTime;
 
 use super::charm::Charm;
-use super::glass_button::{
-    ButtonHost, Buttons, GlassButtonStyle, Shortcut, Surface, make_glass_button,
-};
+use super::glass_button::{ButtonHost, GlassButtonStyle, Shortcut, Surface, make_glass_button};
 use super::panel::{
     CROSS_FADE, Fill, LabelStyle, Panel, after, animations_on, arrive, attach_blur, blur_out,
     blur_radius, detach_blur_after, fade, make_label, make_panel, presented, solid_surfaces,
     system_is_dark,
 };
+use crate::app::Buttons;
+use crate::app::format::fmt_warning;
 
 const BUTTON_H: f64 = 40.0;
 /// from the capsule's edge to its buttons, and to the top of its text
 const PAD: f64 = 16.0;
 /// to the text's left edge: a label keeps 2 pt clear of its own frame, which puts the letters
-/// 20 pt in, level with where their tops come under `PAD`
+/// 20 pt in. that is level with where their tops come under `PAD`
 const TEXT_INSET: f64 = 18.0;
 /// between the heading and the line under it, and between that line and the buttons
 const LINE_GAP: f64 = 2.0;
@@ -46,8 +46,8 @@ const CAPSULE_GAP: f64 = 46.0;
 const CAPSULE_DROP: f64 = 12.0;
 const THREAD: f64 = 42.0;
 const BEAD: f64 = 64.0;
-/// the charm's panel: wide enough for the swing out to the menu bar and a little into it as
-/// the bead flattens, and deep enough for thread and bead
+/// the charm's panel. it is wide enough for the swing out to the menu bar, and a little into
+/// it as the bead flattens. it is deep enough for the thread and the bead
 const CHARM_W: f64 = 240.0;
 const CHARM_H: f64 = THREAD + BEAD + 18.0;
 /// the capsule's corners, concentric with its buttons': theirs, plus the padding between
@@ -56,7 +56,7 @@ const CAPSULE_RADIUS: f64 = BUTTON_H / 2.0 + PAD;
 /// it reaches up to the menu bar and no further, so the bar still takes its clicks
 const CAPSULE_MARGIN: f64 = CAPSULE_DROP;
 /// the capsule fades in where it sits, a beat after the bead drops, as its text and buttons
-/// come out of a slight blur, and it leaves the same way. nothing moves or changes size
+/// come out of a slight blur. it leaves the same way. nothing moves or changes size
 const CONTENT_BLUR: f64 = 4.0;
 const SHOW_DELAY: f64 = 0.10;
 const SHOW_DURATION: f64 = 0.22;
@@ -102,10 +102,10 @@ impl PreBreakDialog {
         PreBreakDialog { mtm, shown: None }
     }
 
-    /// `anchor` is under the menu-bar icon on the bar's bottom edge, in screen coordinates;
-    /// without it the warning hangs at the top right of the main display. a skip or postpone key is a
-    /// global shortcut, held by `Hotkeys`; the button only shows its hint. without skip, the
-    /// warning offers Dismiss.
+    /// `anchor` is under the menu bar icon on the bar's bottom edge, in screen coordinates.
+    /// without it, the warning hangs at the top right of the main display. a skip or postpone
+    /// key is a global shortcut that `Hotkeys` holds. the button only shows its hint. without
+    /// skip, the warning offers Dismiss
     pub fn show(
         &mut self,
         seconds_until_break: u64,
@@ -158,7 +158,7 @@ impl PreBreakDialog {
         );
         // as wide as the longest count, to keep any count inside the capsule
         countdown.sizeToFit();
-        countdown.setStringValue(&NSString::from_str(&fmt_seconds(seconds_until_break)));
+        countdown.setStringValue(&NSString::from_str(&fmt_warning(seconds_until_break)));
 
         let mut row = Vec::new();
         if let Some(postpone) = buttons.postpone {
@@ -241,7 +241,7 @@ impl PreBreakDialog {
             let view = NSView::initWithFrame(NSView::alloc(mtm), placed);
             view.setWantsLayer(true);
             if let Some(layer) = view.layer() {
-                // under the labels' own colours, which follow the system's appearance
+                // under the labels' own colors, which follow the system's appearance
                 let (fill, edge) = if system_is_dark(mtm) {
                     (0.14, 1.0)
                 } else {
@@ -258,9 +258,9 @@ impl PreBreakDialog {
             let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), placed);
             glass.setCornerRadius(CAPSULE_RADIUS);
             // the system's regular glass, with no tint of ours. AppKit gives it the
-            // appearance's shade and the Liquid Glass slider's setting itself, as it does
-            // Control Center's; the clear style takes neither, and on macOS 27 a tint
-            // colour comes out as a flat fill over the glass
+            // appearance's shade and the Liquid Glass slider's setting itself, as it does for
+            // Control Center. the clear style takes neither. on macOS 27, a tint color comes
+            // out as a flat fill over the glass
             glass.setStyle(NSGlassEffectViewStyle::Regular);
             glass.setContentView(Some(&body));
             Retained::into_super(glass)
@@ -347,7 +347,7 @@ impl PreBreakDialog {
 
     pub fn update_countdown(&self, seconds_until_break: u64) {
         if let Some(shown) = &self.shown {
-            let text = NSString::from_str(&fmt_seconds(seconds_until_break));
+            let text = NSString::from_str(&fmt_warning(seconds_until_break));
             shown.countdown.setStringValue(&text);
         }
     }
@@ -381,7 +381,7 @@ impl PreBreakDialog {
         else {
             return;
         };
-        // inert while it fades, since a sleeping button takes no clicks
+        // inert while it fades, because a sleeping button takes no clicks
         for button in &buttons {
             button.set_awake(false);
         }
@@ -401,7 +401,7 @@ impl PreBreakDialog {
             return;
         }
         if let Some(layer) = capsule.layer() {
-            // it fades and blurs away where it is, from wherever its entrance had got to
+            // it fades and blurs away where it is, from wherever its entrance got to
             let opacity = presented(&layer, "opacity").unwrap_or(1.0);
             let vanish = fade(opacity, 0.0, now, HIDE_DURATION, Fill::Exit);
             vanish.setTimingFunction(Some(&arrive()));
@@ -437,14 +437,14 @@ fn fallback_anchor(mtm: MainThreadMarker) -> Option<NSPoint> {
     ))
 }
 
-/// the height of the menu bar's bottom edge on `screen`, which is the top of the area the
-/// bar keeps clear. a bar that hides itself keeps none, and this is the screen's top
+/// the height of the menu bar's bottom edge on `screen`, which is the top of the area that
+/// the bar keeps clear. a bar that hides itself keeps none, and this is the screen's top
 pub fn menu_bar_edge(screen: &NSScreen) -> f64 {
     let visible = screen.visibleFrame();
     visible.origin.y + visible.size.height
 }
 
-/// the display under the menu-bar edge at `point`, or the main one. under a bar that hides
+/// the display under the menu bar edge at `point`, or the main one. under a bar that hides
 /// itself, `point` is the display's top edge, which NSPointInRect counts as outside it
 fn screen_at(mtm: MainThreadMarker, point: NSPoint) -> Option<Retained<NSScreen>> {
     NSScreen::screens(mtm)
@@ -459,26 +459,4 @@ pub fn hanging_bead(anchor: NSPoint) -> NSRect {
         NSPoint::new(anchor.x - BEAD / 2.0, anchor.y - THREAD - BEAD),
         NSSize::new(BEAD, BEAD),
     )
-}
-
-/// "9s", or "2:05" from 100 seconds up
-fn fmt_seconds(seconds: u64) -> String {
-    if seconds >= 100 {
-        format!("{}:{:02}", seconds / 60, seconds % 60)
-    } else {
-        format!("{seconds}s")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_warning_counts_in_seconds_then_minutes() {
-        assert_eq!(fmt_seconds(9), "9s");
-        assert_eq!(fmt_seconds(99), "99s");
-        assert_eq!(fmt_seconds(100), "1:40");
-        assert_eq!(fmt_seconds(600), "10:00");
-    }
 }
